@@ -48,7 +48,9 @@ The first message shows the page with numbered areas, then a sheet with one pair
 Look at every area. Problems and their fixes, cheapest first:
 - Residual text (ghost strokes, outlines, a missed small character, furigana): adjust_mask dilate 2-4 px with scope residual; or view_region show=components and mask_select the stroke numbers to add. Then inpaint_region.
 - Damaged art (a bubble outline or panel border cut or smudged, hair or lines erased): protect_lines; or mask_select remove for mask parts that cover no text; or mask_paint remove. Then inpaint_region.
-- Unnatural fill (blur, smears, broken screentone, a line not continued): inpaint_region with another method; fill gives a clean flat color in plain white or single-color bubbles.
+- Unnatural fill (blur, smears, streaks, broken screentone, a line not continued): inpaint_region with another method; fill gives a clean flat color in plain white or single-color bubbles.
+- A flat fill where the background is not really flat (a gradient, screentone, art): pick_candidate 1 (the model's result) or inpaint_region with a model.
+Areas on a flat background were already filled with its color in the first pass, keeping lines that cross the mask as drawn; the model's result for them is attempt 1.
 Every inpaint_region starts again from the original, with the current mask. After {retries} new attempts on one area, pick_candidate the best attempt and flag_for_review it.
 Always flag_for_review (keeping the best attempt) when text was erased on a face, across a panel border, or over a large area of screentone or detailed art, even when the result looks acceptable.
 Leave good areas alone. When every area is fine or flagged, call finish_review.
@@ -470,9 +472,15 @@ class InpaintReviewer:
                 findings.append(f"residual text at {len(attempt.residual)} spot(s) (red)")
             if attempt.broken:
                 findings.append(f"{len(attempt.broken)} of {attempt.entries} line(s) may be broken (orange)")
-            lines.append(f"#{unit.id} ({what}, {unit.size[0]}x{unit.size[1]} px): "
+            how = "flat fill" if unit.auto_fill else attempt.method
+            lines.append(f"#{unit.id} ({what}, {unit.size[0]}x{unit.size[1]} px, {how}): "
                          + ("; ".join(findings) if findings else "no program findings"))
-        text = (f"Page {session.stem}: {len(page.units)} inpainted area(s), method {page.units[0].current.method}. "
+        filled = sum(1 for u in page.units if u.auto_fill)
+        method = page.first_method or page.units[0].attempts[0].method
+        first = f"method {method}" + (
+            f"; {filled} area(s) on a flat background were filled with its color instead (attempt 2, the "
+            f"{method} result is attempt 1)" if filled else "")
+        text = (f"Page {session.stem}: {len(page.units)} inpainted area(s), {first}. "
                 f"Methods for inpaint_region: {', '.join(session.methods)}.\n" + "\n".join(lines)
                 + "\nThe overview (green = no findings, red = findings) comes first, then the sheet(s).")
         content: List[dict] = [{"type": "text", "text": text},
@@ -499,13 +507,13 @@ class InpaintReviewer:
             return {"page": stem, "status": "skipped", "reason": "empty mask"}
         if FILL not in methods:
             methods.append(FILL)
-        await page.initial(methods[0])
+        await page.initial(methods[0], self.settings.fill_flat_areas)
         start = dict(self.totals)
         session = ReviewSession(self.settings, page, page_image, methods, self.target_lang, self.events, stem)
         registry = AsyncToolRegistry(session, review_tools(methods))
         found = sum(1 for u in page.units if u.current.issues)
         self.events.emit("inpaint_start", page=stem, agent="inpaint", units=len(page.units), issues=found,
-                         method=methods[0])
+                         method=methods[0], filled=sum(1 for u in page.units if u.auto_fill))
         messages: List[dict] = [{"role": "system", "content": self.system_prompt()}, self._first_message(session)]
         for step in range(self.settings.inpaint_review_steps):
             if self.should_stop():
@@ -580,12 +588,13 @@ class InpaintReviewer:
                                  "finished": session.finished, "usage": usage}})
         self.store.save_sidecar(stem, side)
         retried = sum(1 for u in page.units if u.retries)
+        filled = sum(1 for u in page.units if u.auto_fill)
         flagged = sum(1 for u in page.units if u.flagged) + sum(1 for f in session.flags if f["region"] is None)
         self.events.emit("inpaint_done", page=stem, agent="inpaint", status=side.get("status") or "done",
-                         units=len(page.units), retried=retried, flagged=flagged, score=score,
+                         units=len(page.units), retried=retried, filled=filled, flagged=flagged, score=score,
                          confidence=confidence, flags=len(flags), steps=session.steps, usage=usage)
         return {"page": stem, "image": doc.image_path, "status": "reviewed", "units": len(page.units),
-                "retried": retried, "flagged": flagged, "score": score, "confidence": confidence}
+                "retried": retried, "filled": filled, "flagged": flagged, "score": score, "confidence": confidence}
 
     async def run(self, image_paths: Sequence[str]) -> List[Dict[str, Any]]:
         from .runner import AgentStopped

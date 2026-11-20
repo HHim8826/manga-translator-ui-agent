@@ -26,6 +26,10 @@ class AgentSettings(BaseModel):
     inpaint_review: bool = True
     """After the translation agent, a separate review conversation per page
     checks and fixes the inpainting; render then reuses its result."""
+    fill_flat_areas: bool = True
+    """In the review's first pass, areas on a flat background (plain bubbles and boxes) are
+    filled with the paper color instead of using the model's result, unless the program
+    checks find more problems in the fill; the model's result stays as a candidate."""
     inpaint_attempts_per_region: int = Field(default=3, ge=1)
     """New inpainting attempts the review may make per area (the first pass not counted)."""
     ops_per_region: int = Field(default=15, ge=1)

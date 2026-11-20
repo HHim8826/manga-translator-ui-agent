@@ -1581,5 +1581,6 @@
   "Agents Inpaint": "Revisión del relleno",
   "Agents Inpaint Start": "{units} áreas, {issues} con hallazgos del programa",
   "Agents Inpaint Detail": "{units} áreas, {retried} rehechas, {flagged} marcadas",
-  "Agents Inpaint Progress": "Revisión del relleno: {page}"
+  "Agents Inpaint Progress": "Revisión del relleno: {page}",
+  "Agents Inpaint Detail Filled": "{units} áreas, {filled} rellenadas con el color del papel, {retried} rehechas, {flagged} marcadas"
 }

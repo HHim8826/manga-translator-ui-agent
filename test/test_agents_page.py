@@ -140,4 +140,8 @@ def test_inpaint_review_events(app):
     assert rows[2].text(3) == "Agents Inpaint Detail flagged=1 retried=1 units=9"
     page.problems_only.setChecked(True)
     assert [r.isHidden() for r in rows] == [True, True, False]
+    page.handle_event({"type": "inpaint_done", "page": "006", "agent": "inpaint", "status": "done", "units": 12,
+                       "filled": 9, "retried": 0, "flagged": 0, "confidence": 0.99, "flags": 0})
+    row = page.timeline.topLevelItem(page.timeline.topLevelItemCount() - 1)
+    assert row.text(3) == "Agents Inpaint Detail Filled filled=9 flagged=0 retried=0 units=12" and row.isHidden()
     assert page.page_list.item(1).text() == "005 · Agent Page Done · 73% · Agents Flag Count count=1"

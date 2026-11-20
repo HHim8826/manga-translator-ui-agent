@@ -1591,5 +1591,6 @@
   "Agents Inpaint": "修图审查",
   "Agents Inpaint Start": "{units} 个区域，程序检查发现 {issues} 个有问题",
   "Agents Inpaint Detail": "{units} 个区域，重修 {retried} 个，待确认 {flagged} 个",
-  "Agents Inpaint Progress": "修图审查：{page}"
+  "Agents Inpaint Progress": "修图审查：{page}",
+  "Agents Inpaint Detail Filled": "{units} 个区域，直接填底色 {filled} 个，重修 {retried} 个，待确认 {flagged} 个"
 }

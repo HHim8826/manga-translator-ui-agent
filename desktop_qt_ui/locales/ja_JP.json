@@ -1581,5 +1581,6 @@
   "Agents Inpaint": "修復レビュー",
   "Agents Inpaint Start": "{units} 領域、プログラム検査で {issues} 件の問題",
   "Agents Inpaint Detail": "{units} 領域、{retried} 件を再修復、{flagged} 件を要確認",
-  "Agents Inpaint Progress": "修復レビュー：{page}"
+  "Agents Inpaint Progress": "修復レビュー：{page}",
+  "Agents Inpaint Detail Filled": "{units} 領域、{filled} 件を地の色で塗りつぶし、{retried} 件を再修復、{flagged} 件を要確認"
 }

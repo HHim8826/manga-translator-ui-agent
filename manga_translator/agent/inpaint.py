@@ -33,6 +33,11 @@ from .snap import MAX_ELONGATION
 Box = Tuple[int, int, int, int]
 FILL = "fill"
 FLAT_SPREAD = 12.0
+FLAT_SPECKS = 0.02
+SPECK_RING = 10
+SPECK_AREA = 30
+FLAT_ART = 0.03
+ART_REACH = 4
 """90th percentile of the color distance around a mask above which a flat fill shows."""
 
 
@@ -96,6 +101,8 @@ class Unit:
     flagged: bool = False
     extra: bool = False
     """Mask area that belongs to no kept region."""
+    auto_fill: bool = False
+    """The first pass used the flat fill (attempt 2) for this unit."""
     view: Optional[Dict] = None
     """Grid of the last view of this unit, for mask_paint."""
 
@@ -133,21 +140,118 @@ def encode_mask(mask: np.ndarray) -> str:
     return base64.b64encode(png.tobytes()).decode("ascii")
 
 
-def fill_patch(crop: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, str]:
-    """Flat fill with the color around the mask; the note warns when the background is not flat."""
+@dataclass
+class Background:
+    color: np.ndarray
+    spread: float
+    """99th percentile of how far the paper under and around the mask strays from ``color`` (max channel)."""
+    specks: float
+    """Share of a wider ring around the mask covered by small ink specks (screentone dots)."""
+    art: float = 0.0
+    """Share of the mask covered by ink of shapes that reach well outside it (art, not text)."""
+    keep: Optional[np.ndarray] = None
+    """Those shapes inside the mask, 1px wider (bool): a flat fill leaves them as drawn."""
+    ends: int = 0
+    """End points of those lines at the mask: lines the text interrupts, which a fill cannot join."""
+
+    @property
+    def plain(self) -> bool:
+        return self.spread <= FLAT_SPREAD and self.specks <= FLAT_SPECKS
+
+    @property
+    def flat(self) -> bool:
+        return self.plain and self.art <= FLAT_ART and self.ends == 0
+
+
+def background(crop: np.ndarray, mask: np.ndarray) -> Background:
+    """Paper color around the mask and how flat it is. Only the paper connected to the mask counts
+    (inside a closed bubble or box, the outline ends it). Ink and a 2px halo around it are left out,
+    so text strokes and the anti-aliased edges of outlines do not count; screentone shows up as
+    many small ink specks around the mask instead."""
     m = mask.astype(np.uint8)
-    ring = (cv2.dilate(m, _kernel(5)) > 0) & ~(cv2.dilate(m, _kernel(2)) > 0)
-    paper = ring & ~ink(crop, mask)  # outlines and nearby strokes are not the background
-    pixels = crop[paper] if paper.sum() >= 10 else crop[ring] if ring.any() else crop[~mask]
+    inner = cv2.dilate(m, _kernel(2)) > 0
+    inky = ink(crop, mask)
+    blank = ~inky
+    _n, labels = cv2.connectedComponents(blank.astype(np.uint8), connectivity=4)
+    touching = np.unique(labels[(mask if (mask & blank).any() else inner) & blank])
+    region = np.isin(labels, touching[touching > 0]) & blank
+    reach = cv2.dilate(region.astype(np.uint8), _kernel(3)) > 0  # with the specks inside it
+    ring = (cv2.dilate(m, _kernel(5)) > 0) & ~inner & reach
+    halo = cv2.dilate(inky.astype(np.uint8), _kernel(2)) > 0
+    area = (mask | ring) & ~halo  # the paper under the text and right around it
+    spread = 255.0
+    if area.sum() >= 10:
+        sample = area
+    else:  # nearly all ink: take what there is, but it does not count as flat
+        sample = next((s for s in (ring & ~inky, mask & ~inky, ring, ~mask) if s.any()), mask)
+    pixels = crop[sample]
     if len(pixels) == 0:
         raise InpaintError("no background around the mask to take a color from")
     color = np.median(pixels.reshape(-1, crop.shape[2]), axis=0)
-    spread = float(np.percentile(np.abs(pixels.astype(np.float32) - color).max(axis=1), 75))
+    if area.sum() >= 10:
+        spread = float(np.percentile(np.abs(pixels.astype(np.float32) - color).max(axis=1), 99))
+    wide = (cv2.dilate(m, _kernel(SPECK_RING)) > 0) & ~inner & reach
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(inky.astype(np.uint8), connectivity=8)
+    small = np.zeros(count, bool)
+    small[1:] = stats[1:, cv2.CC_STAT_AREA] < SPECK_AREA
+    specks = float((small[labels] & wide).sum()) / max(1, int(wide.sum()))
+    # ink under the mask that belongs to shapes reaching well outside it: art lines, hair, dense tone
+    outside = labels[inky & ~(cv2.dilate(m, _kernel(ART_REACH)) > 0)]
+    crossing = np.zeros(count, bool)
+    crossing[np.unique(outside)] = True
+    crossing[0] = False
+    shapes = crossing[labels]
+    art = float((shapes & mask).sum()) / max(1, int(mask.sum()))
+    keep = (cv2.dilate(shapes.astype(np.uint8), _kernel(1)) > 0) & mask
+    # a line that ends at the text (the text interrupts it) needs a model to join it again
+    touching = np.zeros(count, bool)
+    touching[np.unique(labels[inky & inner])] = True
+    lines = (crossing & touching)[labels] & (cv2.dilate(m, _kernel(12)) > 0)
+    ends = int((_line_ends(lines) & inner).sum()) if lines.any() else 0
+    return Background(color, spread, specks, art, keep, ends)
+
+
+def _line_ends(binary: np.ndarray) -> np.ndarray:
+    """End points of the one-pixel skeleton of ``binary`` (bool)."""
+    image = binary.astype(np.uint8) * 255
+    if hasattr(cv2, "ximgproc"):
+        skeleton = cv2.ximgproc.thinning(image) > 0
+    else:  # pragma: no cover - builds without opencv-contrib
+        from skimage.morphology import skeletonize
+        skeleton = skeletonize(binary)
+    neighbours = cv2.filter2D(skeleton.astype(np.uint8), -1, np.ones((3, 3), np.uint8),
+                              borderType=cv2.BORDER_CONSTANT)
+    return skeleton & (neighbours == 2)
+
+
+def fill_patch(crop: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, str]:
+    """Flat fill with the color around the mask; the note warns when that may show."""
+    bg = background(crop, mask)
     out = crop.copy()
-    out[mask] = color.astype(np.uint8)
-    note = "" if spread <= FLAT_SPREAD else \
-        f"the background around it is not flat (spread {spread:.0f}), so a flat fill may show"
+    out[mask] = bg.color.astype(np.uint8)
+    if not bg.plain:
+        note = f"the background around it is not flat (spread {bg.spread:.0f}), so a flat fill may show"
+    elif not bg.flat:
+        note = "art lines run into the mask and the fill paints over them; protect_lines keeps them"
+    else:
+        note = ""
     return out, note
+
+
+def flat_fill(crop: np.ndarray, mask: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray, str]]:
+    """First-pass fill for an area on a flat background: (patch, the mask it replaced, note), or None.
+    Art shapes that cross the mask (bubble outlines, lines) stay as drawn."""
+    bg = background(crop, mask)
+    if not bg.flat:
+        return None
+    filled = mask & ~bg.keep
+    if not filled.any():
+        return None
+    out = crop.copy()
+    out[filled] = bg.color.astype(np.uint8)
+    note = "flat background: filled with its color" + \
+        (", lines crossing the mask kept as drawn" if bg.keep.any() else "")
+    return out, filled, note
 
 
 def ink(crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -159,7 +263,7 @@ def ink(crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if sample.size < 2 or float(sample.std()) < 4.0:
         return np.zeros(gray.shape, bool)
     threshold, _ = cv2.threshold(sample.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    dark = gray < threshold
+    dark = gray <= threshold  # Otsu returns the lower value itself on a two-tone image
     inside = dark[mask] if mask.any() else dark[near]
     return ~dark if inside.size and inside.mean() > 0.5 else dark
 
@@ -191,6 +295,7 @@ class InpaintPage:
         self.mask = mask > 0
         self.backend = backend
         self.stem = stem
+        self.first_method = ""
         self.units: List[Unit] = []
         self.by_id: Dict[int, Unit] = {}
         self._build_units(regions)
@@ -301,8 +406,11 @@ class InpaintPage:
             out[y1:y2, x1:x2] |= unit.current.mask if unit.attempts else unit.base_mask
         return out
 
-    async def initial(self, method: str) -> None:
-        """First attempt for every unit: the whole page mask, block by block, as the pipeline does."""
+    async def initial(self, method: str, fill_flat: bool = False) -> None:
+        """First attempt for every unit: the whole page mask, block by block, as the pipeline does.
+        With ``fill_flat``, areas on a flat background also get a flat fill (attempt 2), which is
+        used unless the program finds more problems in it than in the model's result."""
+        self.first_method = method
         if not self.units:
             return
         result = await self.backend.inpaint(method, self.original, self.mask.astype(np.uint8) * 255)
@@ -312,6 +420,26 @@ class InpaintPage:
             unit.chosen = 0
             unit.work = unit.base_mask.copy()
         await self.check(self.units)
+        if not fill_flat or method == FILL:
+            return
+        filled = []
+        for unit in self.units:
+            fill = flat_fill(self.crop(unit), unit.base_mask)
+            if fill is None:
+                continue
+            patch, mask, note = fill
+            unit.attempts.append(Attempt(2, FILL, mask, patch, [], note=note))
+            unit.chosen = 1
+            filled.append(unit)
+        if not filled:
+            return
+        await self.check(filled)
+        for unit in filled:
+            model, fill = unit.attempts
+            if len(fill.residual) + len(fill.broken) > len(model.residual) + len(model.broken):
+                unit.chosen = 0
+            else:
+                unit.auto_fill = True
 
     async def retry(self, unit: Unit, method: str) -> Attempt:
         if unit.work is None or not unit.work.any():
@@ -547,5 +675,6 @@ class InpaintPage:
                                  "broken_lines": [list(b) for b in attempt.broken], "line_entries": attempt.entries,
                                  "note": attempt.note, "file": name + ".png", "mask": name + "_mask.png"})
             out[str(unit.id)] = {"box": list(unit.box), "regions": unit.regions, "extra": unit.extra,
-                                 "attempts": attempts, "chosen": unit.chosen + 1, "flagged": unit.flagged}
+                                 "attempts": attempts, "chosen": unit.chosen + 1, "flagged": unit.flagged,
+                                 "auto_fill": unit.auto_fill}
         return out

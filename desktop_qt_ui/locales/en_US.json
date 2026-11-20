@@ -1592,5 +1592,6 @@
   "Agents Inpaint": "Inpaint review",
   "Agents Inpaint Start": "{units} areas, {issues} with program findings",
   "Agents Inpaint Detail": "{units} areas, {retried} redone, {flagged} flagged",
-  "Agents Inpaint Progress": "Inpaint review: {page}"
+  "Agents Inpaint Progress": "Inpaint review: {page}",
+  "Agents Inpaint Detail Filled": "{units} areas, {filled} filled with the paper color, {retried} redone, {flagged} flagged"
 }

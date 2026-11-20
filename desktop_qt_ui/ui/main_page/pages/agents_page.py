@@ -239,9 +239,11 @@ class AgentsPage(QWidget):
                           "")
         elif kind == "inpaint_done":
             flagged = int(event.get("flagged") or 0)
-            row = self._add_row(event, self._t("Agents Inpaint"),
-                                self._t("Agents Inpaint Detail", units=event.get("units", 0),
-                                        retried=event.get("retried", 0), flagged=flagged), "", problem=flagged > 0)
+            filled = int(event.get("filled") or 0)
+            counts = {"units": event.get("units", 0), "retried": event.get("retried", 0), "flagged": flagged}
+            detail = self._t("Agents Inpaint Detail Filled", filled=filled, **counts) if filled else \
+                self._t("Agents Inpaint Detail", **counts)
+            row = self._add_row(event, self._t("Agents Inpaint"), detail, "", problem=flagged > 0)
             if flagged:
                 self._paint(row, WARN)
             self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),

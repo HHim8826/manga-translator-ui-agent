@@ -174,8 +174,8 @@ async def run_agent_workflow(
                     for item in review:
                         if item.get("status") == "reviewed":
                             reviewed.add(_key(item["image"]))
-                            log(f"[Agent] {item['page']}: inpaint reviewed, {item.get('retried', 0)} redone, "
-                                f"{item.get('flagged', 0)} flagged")
+                            log(f"[Agent] {item['page']}: inpaint reviewed, {item.get('filled', 0)} flat-filled, "
+                                f"{item.get('retried', 0)} redone, {item.get('flagged', 0)} flagged")
                         else:
                             log(f"[Agent] {item['page']}: inpaint {item.get('status')} "
                                 f"({item.get('reason') or item.get('error', '')})")

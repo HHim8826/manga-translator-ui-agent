@@ -8,7 +8,8 @@ import cv2
 import numpy as np
 
 from manga_translator.agent.events import EventLog, read_events
-from manga_translator.agent.inpaint import FILL, InpaintError, InpaintPage, decode_mask, fill_patch
+from manga_translator.agent import inpaint as inpaint_module
+from manga_translator.agent.inpaint import FILL, InpaintError, InpaintPage, background, decode_mask, fill_patch
 from manga_translator.agent.inpaint_review import InpaintReviewer
 from manga_translator.agent.runner import ChatReply, ToolCall
 from manga_translator.agent.settings import AgentSettings
@@ -218,7 +219,8 @@ def test_review_fixes_residual_text_and_saves_everything(tmp_path):
     script = [_calls(("adjust_mask", {"id": 1, "op": "dilate", "px": 3, "scope": "residual", "reason": "殘字"}),
                      ("inpaint_region", {"id": 1, "reason": "重修"})),
               _calls(("finish_review", {}))]
-    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, script, holes=[(70, 40, 110, 80)])
+    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, script, holes=[(70, 40, 110, 80)],
+                                                                          fill_flat_areas=False)
     outcome = asyncio.run(reviewer.review_page(path))
     events.close()
     assert outcome["status"] == "reviewed" and outcome["retried"] == 1 and outcome["flagged"] == 0
@@ -246,7 +248,8 @@ def test_review_fixes_residual_text_and_saves_everything(tmp_path):
 
 def test_review_warns_once_then_flags_what_is_left(tmp_path):
     script = [_calls(("finish_review", {})), _calls(("finish_review", {"note": "ok"}))]
-    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, script, holes=[(70, 40, 110, 80)])
+    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, script, holes=[(70, 40, 110, 80)],
+                                                                          fill_flat_areas=False)
     outcome = asyncio.run(reviewer.review_page(path))
     events.close()
     tool_messages = [m for m in client.requests[1] if m.get("role") == "tool"]
@@ -270,3 +273,108 @@ def test_review_limits_attempts_and_steps(tmp_path):
     assert side["inpaint"]["units"]["2"]["attempts"][1]["method"] == FILL
     assert side["review_flags"][-1]["reason"] == "修圖審查在 3 步後停止，沒有完成"
     assert not side["inpaint"]["finished"] and outcome["status"] == "reviewed"
+
+
+# --- flat fill in the first pass -------------------------------------------------------
+def _text_on(background_image):
+    """Black letters on the given background, the mask = the letters grown by 3px."""
+    image = background_image.copy()
+    _letters(image, 50, 50, "AB", 30)
+    ink = (cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) < 40) & (cv2.cvtColor(background_image, cv2.COLOR_RGB2GRAY) >= 40)
+    mask = cv2.dilate(ink.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+    return image, mask
+
+
+def test_background_tells_flat_paper_from_tone_gradient_and_art():
+    white = np.full((140, 140, 3), 255, np.uint8)
+    image, mask = _text_on(white)
+    bg = background(image, mask)
+    assert bg.flat and (bg.color == 255).all() and bg.art == 0
+    # screentone: small dots all around the text
+    tone = white.copy()
+    for y in range(0, 140, 6):
+        for x in range(0, 140, 6):
+            cv2.circle(tone, (x, y), 1, (0, 0, 0), -1)
+    image, mask = _text_on(tone)
+    assert not background(image, mask).flat
+    # dense tone merges into one shape that runs under the text
+    dense = white.copy()
+    dense[::2, ::2] = 60
+    dense[1::2, 1::2] = 60
+    image, mask = _text_on(dense)
+    assert not background(image, mask).flat
+    # a gradient
+    ramp = np.repeat(np.linspace(100, 255, 140, dtype=np.uint8)[None, :, None], 140, axis=0).repeat(3, axis=2)
+    image, mask = _text_on(np.ascontiguousarray(ramp))
+    assert not background(image, mask).flat
+    # an outline running through the mask's margin (a tight bubble) stays flat, and the fill keeps it
+    image, mask = _text_on(white)
+    top = int(np.nonzero(mask.any(axis=1))[0].min())
+    image[top + 1] = 0
+    bg = background(image, mask)
+    assert bg.flat and 0 < bg.art <= inpaint_module.FLAT_ART and bg.keep.any() and bg.ends == 0
+    patch, filled, note = inpaint_module.flat_fill(image, mask)
+    assert not (filled & bg.keep).any() and "lines crossing the mask kept" in note
+    assert np.array_equal(patch[bg.keep], image[bg.keep]), "the line stays as drawn"
+    # a line that ends at the text (the text interrupts it): a fill cannot join it
+    image, mask = _text_on(white)
+    column = int(np.nonzero(mask.any(axis=0))[0].max()) - 4
+    top = int(np.nonzero(mask[:, column])[0].min())
+    cv2.line(image, (column, 0), (column, top + 2), (0, 0, 0), 2)
+    bg = background(image, mask)
+    assert bg.plain and bg.art <= inpaint_module.FLAT_ART and bg.ends >= 1 and not bg.flat
+    # a thick black line (hair, a panel border) running through the text: art, not text
+    image, mask = _text_on(white)
+    image[:, 55:59] = 0
+    bg = background(image, mask)
+    assert not bg.flat and bg.art > inpaint_module.FLAT_ART
+
+
+def test_first_pass_fills_flat_areas_and_keeps_the_model_result(tmp_path):
+    image, mask, regions = _page()
+    backend = FakeBackend(holes=[(70, 40, 110, 80)])  # the model leaves letter A in #1
+    page = InpaintPage(image, mask, regions, backend, "001")
+    asyncio.run(page.initial("lama_large", fill_flat=True))
+    unit = page.by_id[1]
+    assert unit.auto_fill and [a.method for a in unit.attempts] == ["lama_large", FILL]
+    assert unit.attempts[0].residual and unit.current.issues == [] and "flat background" in unit.current.note
+    assert all(u.auto_fill for u in page.units) and page.score() == 1.0
+    assert backend.calls == [("lama_large", int((mask > 0).sum()))], "no extra model call"
+    result = page.composite()
+    assert np.array_equal(result[page.final_mask() == 0], image[page.final_mask() == 0])
+    saved = page.save_candidates(str(tmp_path / "candidates"))
+    assert saved["1"]["auto_fill"] and saved["1"]["chosen"] == 2
+    page.pick(unit, 1)
+    assert unit.current.residual, "the model's result stays available"
+
+
+def test_first_pass_keeps_the_model_result_when_the_fill_is_worse(monkeypatch):
+    image, mask, regions = _page()
+    real = inpaint_module.flat_fill
+
+    def smudged(crop, area):
+        patch, filled, note = real(crop, area)
+        ys, xs = np.nonzero(filled)
+        patch[ys.min():ys.min() + 12, xs.min():xs.min() + 12] = 0  # a dark blot the detector reads as text
+        return patch, filled, note
+
+    monkeypatch.setattr(inpaint_module, "flat_fill", smudged)
+    page = InpaintPage(image, mask, regions, FakeBackend(), "001")
+    asyncio.run(page.initial("lama_large", fill_flat=True))
+    unit = page.by_id[1]
+    assert len(unit.attempts) == 2 and unit.chosen == 0 and not unit.auto_fill
+    assert unit.attempts[1].residual and unit.current.issues == []
+
+
+def test_review_reports_flat_filled_areas(tmp_path):
+    reviewer, client, backend, store, events, path, json_path = _reviewer(
+        tmp_path, [_calls(("finish_review", {}))], holes=[(70, 40, 110, 80)])
+    outcome = asyncio.run(reviewer.review_page(path))
+    events.close()
+    text = client.requests[0][1]["content"][0]["text"]
+    assert "3 area(s) on a flat background were filled with its color instead" in text
+    assert "#1 (region #1, " in text and "flat fill): no program findings" in text
+    assert outcome["filled"] == 3 and outcome["retried"] == 0 and outcome["flagged"] == 0
+    logged = read_events(events.path)
+    assert logged[0]["type"] == "inpaint_start" and logged[0]["filled"] == 3 and logged[-1]["filled"] == 3
+    assert "Areas on a flat background were already filled" in reviewer.system_prompt()
