@@ -360,8 +360,9 @@ class AgentRunner:
             self.compact("threshold")
         self.session.start_page(index, doc)
         page = doc.stem
+        boxes = doc.boxes()
         self.events.emit("page_start", page=page, index=index, total=len(self.pages),
-                         regions=len(doc.active_regions()))
+                         regions=len(doc.active_regions()), image=doc.image_path, boxes=boxes)
         recalled = await self._recall(index, doc) if st.recall_pass else []
         self.history.append((index, self._page_message(index, doc, recalled)))
         done = False
@@ -395,8 +396,12 @@ class AgentRunner:
                 result = self.registry.execute(call.name, call.arguments)
                 if not result.ok and call.name != "mark_page_done":
                     self.session.page_tool_errors += 1
+                extra = {}
+                now = doc.boxes()
+                if now != boxes:  # the regions changed: the Agents page redraws its boxes
+                    boxes = extra["boxes"] = now
                 self.events.emit("tool_result", page=page, tool=call.name, ok=result.ok, summary=result.summary,
-                                 images=len(result.images))
+                                 images=len(result.images), **extra)
                 content: Any = result.text
                 if single and result.ok and call.name in BATCHED_SAVES and len(doc.missing()) >= 2:
                     # One save per response costs a request each; ask for the rest in one go.
@@ -426,7 +431,7 @@ class AgentRunner:
         self.events.emit("page_done", page=doc.stem, status=doc.status, confidence=doc.confidence,
                          agent_confidence=doc.agent_confidence, check_score=doc.check_score,
                          checks=len(doc.checks), flags=len(doc.flags), missing=doc.missing(),
-                         memory=self.memory.counts())
+                         memory=self.memory.counts(), image=doc.image_path, boxes=doc.boxes())
         return outcome
 
     async def run(self) -> List[Dict[str, Any]]:

@@ -1603,5 +1603,20 @@
   "Agents Fonts": "字体",
   "Agents Fonts Detail": "更换 {changed} 个区域，仍缺字 {unfixed} 个",
   "Agents Fonts Missing": "缺「{chars}」",
-  "Agents Fonts Layout": "换字体后会跑位"
+  "Agents Fonts Layout": "换字体后会跑位",
+  "Agents Preview": "预览",
+  "Agents Preview Original": "原图",
+  "Agents Preview Inpainted": "去字",
+  "Agents Preview Result": "结果",
+  "Agents Preview Compare": "对比",
+  "Agents Preview Follow": "跟随进度",
+  "Agents Preview Boxes": "区域框",
+  "Agents Preview Boxes Tip": "原图上的区域框：绿＝已翻译，灰＝待处理，虚线＝略过，橙＝待确认",
+  "Agents Preview Empty": "开始翻译后，这里会显示正在处理的页面",
+  "Agents Preview Missing": "找不到图片：{file}",
+  "Agents Preview Hint": "对比时拖动分隔线；双击用默认程序打开这张图",
+  "Agents Render": "排版",
+  "Agents Render Start": "排版 {pages} 页",
+  "Agents Render Detail": "已保存 {file}",
+  "Agents Render Progress": "排版中：{page}"
 }

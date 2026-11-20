@@ -590,9 +590,14 @@ class InpaintReviewer:
         retried = sum(1 for u in page.units if u.retries)
         filled = sum(1 for u in page.units if u.auto_fill)
         flagged = sum(1 for u in page.units if u.flagged) + sum(1 for f in session.flags if f["region"] is None)
+        inpainted = None
+        if self.save_image is not None:  # where the Agents page preview finds the result
+            from ..utils.path_manager import find_inpainted_path
+            inpainted = find_inpainted_path(doc.image_path)
         self.events.emit("inpaint_done", page=stem, agent="inpaint", status=side.get("status") or "done",
                          units=len(page.units), retried=retried, filled=filled, flagged=flagged, score=score,
-                         confidence=confidence, flags=len(flags), steps=session.steps, usage=usage)
+                         confidence=confidence, flags=len(flags), steps=session.steps, usage=usage,
+                         image=doc.image_path, inpainted=inpainted)
         return {"page": stem, "image": doc.image_path, "status": "reviewed", "units": len(page.units),
                 "retried": retried, "filled": filled, "flagged": flagged, "score": score, "confidence": confidence}
 

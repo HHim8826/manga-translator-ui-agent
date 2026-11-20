@@ -352,6 +352,9 @@ class MangaTranslator:
         self.disable_onnx_gpu = False
 
         self._progress_hooks = []
+        # Called with the context after each translated image is saved (the agent workflow's
+        # render step uses it to tell the Agents page where each result is).
+        self.on_result_saved = None
         self._add_logger_hook()
         
         # 取消检查回调（用于Web服务器等场景）
@@ -704,7 +707,12 @@ class MangaTranslator:
                     RuntimeError(f"Failed to save output file: {os.path.basename(final_output_path)}"),
                     stage='saving',
                 )
-            
+            if success and self.on_result_saved is not None:
+                try:
+                    self.on_result_saved(ctx)
+                except Exception as hook_err:
+                    logger.debug(f"on_result_saved hook failed: {hook_err}")
+
             # 导出可编辑PSD（如果启用）
             if success and config and hasattr(config, 'cli') and hasattr(config.cli, 'export_editable_psd') and config.cli.export_editable_psd:
                 try:

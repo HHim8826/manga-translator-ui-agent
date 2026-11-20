@@ -3,7 +3,8 @@
 Layout (design doc, "Agents 頁面"), M2 skeleton:
 * header: run status, current page, context usage bar, open a run log, problems-only filter
 * left: pages with their state and review-flag count (click to filter the timeline)
-* right: activity timeline (tool calls with the agent's reason, results, flags, errors)
+* middle: activity timeline (tool calls with the agent's reason, results, flags, errors)
+* right: live preview of one page, original -> inpainted -> result (``agent_preview``)
 * footer: memory counts (glossary, characters, story summary)
 
 Events come from ``manga_translator.agent.events`` on the worker thread and are
@@ -31,6 +32,8 @@ from qfluentwidgets import (
 )
 
 from manga_translator.agent import events as agent_events
+
+from .agent_preview import PagePreview
 
 TOOL_KEYS = {
     "get_candidates": "Agent Tool get_candidates",
@@ -83,6 +86,20 @@ MUTED = QColor(130, 130, 130)
 ALL_PAGES = "__all__"
 
 
+def _region_id(value) -> Optional[int]:
+    """The region number of a tool call or flag (``3`` or ``"#3"``), for the preview highlight."""
+    try:
+        return int(str(value).lstrip("#")) if value not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _own_region(event: dict, value) -> Optional[int]:
+    """Only the translating agent's region numbers match the preview's boxes (the inpaint review,
+    the proofreader and the font check number regions their own way)."""
+    return _region_id(value) if (event.get("agent") or "translator") == "translator" else None
+
+
 class AgentsPage(QWidget):
     event_received = pyqtSignal(dict)
 
@@ -97,6 +114,7 @@ class AgentsPage(QWidget):
         self._translating = False
         self._proofreading = False
         self._finished_text = ""
+        self._rendering: Dict[str, int] = {}
         self._build()
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
@@ -150,10 +168,13 @@ class AgentsPage(QWidget):
         self.timeline.setWordWrap(False)
         for column, width in enumerate((96, 56, 150, 280)):
             self.timeline.setColumnWidth(column, width)
+        self.timeline.currentItemChanged.connect(self._on_row_selected)
+        self.preview = PagePreview(self._t, splitter)
         splitter.addWidget(self.page_list)
         splitter.addWidget(self.timeline)
+        splitter.addWidget(self.preview)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([200, 800])
+        splitter.setSizes([190, 620, 420])
         root.addWidget(splitter, 1)
 
         self.memory_label = CaptionLabel(self)
@@ -172,6 +193,7 @@ class AgentsPage(QWidget):
             self.memory_label.setText("")
         self._update_context(None)
         self._rebuild_page_list()
+        self.preview.refresh_texts()
 
     # --- events -------------------------------------------------------------
     def _on_agent_event(self, event: dict) -> None:  # worker thread
@@ -180,6 +202,9 @@ class AgentsPage(QWidget):
     def handle_event(self, event: dict) -> None:
         kind = event.get("type")
         page = event.get("page") or ""
+        if kind in ("page_start", "page_done", "inpaint_done", "render_done") or event.get("boxes") is not None:
+            self.preview.update_page(page, image=event.get("image"), boxes=event.get("boxes"),
+                                     inpainted=event.get("inpainted"), output=event.get("output"))
         if kind == "run_start":
             self._reset([os.path.splitext(p)[0] for p in event.get("pages", [])])
             self._translating = True
@@ -188,13 +213,16 @@ class AgentsPage(QWidget):
             self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
             self._update_memory(event.get("memory"))
         elif kind == "page_start":
+            self.preview.follow(page)
             self._set_page(page, state="working")
             self.status_label.setText(self._t("Agents Page Progress", current=int(event.get("index", 0)) + 1,
                                               total=event.get("total", len(self._order)), page=page))
         elif kind == "tool_call":
             tool = event.get("tool", "")
+            args = event.get("args") if isinstance(event.get("args"), dict) else {}
+            ids = args.get("ids") if isinstance(args.get("ids"), list) and args.get("ids") else [None]
             row = self._add_row(event, self._t(TOOL_KEYS.get(tool, tool)) if tool in TOOL_KEYS else tool,
-                                "", event.get("reason", ""))
+                                "", event.get("reason", ""), region=_own_region(event, args.get("id", ids[0])))
             row.setToolTip(2, json.dumps(event.get("args", {}), ensure_ascii=False)[:2000])
             self._pending_rows.setdefault(f"{page}|{tool}", []).append(row)
         elif kind == "tool_result":
@@ -217,7 +245,8 @@ class AgentsPage(QWidget):
                 row.setData(0, Qt.ItemDataRole.UserRole + 1, True)
                 self._apply_filter_to(row)
             else:
-                row = self._add_row(event, self._t("Agents Flag"), detail, event.get("reason", ""), problem=True)
+                row = self._add_row(event, self._t("Agents Flag"), detail, event.get("reason", ""), problem=True,
+                                    region=_own_region(event, region))
             self._paint(row, WARN)
             info = self._pages.setdefault(page, {"state": "working", "flags": 0})
             info["flags"] = info.get("flags", 0) + 1
@@ -258,6 +287,8 @@ class AgentsPage(QWidget):
                 self._paint(row, WARN)
             self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
                            confidence=event.get("confidence"))
+            if not self._translating and not self._rendering:
+                self.preview.follow(page)
             self._show_finished_if_idle()
         elif kind == "proofread_start":
             self._proofreading = True
@@ -286,6 +317,28 @@ class AgentsPage(QWidget):
                                 "; ".join(reasons), problem=unfixed > 0)
             if unfixed:
                 self._paint(row, WARN)
+        elif kind == "render_start":
+            run = str(event.get("run") or "")
+            self._rendering[run] = int(event.get("pages") or 0)
+            text = self._t("Agents Render Start", pages=event.get("pages", 0))
+            self.status_label.setText(text)
+            self._add_row(event, self._t("Agents Render"), text, "")
+        elif kind == "render_done":
+            self.preview.follow(page)
+            output = event.get("output") or ""
+            row = self._add_row(event, self._t("Agents Render"),
+                                self._t("Agents Render Detail", file=os.path.basename(output)), "")
+            row.setToolTip(3, output)
+            self._paint(row, MUTED)
+            run = str(event.get("run") or "")
+            left = self._rendering.get(run, 0) - 1
+            if left > 0:
+                self._rendering[run] = left
+                self.status_label.setText(self._t("Agents Render Progress", page=page))
+            else:
+                self._rendering.pop(run, None)
+                if self._finished_text and not self._rendering:
+                    self.status_label.setText(self._finished_text)
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)
@@ -330,10 +383,14 @@ class AgentsPage(QWidget):
         self._pages = {p: {"state": "waiting", "flags": 0} for p in pages}
         self._order = list(pages)
         self._page_filter = ALL_PAGES
+        self._rendering.clear()
+        self.preview.reset()
+        self.preview.set_following(True)
         self._update_context(0)
         self._rebuild_page_list()
 
-    def _add_row(self, event: dict, action: str, detail: str, reason: str, problem: bool = False) -> QTreeWidgetItem:
+    def _add_row(self, event: dict, action: str, detail: str, reason: str, problem: bool = False,
+                 region=None) -> QTreeWidgetItem:
         ts = str(event.get("ts", ""))
         clock = ts[11:19] if len(ts) >= 19 else ts
         row = QTreeWidgetItem([clock, event.get("page") or "", action, detail, reason or ""])
@@ -341,6 +398,7 @@ class AgentsPage(QWidget):
         row.setToolTip(4, reason or "")
         row.setData(0, Qt.ItemDataRole.UserRole, event.get("page") or "")
         row.setData(0, Qt.ItemDataRole.UserRole + 1, problem)
+        row.setData(0, Qt.ItemDataRole.UserRole + 2, _region_id(region))
         self.timeline.addTopLevelItem(row)
         self._apply_filter_to(row)
         if not row.isHidden():
@@ -406,6 +464,18 @@ class AgentsPage(QWidget):
             return
         self._page_filter = current.data(Qt.ItemDataRole.UserRole) or ALL_PAGES
         self._apply_filter()
+        if self._page_filter == ALL_PAGES:
+            self.preview.set_following(True)
+        else:
+            self.preview.show_page(self._page_filter)
+
+    def _on_row_selected(self, current, _previous) -> None:
+        """A timeline row: show its page, and its region when it has one."""
+        if current is None:
+            return
+        page = current.data(0, Qt.ItemDataRole.UserRole) or ""
+        if page and page in self.preview.pages:
+            self.preview.show_page(page, highlight=current.data(0, Qt.ItemDataRole.UserRole + 2))
 
     def _update_context(self, tokens: Optional[int]) -> None:
         if tokens is not None:

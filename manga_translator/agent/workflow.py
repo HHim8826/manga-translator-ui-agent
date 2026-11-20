@@ -173,6 +173,48 @@ async def _font_service(translator, config, settings: AgentSettings, target_lang
     return service
 
 
+class _RenderEvents:
+    """``render_start``/``render_done`` in each chapter's run log, so the Agents page can show
+    every page's result as soon as it is saved (and a replayed log finds it too)."""
+
+    def __init__(self, chapters: Dict[str, Tuple[str, str]]):
+        self.chapters = chapters  # work dir -> (run log path, run id)
+        self.logs: Dict[str, EventLog] = {}
+
+    def _log(self, image_path: str) -> Optional[EventLog]:
+        from ..utils.path_manager import get_work_dir
+
+        work_dir = get_work_dir(image_path)
+        if work_dir not in self.chapters:
+            return None
+        if work_dir not in self.logs:
+            path, run_id = self.chapters[work_dir]
+            self.logs[work_dir] = EventLog(path, run_id)
+        return self.logs[work_dir]
+
+    def start(self, paths: Sequence[str]) -> None:
+        for work_dir, pages in group_by_chapter(paths):
+            log = self._log(pages[0])
+            if log is not None:
+                log.emit("render_start", agent="render", pages=len(pages))
+
+    def saved(self, ctx) -> None:  # the translator's on_result_saved hook
+        from ..utils.path_manager import find_inpainted_path
+
+        image = _image_path(getattr(ctx, "image_name", "") or "")
+        if not image:
+            return
+        log = self._log(image)
+        if log is not None:
+            log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
+                     image=image, output=getattr(ctx, "output_path", None), inpainted=find_inpainted_path(image))
+
+    def close(self) -> None:
+        for log in self.logs.values():
+            log.close()
+        self.logs.clear()
+
+
 async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> List[dict]:
     """Review pages as they arrive until ``None``."""
     outcomes: List[dict] = []
@@ -236,10 +278,12 @@ async def run_agent_workflow(
             await _font_service(translator, config, settings, target_lang, log)
         outcomes: List[dict] = []
         reviewed: set = set()
+        chapter_logs: Dict[str, Tuple[str, str]] = {}
         for work_dir, pages in group_by_chapter(paths):
             store = AgentStore(work_dir, settings.memory_dir)
             run_id = new_run_id()
             events = EventLog(store.run_log_path(run_id), run_id)
+            chapter_logs[work_dir] = (events.path, run_id)
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
             if hasattr(client, "session_id"):  # one session per chapter run on the API side
                 client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"
@@ -323,14 +367,22 @@ async def run_agent_workflow(
         render_items = [(image, cfg) for image, cfg in images_with_configs if find_json_path(_image_path(image))]
         log(f"[Agent] 4/4 Render: typesetting {len(render_items)} page(s)")
         results: list = []
-        # Reviewed pages reuse the inpainted image the review saved; the others
-        # must not pick up an older one made before the agent changed the mask.
-        for reuse in (True, False):
-            batch = [item for item in render_items if (_key(_image_path(item[0])) in reviewed) == reuse]
-            if batch:
-                _set_mode(translator, load_text=True, save_text=True, skip_txt_import=True,
-                          ignore_existing_inpainted=not reuse)
-                results.extend(await translator.translate_batch(batch, save_info=save_info))
+        render_events = _RenderEvents(chapter_logs)
+        saved_hook = getattr(translator, "on_result_saved", None)
+        translator.on_result_saved = render_events.saved
+        try:
+            render_events.start([_image_path(image) for image, _ in render_items])
+            # Reviewed pages reuse the inpainted image the review saved; the others
+            # must not pick up an older one made before the agent changed the mask.
+            for reuse in (True, False):
+                batch = [item for item in render_items if (_key(_image_path(item[0])) in reviewed) == reuse]
+                if batch:
+                    _set_mode(translator, load_text=True, save_text=True, skip_txt_import=True,
+                              ignore_existing_inpainted=not reuse)
+                    results.extend(await translator.translate_batch(batch, save_info=save_info))
+        finally:
+            translator.on_result_saved = saved_hook
+            render_events.close()
         return results
     finally:
         for name, value in saved.items():

@@ -12,9 +12,14 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 from manga_translator.agent.events import EventLog  # noqa: E402
 
 
+_APP = []
+
+
 @pytest.fixture(scope="module")
 def app():
-    return QApplication.instance() or QApplication([])
+    if not _APP:  # kept for the whole session: a second QApplication breaks qfluentwidgets' config object
+        _APP.append(QApplication.instance() or QApplication([]))
+    return _APP[0]
 
 
 def _t(key, **kwargs):

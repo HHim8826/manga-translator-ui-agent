@@ -178,6 +178,17 @@ class PageDoc:
     def missing(self) -> List[int]:
         return [r.id for r in self.active_regions() if not r.done]
 
+    def boxes(self) -> List[list]:
+        """``[id, x1, y1, x2, y2, state]`` of each active region, for the Agents page preview;
+        state is ``pending``, ``done``, ``skipped`` or ``flagged``."""
+        flagged = {f.get("region") for f in self.flags}
+        out = []
+        for r in self.active_regions():
+            state = "skipped" if r.skipped else "flagged" if r.id in flagged else \
+                "done" if r.translation else "pending"
+            out.append([r.id, *r.bbox, state])
+        return out
+
     # --- history ------------------------------------------------------------
     def _checkpoint(self, label: str) -> None:
         self._history.append((label, copy.deepcopy(self.regions), list(self.order), copy.deepcopy(self.flags)))

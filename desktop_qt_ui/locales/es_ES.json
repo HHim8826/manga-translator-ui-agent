@@ -1593,5 +1593,20 @@
   "Agents Fonts": "Fuentes",
   "Agents Fonts Detail": "{changed} regiones cambiadas, {unfixed} con caracteres que faltan",
   "Agents Fonts Missing": "sin {chars}",
-  "Agents Fonts Layout": "movería el texto"
+  "Agents Fonts Layout": "movería el texto",
+  "Agents Preview": "Vista previa",
+  "Agents Preview Original": "Original",
+  "Agents Preview Inpainted": "Sin texto",
+  "Agents Preview Result": "Resultado",
+  "Agents Preview Compare": "Comparar",
+  "Agents Preview Follow": "Seguir el progreso",
+  "Agents Preview Boxes": "Cuadros",
+  "Agents Preview Boxes Tip": "Cuadros sobre el original: verde = traducido, gris = pendiente, discontinuo = omitido, naranja = marcado",
+  "Agents Preview Empty": "La página en curso aparece aquí cuando empieza la traducción",
+  "Agents Preview Missing": "No se encuentra la imagen: {file}",
+  "Agents Preview Hint": "Arrastra el divisor para comparar; doble clic para abrir la imagen",
+  "Agents Render": "Maquetación",
+  "Agents Render Start": "Maquetando {pages} página(s)",
+  "Agents Render Detail": "Guardado {file}",
+  "Agents Render Progress": "Maquetando {page}"
 }

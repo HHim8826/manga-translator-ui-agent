@@ -1593,5 +1593,20 @@
   "Agents Fonts": "フォント",
   "Agents Fonts Detail": "{changed} 領域を変更、{unfixed} 領域で字形不足",
   "Agents Fonts Missing": "「{chars}」なし",
-  "Agents Fonts Layout": "配置がずれる"
+  "Agents Fonts Layout": "配置がずれる",
+  "Agents Preview": "プレビュー",
+  "Agents Preview Original": "原画像",
+  "Agents Preview Inpainted": "文字消去",
+  "Agents Preview Result": "結果",
+  "Agents Preview Compare": "比較",
+  "Agents Preview Follow": "進行に追従",
+  "Agents Preview Boxes": "領域枠",
+  "Agents Preview Boxes Tip": "原画像の領域枠：緑＝翻訳済み、灰＝未処理、破線＝スキップ、橙＝要確認",
+  "Agents Preview Empty": "翻訳を始めると、処理中のページがここに表示されます",
+  "Agents Preview Missing": "画像が見つかりません：{file}",
+  "Agents Preview Hint": "比較では区切り線をドラッグ、ダブルクリックでこの画像を開く",
+  "Agents Render": "写植",
+  "Agents Render Start": "{pages} ページを写植",
+  "Agents Render Detail": "{file} を保存",
+  "Agents Render Progress": "写植中：{page}"
 }

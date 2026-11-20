@@ -1602,5 +1602,20 @@
   "Agents Fonts": "字型",
   "Agents Fonts Detail": "更換 {changed} 個區域，仍缺字 {unfixed} 個",
   "Agents Fonts Missing": "缺「{chars}」",
-  "Agents Fonts Layout": "換字型後會跑位"
+  "Agents Fonts Layout": "換字型後會跑位",
+  "Agents Preview": "預覽",
+  "Agents Preview Original": "原圖",
+  "Agents Preview Inpainted": "去字",
+  "Agents Preview Result": "結果",
+  "Agents Preview Compare": "對比",
+  "Agents Preview Follow": "跟隨進度",
+  "Agents Preview Boxes": "區域框",
+  "Agents Preview Boxes Tip": "原圖上的區域框：綠＝已翻譯，灰＝待處理，虛線＝略過，橙＝待確認",
+  "Agents Preview Empty": "開始翻譯後，這裡會顯示正在處理的頁面",
+  "Agents Preview Missing": "找不到圖片：{file}",
+  "Agents Preview Hint": "對比時拖曳分隔線；按兩下用預設程式開啟這張圖",
+  "Agents Render": "排版",
+  "Agents Render Start": "排版 {pages} 頁",
+  "Agents Render Detail": "已存檔 {file}",
+  "Agents Render Progress": "排版中：{page}"
 }

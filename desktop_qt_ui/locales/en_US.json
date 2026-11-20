@@ -1604,5 +1604,20 @@
   "Agents Fonts": "Fonts",
   "Agents Fonts Detail": "{changed} region(s) changed, {unfixed} still missing characters",
   "Agents Fonts Missing": "lacks {chars}",
-  "Agents Fonts Layout": "would move the text"
+  "Agents Fonts Layout": "would move the text",
+  "Agents Preview": "Preview",
+  "Agents Preview Original": "Original",
+  "Agents Preview Inpainted": "Inpainted",
+  "Agents Preview Result": "Result",
+  "Agents Preview Compare": "Compare",
+  "Agents Preview Follow": "Follow progress",
+  "Agents Preview Boxes": "Region boxes",
+  "Agents Preview Boxes Tip": "Region boxes on the original: green = translated, gray = pending, dashed = skipped, orange = flagged",
+  "Agents Preview Empty": "The page being worked on appears here once a run starts",
+  "Agents Preview Missing": "Image not found: {file}",
+  "Agents Preview Hint": "Drag the divider to compare; double-click to open this image",
+  "Agents Render": "Typeset",
+  "Agents Render Start": "Typesetting {pages} page(s)",
+  "Agents Render Detail": "Saved {file}",
+  "Agents Render Progress": "Typesetting {page}"
 }
