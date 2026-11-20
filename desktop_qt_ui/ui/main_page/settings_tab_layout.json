@@ -157,6 +157,35 @@
       ]
     },
     {
+      "id": "tab_agent",
+      "title": "AI Agent",
+      "marked": false,
+      "items": [
+        "agent.inpaint_review",
+        "agent.review_while_translating",
+        "agent.fill_flat_areas",
+        "agent.recall_pass",
+        "agent.use_work_prompt",
+        "agent.proofread",
+        "agent.fix_missing_glyphs",
+        "agent.choose_fonts",
+        {
+          "kind": "divider",
+          "title": "Advanced"
+        },
+        "agent.model",
+        "agent.extra_instructions",
+        "agent.max_context_tokens",
+        "agent.compact_threshold_tokens",
+        "agent.keep_images_last_n_pages",
+        "agent.max_steps_per_page",
+        "agent.inpaint_review_steps",
+        "agent.inpaint_attempts_per_region",
+        "agent.proofread_steps",
+        "agent.low_confidence_threshold"
+      ]
+    },
+    {
       "id": "tab_custom_6",
       "title": "Mode Specific",
       "marked": false,
