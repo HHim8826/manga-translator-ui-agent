@@ -226,7 +226,8 @@ class AgentsPage(QWidget):
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)
         elif kind == "page_done":
-            self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"))
+            self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
+                           confidence=event.get("confidence"))
             self._update_memory(event.get("memory"))
         elif kind == "run_end":
             totals = event.get("totals") or {}
@@ -277,7 +278,7 @@ class AgentsPage(QWidget):
         for index in range(self.timeline.topLevelItemCount()):
             self._apply_filter_to(self.timeline.topLevelItem(index))
 
-    def _set_page(self, page: str, state: str, flags=None) -> None:
+    def _set_page(self, page: str, state: str, flags=None, confidence=None) -> None:
         if not page:
             return
         if page not in self._pages:
@@ -286,6 +287,8 @@ class AgentsPage(QWidget):
         info["state"] = state
         if flags is not None:
             info["flags"] = int(flags)
+        if confidence is not None:
+            info["confidence"] = float(confidence)
         self._rebuild_page_list()
 
     def _rebuild_page_list(self) -> None:
@@ -299,6 +302,8 @@ class AgentsPage(QWidget):
                 info = self._pages.get(page, {})
                 state = self._t(PAGE_STATE_KEYS.get(info.get("state", "waiting"), "Agent Page Waiting"))
                 text = f"{page} · {state}"
+                if info.get("confidence") is not None:
+                    text += f" · {round(info['confidence'] * 100)}%"
                 if info.get("flags"):
                     text += " · " + self._t("Agents Flag Count", count=info["flags"])
                 item = QListWidgetItem(text)

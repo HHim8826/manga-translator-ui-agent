@@ -125,6 +125,11 @@ class PageDoc:
         self.flags: List[dict] = []
         self.status = "pending"
         self.confidence: Optional[float] = None
+        """Page confidence: the lower of the agent's number and the program check score."""
+        self.agent_confidence: Optional[float] = None
+        self.check_score: Optional[float] = None
+        self.checks: List[dict] = []
+        """Program check issues left when the page was finished (see checks.py)."""
         self.note = ""
         self._history: List[tuple] = []
         self._next_link = 1
@@ -430,6 +435,8 @@ class PageDoc:
             "page": os.path.basename(self.image_path),
             "status": self.status,
             "confidence": self.confidence,
+            "agent_confidence": self.agent_confidence,
+            "check_score": self.check_score,
             "note": self.note,
             "order": self.order,
             "regions": [
@@ -448,8 +455,10 @@ class PageDoc:
                     "merged_into": r.merged_into,
                     "link_group": r.link_group,
                     "reasons": r.reasons,
+                    "checks": [c["code"] for c in self.checks if c.get("region") == r.id],
                 }
                 for r in (self.regions[i] for i in self.order)
             ],
             "review_flags": self.flags,
+            "checks": self.checks,
         }

@@ -99,6 +99,8 @@ def test_recall_events_show_added_regions_and_failures(app):
     assert rows[1].text(3) == "RuntimeError: down"
     page.problems_only.setChecked(True)
     assert [r.isHidden() for r in rows] == [True, False, True]
+    page.handle_event({"type": "page_done", "page": "004", "status": "done", "confidence": 0.846, "flags": 0})
+    assert page.page_list.item(1).text() == "004 · Agent Page Done · 85%"
 
 
 def test_live_events_arrive_through_the_listener(app, tmp_path):

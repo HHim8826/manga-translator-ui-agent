@@ -22,8 +22,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from . import images
-from .page import CATEGORIES, FLAG_TYPES, PageDoc, RegionError
+from . import checks, images
+from .page import CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
@@ -45,8 +45,10 @@ class ToolResult:
 class AgentSession:
     """Everything the tools act on during one run."""
 
-    def __init__(self, settings: AgentSettings, memory: AgentMemory, pages: List[str], events=None):
+    def __init__(self, settings: AgentSettings, memory: AgentMemory, pages: List[str], events=None,
+                 target_lang: str = ""):
         self.settings = settings
+        self.target_lang = target_lang
         self.memory = memory
         self.pages = pages
         self.events = events
@@ -58,6 +60,21 @@ class AgentSession:
         self.past: List[Dict[str, Any]] = []
         self.last_prompt_tokens = 0
         self.page_steps = 0
+        self._reset_page_state()
+
+    def _reset_page_state(self) -> None:
+        self.zoomed_ids: set = set()
+        self.zoom_boxes: List[List[float]] = []
+        self.review_shown = False
+        self.recall_failed = False
+        self.page_tool_errors = 0
+
+    def was_zoomed(self, region: Region) -> bool:
+        """Zoomed by id (also before a merge into it), or inside a zoomed area."""
+        if any(self.doc._final(self.doc.regions[i]).id == region.id for i in self.zoomed_ids if i in self.doc.regions):
+            return True
+        cx, cy = region.center
+        return any(x1 <= cx <= x2 and y1 <= cy <= y2 for x1, y1, x2, y2 in self.zoom_boxes)
 
     @property
     def page_name(self) -> str:
@@ -70,6 +87,7 @@ class AgentSession:
         self.page_array = np.asarray(self.page_image)
         self.last_view = None
         self.page_steps = 0
+        self._reset_page_state()
 
     def finish_page(self) -> None:
         if self.doc is None:
@@ -178,9 +196,11 @@ def zoom(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if a.get("id") not in (None, ""):
         region = s.doc.get(a["id"])
         box, label, skip_id = region.bbox, f"#{region.id}", region.id
+        s.zoomed_ids.add(region.id)
     elif a.get("box") is not None:
         box = _page_box(s, a["box"])
         label, skip_id = "area [" + ", ".join(str(int(v)) for v in box) + "]", None
+        s.zoom_boxes.append(box)
     else:
         raise RegionError("give id (a region) or box ([x1, y1, x2, y2] page pixels, any area of the page)")
     others = [poly.tolist() for r in s.doc.active_regions() if r.id != skip_id for poly in r.polygons]
@@ -365,15 +385,42 @@ def mark_page_done(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
         return ToolResult(text=(f"Not finished: {ids} have neither a translation nor a skip. "
                                 "Call set_text or skip_region for each, then mark_page_done again."),
                           ok=False, summary=f"missing {ids}")
-    confidence = max(0.0, min(1.0, float(a.get("confidence", 0))))
-    s.doc.status = "done"
-    s.doc.confidence = confidence
-    s.doc.note = a.get("note", "")
-    if confidence < s.settings.low_confidence_threshold:
-        entry = s.doc.flag(None, "low_confidence", a.get("note") or f"page confidence {confidence:.2f}")
+    agent_confidence = max(0.0, min(1.0, float(a.get("confidence", 0))))
+    issues = checks.page_issues(s)
+    lang = checks.human_language(s.target_lang)
+    if issues and not s.review_shown:
+        # One round of program checks: the model fixes what is wrong, then finishes.
+        s.review_shown = True
+        listed = "\n".join("- " + checks.agent_text(i) for i in issues)
+        return ToolResult(
+            text=("Not finished yet. The program checks found:\n" + listed + "\nFix what is really wrong "
+                  "(zoom, set_text, ...); leave what is fine as it is. Then call mark_page_done again: the second "
+                  "call finishes the page, and anything still listed lowers its confidence."),
+            ok=False, summary=checks.summary(lang, issues))
+    score = checks.page_score(s, issues)
+    doc = s.doc
+    doc.status = "done"
+    doc.agent_confidence = agent_confidence
+    doc.check_score = score
+    doc.confidence = round(min(score, agent_confidence), 3)
+    doc.checks = [i.to_dict() for i in issues]
+    doc.note = a.get("note", "")
+
+    def add_flag(region, flag_type, reason):
+        entry = doc.flag(region, flag_type, reason)
         if s.events:
-            s.events.emit("flag", page=s.page_name, region=None, flag="low_confidence", reason=entry["reason"])
-    return ToolResult(text="Page done.", summary=f"confidence {confidence:.2f}", page_done=True)
+            s.events.emit("flag", page=s.page_name, region=entry["region"], flag=flag_type, reason=reason,
+                          source="check")
+
+    for issue in issues:
+        if issue.code in checks.SERIOUS:
+            add_flag(issue.region, checks.SERIOUS[issue.code], checks.human_text(lang, issue.code, **issue.detail))
+    if doc.confidence < s.settings.low_confidence_threshold and not doc.flags:
+        add_flag(None, "low_confidence", a.get("note") or checks.human_text(
+            lang, "page", score=doc.confidence, summary=checks.summary(lang, issues)))
+    return ToolResult(text=(f"Page done. Confidence {doc.confidence:.2f} (program checks {score:.2f}, "
+                            f"yours {agent_confidence:.2f})."),
+                      summary=f"confidence {doc.confidence:.2f}", page_done=True)
 
 
 def budget_status(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -455,7 +502,9 @@ TOOLS: List[Tool] = [
     Tool("flag_for_review", "Put something on the human review list and keep going. Types: " + ", ".join(FLAG_TYPES),
          _obj({"id": ID, "type": {"type": "string", "enum": list(FLAG_TYPES)}, "reason": REASON},
               ["type", "reason"]), flag_for_review, writes=True),
-    Tool("mark_page_done", "Finish the page. Fails while any region has neither a translation nor a skip.",
+    Tool("mark_page_done", "Finish the page. Fails while any region has neither a translation nor a skip. The first "
+         "call also returns the program checks (kana left, glossary, second reads, length) to fix; the second "
+         "call finishes.",
          _obj({"confidence": {"type": "number", "description": "0-1 for the whole page"},
                "note": {"type": "string", "description": "Anything the human should know about this page"}},
               ["confidence"]), mark_page_done, writes=True),

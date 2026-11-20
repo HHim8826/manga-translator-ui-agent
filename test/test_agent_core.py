@@ -174,7 +174,7 @@ def test_mark_page_done_requires_every_region(tmp_path):
     first = tools.execute("mark_page_done", json.dumps({"confidence": 0.9}))
     assert not first.ok and "#1, #2, #3" in first.text
     for rid in (1, 2):
-        assert tools.execute("set_text", json.dumps({"id": rid, "source_text": "s", "translation": "t",
+        assert tools.execute("set_text", json.dumps({"id": rid, "source_text": f"text{rid}", "translation": "t",
                                                      "category": "dialogue", "confidence": 0.9})).ok
     assert tools.execute("skip_region", json.dumps({"id": 3, "category": "not_text", "reason": "no text"})).ok
     done = tools.execute("mark_page_done", json.dumps({"confidence": 0.5, "note": "puns"}))
@@ -219,7 +219,7 @@ def _calls(*calls):
 
 
 def _finish_page(n_regions=3):
-    calls = [("set_text", {"id": i, "source_text": f"s{i}", "translation": f"譯{i}", "category": "dialogue",
+    calls = [("set_text", {"id": i, "source_text": f"text{i}", "translation": f"譯{i}", "category": "dialogue",
                            "confidence": 0.9, "reason": "讀圖"}) for i in range(1, n_regions + 1)]
     return [_calls(*calls), _calls(("mark_page_done", {"confidence": 0.9}))]
 
@@ -432,8 +432,10 @@ def test_recall_check_adds_missed_text_before_the_page(tmp_path):
         {"box": [150, 200, 190, 230], "text": "?", "kind": "other", "direction": "v"},      # nothing there
         {"box": "bad", "text": "", "kind": "other", "direction": "v"},
     ], []]
-    script = [_calls(*[("set_text", {"id": i, "source_text": f"s{i}", "translation": f"譯{i}",
+    # #4 came from the recall check and was never zoomed: the first mark_page_done lists it
+    script = [_calls(*[("set_text", {"id": i, "source_text": f"text{i}", "translation": f"譯{i}",
                                      "category": "dialogue", "confidence": 0.9}) for i in range(1, 5)]),
+              _calls(("mark_page_done", {"confidence": 0.9})),
               _calls(("mark_page_done", {"confidence": 0.9}))] + _finish_page()
     runner, client, store, events = _runner(tmp_path, pages, script, recall=recall)
     outcomes = asyncio.run(runner.run())
@@ -480,3 +482,90 @@ def test_system_prompt_keeps_sound_effects_as_drawn(tmp_path):
     prompt = runner.system_prompt()
     assert "never translated: skip_region with category sfx" in prompt
     assert "Text inside a speech bubble is dialogue and gets translated" in prompt
+
+
+
+# --- program checks and page confidence -----------------------------------------------
+def _checked_session(tmp_path):
+    image_path, json_path = make_page(tmp_path)
+    memory = AgentMemory(str(tmp_path / "mem"))
+    memory.glossary_upsert("即死パンチ", "即死拳")
+    memory.character_upsert("ディメっち", {"target_name": "小迪梅（暱稱）"})
+    session = AgentSession(AgentSettings(), memory, [image_path], target_lang="CHT")
+    session.start_page(0, PageDoc.load(image_path, json_path))
+    return session, ToolRegistry(session)
+
+
+def _say(tools, rid, source, translation, confidence=0.95):
+    result = tools.execute("set_text", {"id": rid, "source_text": source, "translation": translation,
+                                        "category": "dialogue", "confidence": confidence})
+    assert result.ok, result.text
+
+
+def test_program_checks_are_shown_once_then_set_the_confidence(tmp_path):
+    session, tools = _checked_session(tmp_path)
+    _say(tools, 1, "ディメっちが即死パンチ", "迪梅っち用了即死之拳")   # kana left, glossary + character not used
+    _say(tools, 2, "text2", "好")
+    _say(tools, 3, "全然違う", "這是一段非常非常非常長的翻譯文字")    # reading differs from local OCR, too long
+    first = tools.execute("mark_page_done", {"confidence": 0.97})
+    assert not first.ok and not first.page_done
+    assert first.summary.startswith("1 個框留有假名；1 個框沒用術語表譯法；1 個框沒用角色譯名")
+    assert first.summary.endswith("2 個框沒有放大確認；1 個框譯文過長")
+    for expected in ("#1: the translation still contains Japanese kana 「っち」", "glossary translates it as 「即死拳」",
+                     "the character list says 「小迪梅（暱稱）」", "#3: your reading differs from the local OCR 「text3」",
+                     "#3: the translation has 16 characters"):
+        assert expected in first.text
+    # the agent fixes #1, zooms #1 and #3 but keeps the long translation
+    _say(tools, 1, "ディメっちが即死パンチ", "小迪梅用了即死拳")
+    assert tools.execute("zoom", {"id": 3}).ok and tools.execute("zoom", {"id": 1}).ok
+    done = tools.execute("mark_page_done", {"confidence": 0.97})
+    assert done.page_done and "program checks 0.85" in done.text
+    doc = session.doc
+    assert doc.check_score == 0.85 and doc.confidence == 0.85 and doc.agent_confidence == 0.97
+    assert [c["code"] for c in doc.checks] == ["overflow"] and not doc.flags
+    side = doc.sidecar()
+    assert side["check_score"] == 0.85 and side["regions"][2]["checks"] == ["overflow"]
+
+
+def test_unfixed_serious_checks_go_to_the_review_list(tmp_path):
+    session, tools = _checked_session(tmp_path)
+    _say(tools, 1, "text1", "はい")
+    _say(tools, 2, "text2", "好")
+    assert tools.execute("zoom", {"box": [0, 0, 320, 240]}).ok   # an area zoom counts for every region in it
+    _say(tools, 3, " ", "嗯")   # whitespace only: nothing was transcribed
+    assert not tools.execute("mark_page_done", {"confidence": 0.9}).ok
+    done = tools.execute("mark_page_done", {"confidence": 0.9})
+    assert done.page_done
+    doc = session.doc
+    assert {(f["region"], f["type"]) for f in doc.flags} == {(1, "uncertain_translation"), (3, "uncertain_ocr")}
+    assert doc.flags[0]["reason"] == "譯文裡還有日文假名「はい」"
+    assert doc.confidence == 0.5 and not any(f["type"] == "low_confidence" for f in doc.flags)
+
+
+def test_low_score_without_other_flags_adds_a_page_flag(tmp_path):
+    session, tools = _checked_session(tmp_path)
+    for rid in (1, 2, 3):
+        _say(tools, rid, f"text{rid}", "好", confidence=0.4)
+    assert tools.execute("zoom", {"box": [0, 0, 320, 240]}).ok
+    done = tools.execute("mark_page_done", {"confidence": 0.9})
+    assert done.page_done and session.doc.check_score == 0.5
+    flag = session.doc.flags[-1]
+    assert flag["type"] == "low_confidence" and flag["reason"].startswith("程式檢查的信心分數 0.50")
+
+
+def test_overflow_counts_letters_not_punctuation(tmp_path):
+    from types import SimpleNamespace
+
+    from manga_translator.agent import checks
+
+    session = SimpleNamespace(target_lang="CHT", memory=AgentMemory(str(tmp_path / "mem")),
+                              settings=AgentSettings(double_read="none"))
+
+    def codes(translation):
+        region = SimpleNamespace(id=6, translation=translation, source_text="無理", ocr_local="無理",
+                                 category="dialogue", confidence=0.95, origin="detector",
+                                 bbox=[0, 0, 57, 103], font_size=57, direction="v")   # room for one character
+        return [i.code for i in checks.region_issues(session, region)]
+
+    assert codes("不行。") == [] and codes("不行……！") == []
+    assert codes("絕對不行") == ["overflow"]

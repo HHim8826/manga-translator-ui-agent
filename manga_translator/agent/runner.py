@@ -142,7 +142,7 @@ class AgentRunner:
         self.target_lang = target_lang
         self.should_stop = should_stop
         self.memory = store.memory()
-        self.session = AgentSession(settings, self.memory, pages, events)
+        self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
         self.registry = ToolRegistry(self.session)
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
@@ -258,6 +258,7 @@ class AgentRunner:
             raise
         except Exception as exc:
             logger.warning(f"recall check failed for {doc.stem}: {exc}")
+            self.session.recall_failed = True
             self.events.emit("recall", page=doc.stem, added=[], error=f"{type(exc).__name__}: {str(exc)[:200]}")
             return []
         image = self.session.page_array
@@ -350,6 +351,8 @@ class AgentRunner:
                 self.events.emit("tool_call", page=page, tool=call.name, args=_compact_args(args),
                                  reason=args.get("reason", "") if isinstance(args, dict) else "")
                 result = self.registry.execute(call.name, call.arguments)
+                if not result.ok and call.name != "mark_page_done":
+                    self.session.page_tool_errors += 1
                 self.events.emit("tool_result", page=page, tool=call.name, ok=result.ok, summary=result.summary,
                                  images=len(result.images))
                 content: Any = result.text
@@ -376,7 +379,9 @@ class AgentRunner:
         outcome = {"page": doc.stem, "image": doc.image_path, "status": doc.status, "confidence": doc.confidence,
                    "flags": len(doc.flags), "missing": doc.missing()}
         self.events.emit("page_done", page=doc.stem, status=doc.status, confidence=doc.confidence,
-                         flags=len(doc.flags), missing=doc.missing(), memory=self.memory.counts())
+                         agent_confidence=doc.agent_confidence, check_score=doc.check_score,
+                         checks=len(doc.checks), flags=len(doc.flags), missing=doc.missing(),
+                         memory=self.memory.counts())
         return outcome
 
     async def run(self) -> List[Dict[str, Any]]:
