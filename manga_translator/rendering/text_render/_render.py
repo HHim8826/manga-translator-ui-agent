@@ -4,6 +4,7 @@
 此后横竖排各只有一条富文本编排。
 """
 
+import logging
 import math
 import re
 
@@ -49,6 +50,24 @@ from ._layout import (
 from ._plans import RubyPlan, TcyPlan
 from ._policy import RICH_TEXT_POLICY
 from ._vertical_types import VerticalCharPlan, VerticalPlaceholderPlan
+
+_logger = logging.getLogger(__name__)
+
+# One text box should never need a canvas this large (~400 MB of RGBA).  A
+# runaway font size / glyph metric once asked for 49971x32768 (6.1 GiB), which
+# raised MemoryError and failed the whole page; skip just that region instead.
+_MAX_TEXT_CANVAS_PIXELS = 100_000_000
+
+
+def _text_canvas_too_large(canvas_h: int, canvas_w: int, font_size, text) -> bool:
+    if int(canvas_h) * int(canvas_w) <= _MAX_TEXT_CANVAS_PIXELS:
+        return False
+    preview = str(text)[:40].replace("\n", " ")
+    _logger.warning(
+        f"[RENDER SKIPPED] Text canvas {int(canvas_w)}x{int(canvas_h)} is unreasonably large "
+        f"(font_size={font_size}); skipping this region. Text: '{preview}'"
+    )
+    return True
 
 
 def _paint_vertical_ruby(
@@ -264,6 +283,8 @@ def _render_rich_text_horizontal(
     padding = int(max(max_font_size * 2.0, 16))
     canvas_w = geometry["paint_width"] + padding * 2
     canvas_h = geometry["paint_height"] + padding * 2
+    if _text_canvas_too_large(max(canvas_h, 1), max(canvas_w, 1), max_font_size, text):
+        return None
     canvas = np.zeros((max(canvas_h, 1), max(canvas_w, 1), 4), dtype=np.uint8)
     body_left = padding + geometry["left_extra"]
     body_width = geometry["body_width"]
@@ -459,14 +480,11 @@ def _render_rich_text_vertical(
     geometry = _rich_vertical_layout_geometry(layouts, font_size, line_spacing)
     body_height = geometry["body_height"]
     padding = int(max(font_size * 2.0, 16))
-    canvas = np.zeros(
-        (
-            int(max(geometry["paint_height"], 1)) + padding * 2,
-            int(max(geometry["paint_width"], 1)) + padding * 2,
-            4,
-        ),
-        dtype=np.uint8,
-    )
+    canvas_h = int(max(geometry["paint_height"], 1)) + padding * 2
+    canvas_w = int(max(geometry["paint_width"], 1)) + padding * 2
+    if _text_canvas_too_large(canvas_h, canvas_w, font_size, text):
+        return None
+    canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
     content_left = padding
     content_right = padding + geometry["paint_width"]
     content_top = padding

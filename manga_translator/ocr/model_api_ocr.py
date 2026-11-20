@@ -324,7 +324,11 @@ class BaseAPIOCR(OfflineOCR):
         async def _request_with_endpoint(endpoint) -> str:
             client = self._create_client(api_key=endpoint.api_key, base_url=endpoint.base_url)
             try:
-                text = self._normalize_ocr_text(
+                # An empty string is a valid answer ("this crop has no text", e.g.
+                # blank/decorative detector boxes). Retrying it used to loop
+                # forever with retries=-1 and blocked the whole page (#337).
+                # Malformed responses still raise inside _request_ocr_text.
+                return self._normalize_ocr_text(
                     await self._request_ocr_text(
                         client=client,
                         model_name=endpoint.model_name,
@@ -333,9 +337,6 @@ class BaseAPIOCR(OfflineOCR):
                         custom_params_config=custom_params_config,
                     )
                 )
-                if not text:
-                    raise RuntimeError(f"{self.PROVIDER_NAME} response did not contain OCR text.")
-                return text
             finally:
                 await self._close_client(client)
 
@@ -407,9 +408,13 @@ class BaseAPIOCR(OfflineOCR):
                             runtime_config if runtime_config is not None else config
                         ),
                     )
-                    self.logger.info(f"[OCR] Region {idx}: {text}")
+                    if text:
+                        self.logger.info(f"[OCR] Region {idx}: {text}")
+                    else:
+                        self.logger.info(f"[OCR] Region {idx}: <no text>")
                     q.text = text
-                    q.prob = 0.9
+                    # Empty results get prob 0 so the existing textline filter drops them.
+                    q.prob = 0.9 if text else 0.0
 
                     self._estimate_colors_48px(region_img, q)
             except APIRotationExhaustedError as e:
@@ -531,7 +536,8 @@ class ModelOpenAIOCR(BaseAPIOCR):
             **request_params,
         )
         if not getattr(response, "choices", None):
-            return ""
+            # No choices at all is a malformed/failed response: keep retrying it.
+            raise RuntimeError(f"{self.PROVIDER_NAME} response did not contain any choices.")
         return self._extract_openai_text(response.choices[0].message.content)
 
 
@@ -611,4 +617,7 @@ class ModelGeminiOCR(BaseAPIOCR):
             request_kwargs["generationConfig"] = generation_overrides
         request_kwargs.update(request_overrides)
         response = await client.models.generate_content(**request_kwargs)
+        if not (getattr(response, "candidates", None) or getattr(response, "text", None)):
+            # No candidates (blocked or malformed response) is a failure, not "no text".
+            raise RuntimeError(f"{self.PROVIDER_NAME} response did not contain any candidates.")
         return self._extract_gemini_text(response)

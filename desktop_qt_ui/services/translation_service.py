@@ -191,23 +191,24 @@ class TranslationService:
                     self.logger.warning(f"Could not convert all regions to TextBlock: {e}")
                     translator_args.text_regions = regions # Fallback to passing raw dicts
 
-            # ADDED: Logic to load High-Quality prompt, mimicking manga_translator.py
+            # Load the custom High-Quality prompt the same way manga_translator.py does.
+            # Prompt files are usually YAML; the previous json.load() failed on
+            # every YAML prompt, so editor translations silently ignored the
+            # user's prompt/glossary.
             translator_args.custom_prompt_json = None
             if final_config.translator.high_quality_prompt_path:
                 try:
+                    from manga_translator.translators.prompt_loader import load_custom_prompt
+
                     prompt_path = final_config.translator.high_quality_prompt_path
-                    self.logger.info(f"--- DIAGNOSTIC_PROMPT_PATH: Attempting to load HQ prompt from path: {prompt_path}") # 诊断日志
                     if not os.path.isabs(prompt_path):
-                        # Assuming root_dir is accessible or using a known base path
                         prompt_path = os.path.join(self.config_service.root_dir, prompt_path)
-                    
-                    if os.path.exists(prompt_path):
-                        with open(prompt_path, 'r', encoding='utf-8') as f:
-                            import json
-                            translator_args.custom_prompt_json = json.load(f)
+
+                    translator_args.custom_prompt_json = load_custom_prompt(prompt_path)
+                    if translator_args.custom_prompt_json:
                         self.logger.info(f"Successfully loaded custom HQ prompt from: {prompt_path}")
                     else:
-                        self.logger.warning(f"Custom HQ prompt file not found at: {prompt_path}")
+                        self.logger.warning(f"Custom HQ prompt file not found or invalid: {prompt_path}")
                 except Exception as e:
                     self.logger.error(f"Error loading custom HQ prompt: {e}")
 

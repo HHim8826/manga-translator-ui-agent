@@ -411,7 +411,12 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     
     # 检查输出目录
     if os.path.exists(final_output_dir):
-        output_files = [f for f in os.listdir(final_output_dir) if os.path.isfile(os.path.join(final_output_dir, f))]
+        # Results are written into per-input sub folders, so count recursively.
+        output_files = [
+            name
+            for _root, _dirs, names in os.walk(final_output_dir)
+            for name in names
+        ]
         print(f"\n📁 输出目录: {final_output_dir}")
         print(f"   包含 {len(output_files)} 个文件")
         if verbose and output_files:
