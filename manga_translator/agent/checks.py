@@ -155,16 +155,49 @@ def _alternatives(target: str) -> List[str]:
     return [normalize(p) for p in parts if normalize(p)]
 
 
-def _work_terms_in(session: "AgentSession", src_norm: str) -> list:
+def _work_terms_in(work_terms, src_norm: str) -> list:
     """Terms of the work's prompt file found in the source; a term inside a longer one that is also
     there (みゃー in みゃーさん) is left to the longer one."""
     found = {}
-    for term in getattr(session, "work_terms", None) or []:
+    for term in work_terms:
         key = normalize(term.source)
         if len(key) >= 2 and key in src_norm:
             found.setdefault(key, term)
     return [term for key, term in found.items()
             if not any(key != other and key in other for other in found)]
+
+
+def term_issues(region_id: int, source: str, translation: str, work_terms, memory) -> List[Issue]:
+    """Glossary and character names: a term in the source whose translation is not used. The work's
+    prompt file comes first; the agent's own glossary does not repeat a term it already checked."""
+    issues: List[Issue] = []
+    src_norm, tr_norm = normalize(source), normalize(translation)
+    if not src_norm:
+        return issues
+    checked = set()
+    for term in _work_terms_in(work_terms, src_norm):
+        checked.add(normalize(term.source))
+        alternatives = [a for target in term.targets for a in _alternatives(target)]
+        if alternatives and not any(a in tr_norm for a in alternatives):
+            issues.append(Issue("glossary_mismatch", region_id,
+                                {"source": term.source, "target": " / ".join(term.targets)},
+                                WEIGHTS["glossary_mismatch"]))
+    for entry in memory.glossary:
+        term = normalize(entry.get("source", ""))
+        if term in checked:
+            continue
+        alternatives = _alternatives(entry.get("target", ""))
+        if len(term) >= 2 and term in src_norm and alternatives and not any(a in tr_norm for a in alternatives):
+            issues.append(Issue("glossary_mismatch", region_id, {"source": entry["source"], "target": entry["target"]},
+                                WEIGHTS["glossary_mismatch"]))
+    for name, info in memory.characters.items():
+        term = normalize(name)
+        alternatives = _alternatives(info.get("target_name", ""))
+        if len(term) >= 2 and term in src_norm and alternatives and not any(a in tr_norm for a in alternatives):
+            issues.append(Issue("character_mismatch", region_id,
+                                {"source": name, "target": info.get("target_name", "")},
+                                WEIGHTS["character_mismatch"]))
+    return issues
 
 
 def _capacity(region: "Region") -> int:
@@ -188,32 +221,10 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
             issues.append(Issue("untranslated_kana", region.id, {"kana": "".join(kana)[:20]},
                                 WEIGHTS["untranslated_kana"]))
 
-    src_norm, tr_norm = normalize(source), normalize(translation)
+    src_norm = normalize(source)
     if src_norm:
-        checked = set()
-        for term in _work_terms_in(session, src_norm):  # the work's prompt file comes first
-            checked.add(normalize(term.source))
-            alternatives = [a for target in term.targets for a in _alternatives(target)]
-            if alternatives and not any(a in tr_norm for a in alternatives):
-                issues.append(Issue("glossary_mismatch", region.id,
-                                    {"source": term.source, "target": " / ".join(term.targets)},
-                                    WEIGHTS["glossary_mismatch"]))
-        for entry in session.memory.glossary:
-            if normalize(entry.get("source", "")) in checked:
-                continue
-            term = normalize(entry.get("source", ""))
-            alternatives = _alternatives(entry.get("target", ""))
-            if len(term) >= 2 and term in src_norm and alternatives and not any(a in tr_norm for a in alternatives):
-                issues.append(Issue("glossary_mismatch", region.id,
-                                    {"source": entry["source"], "target": entry["target"]},
-                                    WEIGHTS["glossary_mismatch"]))
-        for name, info in session.memory.characters.items():
-            term = normalize(name)
-            alternatives = _alternatives(info.get("target_name", ""))
-            if len(term) >= 2 and term in src_norm and alternatives and not any(a in tr_norm for a in alternatives):
-                issues.append(Issue("character_mismatch", region.id,
-                                    {"source": name, "target": info.get("target_name", "")},
-                                    WEIGHTS["character_mismatch"]))
+        issues.extend(term_issues(region.id, source, translation, getattr(session, "work_terms", None) or [],
+                                  session.memory))
     else:
         issues.append(Issue("empty_source", region.id, {}, WEIGHTS["empty_source"]))
 

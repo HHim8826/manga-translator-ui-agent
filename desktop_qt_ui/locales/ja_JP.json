@@ -1582,5 +1582,12 @@
   "Agents Inpaint Start": "{units} 領域、プログラム検査で {issues} 件の問題",
   "Agents Inpaint Detail": "{units} 領域、{retried} 件を再修復、{flagged} 件を要確認",
   "Agents Inpaint Progress": "修復レビュー：{page}",
-  "Agents Inpaint Detail Filled": "{units} 領域、{filled} 件を地の色で塗りつぶし、{retried} 件を再修復、{flagged} 件を要確認"
+  "Agents Inpaint Detail Filled": "{units} 領域、{filled} 件を地の色で塗りつぶし、{retried} 件を再修復、{flagged} 件を要確認",
+  "Agent Tool view_page": "ページを表示",
+  "Agent Tool revise_text": "訳文を修正",
+  "Agent Tool finish_proofread": "校正完了",
+  "Agents Proofread": "校正",
+  "Agents Proofread Start": "{pages} ページ、{regions} 領域",
+  "Agents Proofread Detail": "{revised} 件を修正、{flagged} 件を要確認",
+  "Agents Proofread Progress": "話全体を校正中"
 }

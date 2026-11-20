@@ -195,17 +195,22 @@ class ScriptedClient:
     (their own tool) take the next entry of ``recall`` (default: nothing found)."""
     model_label = "fake"
 
-    def __init__(self, script, recall=None):
+    def __init__(self, script, recall=None, proof=None):
         self.script = list(script)
         self.recall = list(recall or [])
+        self.proof = list(proof or [])
         self.requests = []
         self.recall_requests = []
         self.review_requests = []
+        self.proof_requests = []
 
     async def complete(self, messages, tools, tool_choice):
         if tools and tools[0]["function"]["name"] == "view_region":  # inpaint review: accept as it is
             self.review_requests.append(messages)
             return _calls(("finish_review", {}))
+        if tools and tools[0]["function"]["name"] == "view_page":  # proofreading: scripted or nothing to change
+            self.proof_requests.append(messages)
+            return self.proof.pop(0) if self.proof else _calls(("finish_proofread", {}))
         if tools and tools[0]["function"]["name"] == "report_unboxed_text":
             self.recall_requests.append(messages)
             items = self.recall.pop(0) if self.recall else []

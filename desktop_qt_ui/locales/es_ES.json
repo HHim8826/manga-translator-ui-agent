@@ -1582,5 +1582,12 @@
   "Agents Inpaint Start": "{units} áreas, {issues} con hallazgos del programa",
   "Agents Inpaint Detail": "{units} áreas, {retried} rehechas, {flagged} marcadas",
   "Agents Inpaint Progress": "Revisión del relleno: {page}",
-  "Agents Inpaint Detail Filled": "{units} áreas, {filled} rellenadas con el color del papel, {retried} rehechas, {flagged} marcadas"
+  "Agents Inpaint Detail Filled": "{units} áreas, {filled} rellenadas con el color del papel, {retried} rehechas, {flagged} marcadas",
+  "Agent Tool view_page": "Ver página",
+  "Agent Tool revise_text": "Corregir traducción",
+  "Agent Tool finish_proofread": "Terminar la revisión",
+  "Agents Proofread": "Revisión",
+  "Agents Proofread Start": "{pages} páginas, {regions} regiones",
+  "Agents Proofread Detail": "{revised} corregidas, {flagged} marcadas",
+  "Agents Proofread Progress": "Revisando el capítulo"
 }

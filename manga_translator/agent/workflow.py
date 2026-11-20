@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .events import EventLog, new_run_id
 from .inpaint_review import InpaintReviewer
+from .proofread import Proofreader
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
@@ -106,6 +107,22 @@ class PipelineInpaintBackend:
 
     def save(self, image_path: str, image) -> None:
         self.translator._save_inpainted_image(image_path, image)
+
+
+async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLog, log) -> dict:
+    """The proofreading pass; an API failure is logged and the chapter goes on to render as it is."""
+    try:
+        result = await proofreader.run(pages)
+    except (AgentStopped, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        logger.exception("proofreading failed")
+        events.emit("error", agent="proofread", error=f"proofreading failed: {type(exc).__name__}: {str(exc)[:300]}")
+        return {"status": "error", "error": str(exc)}
+    totals = proofreader.totals
+    log(f"[Agent] Proofread: {result.get('revised', 0)} revised, {result.get('flagged', 0)} flagged, "
+        f"{totals['requests']} requests, {totals['prompt_tokens']} prompt tokens ({totals['cached_tokens']} cached)")
+    return result
 
 
 async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> List[dict]:
@@ -194,22 +211,31 @@ async def run_agent_workflow(
                 runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
                                      on_page_done=page_done, work_prompt=work_prompt)
                 review: List[dict] = []
+                proof_task: Optional[asyncio.Future] = None
                 try:
                     try:
                         chapter = await runner.run()
-                    except BaseException:
+                        finished = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
+                        if settings.proofread and finished:
+                            # text only, so it runs while the review is still busy with the last pages
+                            log(f"[Agent] Proofread: {len(finished)} page(s)")
+                            proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
+                                                      work_prompt, should_stop)
+                            proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
                         if review_task is not None:
-                            review_task.cancel()
-                            await asyncio.gather(review_task, return_exceptions=True)
+                            queue.put_nowait(None)
+                            review = await review_task
+                        elif reviewer is not None and finished:
+                            log(f"[Agent] 3/4 Inpaint review: {len(finished)} page(s)")
+                            review = await reviewer.run(finished)
+                        if proof_task is not None:
+                            await proof_task
+                    except BaseException:
+                        for task in (review_task, proof_task):
+                            if task is not None and not task.done():
+                                task.cancel()
+                                await asyncio.gather(task, return_exceptions=True)
                         raise
-                    if review_task is not None:
-                        queue.put_nowait(None)
-                        review = await review_task
-                    elif reviewer is not None:
-                        to_review = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
-                        if to_review:
-                            log(f"[Agent] 3/4 Inpaint review: {len(to_review)} page(s)")
-                            review = await reviewer.run(to_review)
                 except AgentStopped:
                     raise asyncio.CancelledError("Agent workflow stopped by user")
                 if reviewer is not None:

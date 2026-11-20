@@ -1591,5 +1591,12 @@
   "Agents Inpaint Start": "{units} 個區域，程式檢查發現 {issues} 個有問題",
   "Agents Inpaint Detail": "{units} 個區域，重修 {retried} 個，待確認 {flagged} 個",
   "Agents Inpaint Progress": "修圖審查：{page}",
-  "Agents Inpaint Detail Filled": "{units} 個區域，直接填底色 {filled} 個，重修 {retried} 個，待確認 {flagged} 個"
+  "Agents Inpaint Detail Filled": "{units} 個區域，直接填底色 {filled} 個，重修 {retried} 個，待確認 {flagged} 個",
+  "Agent Tool view_page": "查看頁面",
+  "Agent Tool revise_text": "修改譯文",
+  "Agent Tool finish_proofread": "完成校對",
+  "Agents Proofread": "校對",
+  "Agents Proofread Start": "{pages} 頁，{regions} 個區域",
+  "Agents Proofread Detail": "修改 {revised} 處，待確認 {flagged} 個",
+  "Agents Proofread Progress": "正在校對整話"
 }

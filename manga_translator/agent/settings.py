@@ -39,6 +39,11 @@ class AgentSettings(BaseModel):
     """Review operations (views, mask edits, attempts) per area."""
     inpaint_review_steps: int = Field(default=30, ge=1)
     """Model calls allowed for one page's inpaint review."""
+    proofread: bool = False
+    """After the translation agent, a separate conversation proofreads the whole chapter's
+    translations at once and fixes what is really wrong (off by default)."""
+    proofread_steps: int = Field(default=20, ge=1)
+    """Model calls allowed for the proofreading of one chapter."""
     low_confidence_threshold: float = 0.7
     """Pages marked done below this confidence go to the review list."""
     request_timeout: int = 300

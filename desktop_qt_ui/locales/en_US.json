@@ -1593,5 +1593,12 @@
   "Agents Inpaint Start": "{units} areas, {issues} with program findings",
   "Agents Inpaint Detail": "{units} areas, {retried} redone, {flagged} flagged",
   "Agents Inpaint Progress": "Inpaint review: {page}",
-  "Agents Inpaint Detail Filled": "{units} areas, {filled} filled with the paper color, {retried} redone, {flagged} flagged"
+  "Agents Inpaint Detail Filled": "{units} areas, {filled} filled with the paper color, {retried} redone, {flagged} flagged",
+  "Agent Tool view_page": "View page",
+  "Agent Tool revise_text": "Revise translation",
+  "Agent Tool finish_proofread": "Finish proofreading",
+  "Agents Proofread": "Proofreading",
+  "Agents Proofread Start": "{pages} pages, {regions} regions",
+  "Agents Proofread Detail": "{revised} revised, {flagged} flagged",
+  "Agents Proofread Progress": "Proofreading the chapter"
 }

@@ -168,3 +168,26 @@ def test_status_follows_the_agent_while_pages_are_reviewed_alongside(app):
     page.handle_event({"type": "error", "page": "002", "agent": "inpaint", "error": "RuntimeError: boom"})
     assert page.status_label.text().startswith("Agents Finished") and "done=2" in page.status_label.text()
     assert page.page_list.item(2).text().startswith("002 · Agent Page Done")
+
+
+def test_proofread_events(app):
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["001.jpg"], "model": "m"},
+        {"type": "page_done", "page": "001", "status": "done", "confidence": 0.99, "flags": 0},
+        {"type": "run_end", "pages": 1, "done": 1, "flagged": 0, "totals": {"requests": 3}},
+        {"type": "proofread_start", "agent": "proofread", "pages": 1, "regions": 7},
+        {"type": "tool_call", "page": "001", "agent": "proofread", "tool": "revise_text", "args": {"id": 2},
+         "reason": "語氣"},
+        {"type": "tool_result", "page": "001", "agent": "proofread", "tool": "revise_text", "ok": True,
+         "summary": "001 #2: 甲 → 乙"},
+    ])
+    assert page.status_label.text() == "Agents Proofread Progress"
+    page.handle_event({"type": "proofread_done", "agent": "proofread", "revised": 1, "flagged": 1, "note": "ok"})
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(2) for r in rows] == ["Agents Proofread", "Agent Tool revise_text", "Agents Proofread"]
+    assert rows[0].text(3) == "Agents Proofread Start pages=1 regions=7"
+    assert rows[2].text(3) == "Agents Proofread Detail flagged=1 revised=1" and rows[2].text(4) == "ok"
+    assert page.status_label.text().startswith("Agents Finished")

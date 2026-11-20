@@ -1582,5 +1582,12 @@
   "Agents Inpaint Start": "{units}개 영역, 프로그램 검사에서 {issues}개 문제",
   "Agents Inpaint Detail": "{units}개 영역, {retried}개 재복원, {flagged}개 확인 필요",
   "Agents Inpaint Progress": "복원 검토: {page}",
-  "Agents Inpaint Detail Filled": "{units}개 영역, {filled}개 바탕색 채움, {retried}개 재복원, {flagged}개 확인 필요"
+  "Agents Inpaint Detail Filled": "{units}개 영역, {filled}개 바탕색 채움, {retried}개 재복원, {flagged}개 확인 필요",
+  "Agent Tool view_page": "페이지 보기",
+  "Agent Tool revise_text": "번역문 수정",
+  "Agent Tool finish_proofread": "교정 완료",
+  "Agents Proofread": "교정",
+  "Agents Proofread Start": "{pages}페이지, {regions}개 영역",
+  "Agents Proofread Detail": "{revised}곳 수정, {flagged}개 확인 필요",
+  "Agents Proofread Progress": "화 전체 교정 중"
 }

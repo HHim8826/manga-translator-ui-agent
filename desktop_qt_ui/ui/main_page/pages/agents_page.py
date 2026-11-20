@@ -64,6 +64,9 @@ TOOL_KEYS = {
     "inpaint_region": "Agent Tool inpaint_region",
     "pick_candidate": "Agent Tool pick_candidate",
     "finish_review": "Agent Tool finish_review",
+    "view_page": "Agent Tool view_page",
+    "revise_text": "Agent Tool revise_text",
+    "finish_proofread": "Agent Tool finish_proofread",
 }
 PAGE_STATE_KEYS = {
     "waiting": "Agent Page Waiting",
@@ -92,6 +95,7 @@ class AgentsPage(QWidget):
         self._page_filter = ALL_PAGES
         self._limit = 400_000
         self._translating = False
+        self._proofreading = False
         self._finished_text = ""
         self._build()
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
@@ -179,6 +183,7 @@ class AgentsPage(QWidget):
         if kind == "run_start":
             self._reset([os.path.splitext(p)[0] for p in event.get("pages", [])])
             self._translating = True
+            self._proofreading = False
             self._finished_text = ""
             self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
             self._update_memory(event.get("memory"))
@@ -237,7 +242,7 @@ class AgentsPage(QWidget):
                 self._add_row(event, self._t("Agents Recall"), detail, "")
         elif kind == "inpaint_start":
             self._set_page(page, state="inpainting")
-            if not self._translating:  # while the agent still translates, the status line follows it
+            if not (self._translating or self._proofreading):  # the status line follows the main work
                 self.status_label.setText(self._t("Agents Inpaint Progress", page=page))
             self._add_row(event, self._t("Agents Inpaint"),
                           self._t("Agents Inpaint Start", units=event.get("units", 0), issues=event.get("issues", 0)),
@@ -254,9 +259,27 @@ class AgentsPage(QWidget):
             self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
                            confidence=event.get("confidence"))
             self._show_finished_if_idle()
+        elif kind == "proofread_start":
+            self._proofreading = True
+            self.status_label.setText(self._t("Agents Proofread Progress"))
+            self._add_row(event, self._t("Agents Proofread"),
+                          self._t("Agents Proofread Start", pages=event.get("pages", 0),
+                                  regions=event.get("regions", 0)), "")
+        elif kind == "proofread_done":
+            self._proofreading = False
+            flagged = int(event.get("flagged") or 0)
+            row = self._add_row(event, self._t("Agents Proofread"),
+                                self._t("Agents Proofread Detail", revised=event.get("revised", 0), flagged=flagged),
+                                event.get("note", ""), problem=flagged > 0)
+            if flagged:
+                self._paint(row, WARN)
+            self._show_finished_if_idle()
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)
+            if event.get("agent") == "proofread":
+                self._proofreading = False
+                self._show_finished_if_idle()
             if event.get("agent") == "inpaint" and self._pages.get(page, {}).get("state") == "inpainting":
                 # the review failed; the translation stands and render inpaints the page again
                 self._set_page(page, state="done")
@@ -279,7 +302,7 @@ class AgentsPage(QWidget):
             self._update_memory(event.get("memory"))
 
     def _show_finished_if_idle(self) -> None:
-        if self._translating or not self._finished_text:
+        if self._translating or self._proofreading or not self._finished_text:
             return
         if not any(info.get("state") == "inpainting" for info in self._pages.values()):
             self.status_label.setText(self._finished_text)
