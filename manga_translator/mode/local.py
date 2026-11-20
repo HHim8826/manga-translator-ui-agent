@@ -352,10 +352,20 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     
     try:
         print("🚀 开始翻译...")
-        contexts = await translator.translate_batch(
-            file_paths_with_configs,
-            save_info=save_info,
-        )
+        if cli_config.get('agent_workflow', False):
+            from manga_translator.agent.workflow import run_agent_workflow
+            contexts = await run_agent_workflow(
+                translator,
+                file_paths_with_configs,
+                save_info,
+                agent_settings=config_dict.get('agent'),
+                log=print,
+            )
+        else:
+            contexts = await translator.translate_batch(
+                file_paths_with_configs,
+                save_info=save_info,
+            )
 
         success_count = 0
         skipped_count = 0

@@ -3000,7 +3000,10 @@ class TranslationWorker(QObject):
             workflow_mode = 'Normal Translation'
             workflow_tip = ""
             cli_config = self.config_dict.get('cli', {})
-            if cli_config.get('upscale_only', False):
+            if cli_config.get('agent_workflow', False):
+                workflow_mode = 'AI Agent Workflow'
+                workflow_tip = 'Tip: Detection and local OCR first, then an AI agent reads, translates and checks every page with tools, then the app inpaints and typesets. Follow it on the Agents page; results open in the editor.'
+            elif cli_config.get('upscale_only', False):
                 workflow_mode = 'Upscale Only'
                 workflow_tip = 'Tip: Only upscale images, no detection, OCR, translation or rendering'
             elif cli_config.get('colorize_only', False):
@@ -3047,10 +3050,21 @@ class TranslationWorker(QObject):
             if total_images > 0:
                 progress_context["processing_started_at"] = time.perf_counter()
                 images_with_configs = [(file_path, config) for file_path in self.files]
-                contexts = await translator.translate_batch(
-                    images_with_configs,
-                    save_info=save_info,
-                )
+                if cli_config.get('agent_workflow', False):
+                    from manga_translator.agent.workflow import run_agent_workflow
+                    contexts = await run_agent_workflow(
+                        translator,
+                        images_with_configs,
+                        save_info,
+                        agent_settings=self.config_dict.get('agent'),
+                        should_stop=lambda: not self._is_running,
+                        log=self._log_info,
+                    )
+                else:
+                    contexts = await translator.translate_batch(
+                        images_with_configs,
+                        save_info=save_info,
+                    )
             else:
                 contexts = []
 

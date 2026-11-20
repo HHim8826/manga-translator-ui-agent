@@ -94,6 +94,7 @@ def create_translation_page(self) -> QWidget:
         self._t("Upscale Only"),
         self._t("Inpaint Only"),
         self._t("Replace Translation"),
+        self._t("AI Agent Workflow"),
     ])
     task_layout.addWidget(self.workflow_mode_combo, 2, 1, 1, 2)
     self.workflow_mode_hint_label = CaptionLabel(

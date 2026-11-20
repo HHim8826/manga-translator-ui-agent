@@ -458,6 +458,12 @@ class MangaTranslator:
         
         # 替换翻译模式（从已翻译图片复制翻译数据到生肉图片）
         self.replace_translation = params.get('replace_translation', False)
+
+        # AI agent workflow (manga_translator/agent/workflow.py) render step:
+        # the agent writes the JSON directly, so the load_text TXT import would
+        # overwrite it, and an older inpainted image may predate its mask edits.
+        self.skip_txt_import = params.get('skip_txt_import', False)
+        self.ignore_existing_inpainted = params.get('ignore_existing_inpainted', False)
         
         
         # batch_concurrent 已在初始化时设置并验证
@@ -3636,7 +3642,7 @@ class MangaTranslator:
             )
             return plan.merge_results(contexts)
 
-        if self.load_text:
+        if self.load_text and not self.skip_txt_import:
             logger.info("Load text mode detected: Auto-importing translations from TXT to JSON...")
             self._preprocess_load_text_mode(images_with_configs)
 
@@ -3845,7 +3851,7 @@ class MangaTranslator:
                             preloaded_inpainted_raw = preloaded_payload.get('inpainted_rgb') if preloaded_payload else None
                             # Strict editor export never consults an unverified historical sidecar.
                             existing_inpainted_path = None
-                            if preloaded_payload is None and image_name:
+                            if preloaded_payload is None and image_name and not self.ignore_existing_inpainted:
                                 existing_inpainted_path = find_inpainted_path(image_name)
 
                             # load_text 始终基于原图处理，不走上色/超分，也不把已有修复图塞进 img_colorized/upscaled

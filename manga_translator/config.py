@@ -430,6 +430,8 @@ class CliConfig(BaseModel):
     """Replace translation mode: apply translation from one image to another raw image"""
     translate_json_only: bool = False
     """Translate existing JSON only: read original text from JSON, translate, and write back JSON"""
+    agent_workflow: bool = False
+    """AI agent workflow: preprocess, let the agent read and translate every page, then render"""
 
 class OcrConfig(BaseModel):
     ocr: Ocr = Ocr.ocr48px

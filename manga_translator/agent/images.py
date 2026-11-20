@@ -1,0 +1,123 @@
+"""Images sent to the model: numbered pages, zoomed crops with a grid, thumbnails.
+
+The model never gives pixel coordinates; it names regions by the numbers drawn
+here and, when zooming, cells of the A1-H8 grid.
+"""
+from __future__ import annotations
+
+import base64
+import io
+import os
+from functools import lru_cache
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from PIL import Image, ImageDraw, ImageFont
+
+GRID_COLUMNS = "ABCDEFGH"
+GRID_ROWS = 8
+MARK_COLOR = (230, 0, 0)
+DONE_COLOR = (0, 150, 60)
+SKIP_COLOR = (120, 120, 120)
+
+
+@lru_cache(maxsize=4)
+def _font(size: int) -> ImageFont.ImageFont:
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for name in ("msgothic.ttc", "msyh.ttc", "NotoSansMonoCJK-VF.ttf.ttc"):
+        path = os.path.join(root, "fonts", name)
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
+def open_page(path: str) -> Image.Image:
+    with open(path, "rb") as fh:
+        image = Image.open(io.BytesIO(fh.read()))
+        image.load()
+    return image.convert("RGB")
+
+
+def data_url(image: Image.Image, max_side: Optional[int] = None, quality: int = 90) -> str:
+    if max_side and max(image.size) > max_side:
+        image = image.copy()
+        image.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, "JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def draw_marks(page: Image.Image, marks: Sequence[Tuple[int, Sequence[int], str]]) -> Image.Image:
+    """Page with a numbered box per region. ``marks`` = (id, bbox, state) where
+    state is ``pending`` (red), ``done`` (green) or ``skipped`` (gray)."""
+    out = page.copy()
+    draw = ImageDraw.Draw(out)
+    size = max(18, min(32, out.width // 45))
+    font = _font(size)
+    for rid, (x1, y1, x2, y2), state in marks:
+        color = {"done": DONE_COLOR, "skipped": SKIP_COLOR}.get(state, MARK_COLOR)
+        draw.rectangle((x1 - 4, y1 - 4, x2 + 4, y2 + 4), outline=color, width=3)
+        label = str(rid)
+        tw = draw.textlength(label, font=font)
+        tx = max(0, x1 - 4)
+        ty = y1 - 8 - size if y1 - 8 - size >= 0 else min(out.height - size - 6, y2 + 6)
+        draw.rectangle((tx, ty, tx + tw + 8, ty + size + 4), fill=color)
+        draw.text((tx + 4, ty + 1), label, fill="white", font=font)
+    return out
+
+
+def zoom(page: Image.Image, bbox: Sequence[int], others: Sequence[Sequence[Tuple[float, float]]] = (),
+         scale: float = 3.0, pad: int = 16, mask_others: bool = True, grid: bool = True,
+         max_side: int = 1600) -> Tuple[Image.Image, Dict]:
+    """Magnified crop of ``bbox``. Other regions' text inside the crop is grayed
+    out (M0.5: otherwise the model reads the neighbor's text too). Returns the
+    image and how grid cells map back to page pixels."""
+    x1, y1, x2, y2 = bbox
+    left, top = max(0, int(x1) - pad), max(0, int(y1) - pad)
+    right, bottom = min(page.width, int(x2) + pad), min(page.height, int(y2) + pad)
+    crop = page.crop((left, top, right, bottom))
+    if mask_others and others:
+        draw = ImageDraw.Draw(crop)
+        for poly in others:
+            pts = [(px - left, py - top) for px, py in poly]
+            draw.polygon(pts, fill=(170, 170, 170))
+    scale = max(1.0, min(float(scale), max_side / max(1, max(crop.size))))
+    crop = crop.resize((max(1, int(crop.width * scale)), max(1, int(crop.height * scale))), Image.LANCZOS)
+    info = {"crop": [left, top, right, bottom], "scale": round(scale, 2)}
+    if grid:
+        draw = ImageDraw.Draw(crop)
+        font = _font(max(12, min(22, crop.width // 30)))
+        cw, ch = crop.width / len(GRID_COLUMNS), crop.height / GRID_ROWS
+        for i in range(1, len(GRID_COLUMNS)):
+            draw.line([(i * cw, 0), (i * cw, crop.height)], fill=(0, 140, 255), width=1)
+        for j in range(1, GRID_ROWS):
+            draw.line([(0, j * ch), (crop.width, j * ch)], fill=(0, 140, 255), width=1)
+        for i, col in enumerate(GRID_COLUMNS):
+            for j in range(GRID_ROWS):
+                draw.text((i * cw + 2, j * ch + 1), f"{col}{j + 1}", fill=(0, 110, 230), font=font)
+        info["grid"] = {"columns": GRID_COLUMNS, "rows": GRID_ROWS,
+                        "cell_page_px": [round((right - left) / len(GRID_COLUMNS), 1),
+                                         round((bottom - top) / GRID_ROWS, 1)]}
+    return crop, info
+
+
+def thumbnail(path: str, max_side: int = 640) -> Image.Image:
+    image = open_page(path)
+    image.thumbnail((max_side, max_side), Image.LANCZOS)
+    return image
+
+
+def side_by_side(images: List[Image.Image], labels: List[str], gap: int = 12) -> Image.Image:
+    height = max(im.height for im in images) + 30
+    width = sum(im.width for im in images) + gap * (len(images) - 1)
+    out = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(out)
+    font = _font(20)
+    x = 0
+    for im, label in zip(images, labels):
+        draw.text((x + 4, 4), label, fill=(0, 0, 0), font=font)
+        out.paste(im, (x, 30))
+        x += im.width + gap
+    return out

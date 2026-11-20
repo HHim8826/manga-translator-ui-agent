@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
 
+from manga_translator.agent.settings import AgentSettings
 from manga_translator.custom_api_params import migrate_legacy_custom_api_params_config
 from pydantic import BaseModel, Field, model_validator
 
@@ -149,6 +150,7 @@ class CliSettings(BaseModel):
     export_from_local_json: bool = False
     load_text: bool = False
     translate_json_only: bool = False
+    agent_workflow: bool = False
     template: bool = False
     save_quality: int = 100
     batch_size: int = 1
@@ -277,6 +279,7 @@ class AppSettings(BaseModel):
     upscale: UpscaleSettings = Field(default_factory=UpscaleSettings)
     colorizer: ColorizerSettings = Field(default_factory=ColorizerSettings)
     cli: CliSettings = Field(default_factory=CliSettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
 
     @model_validator(mode="before")
     @classmethod

@@ -155,8 +155,11 @@ class MainView(QObject):
         self.replacements_page = self._create_replacements_page()
         self.rich_text_rules_page = self._create_rich_text_rules_page()
         self.batch_edit_page = self._create_batch_edit_page()
+        from ui.main_page.pages.agents_page import AgentsPage
+        self.agents_page = AgentsPage(self._t)
         self.page_widgets = {
             "translation": self.translation_interface,
+            "agents": self.agents_page,
             "settings": self.settings_page,
             "about": self.about_page,
             "env": self.env_page,
@@ -382,6 +385,8 @@ class MainView(QObject):
         """刷新所有UI文本（用于语言切换）。"""
         if hasattr(self, "about_page"):
             self._refresh_about_page_texts()
+        if hasattr(self, "agents_page"):
+            self.agents_page.refresh_texts()
         self.refresh_tab_titles()
 
 
@@ -437,6 +442,7 @@ class MainView(QObject):
                         self._t("Upscale Only"),
                         self._t("Inpaint Only"),
                         self._t("Replace Translation"),
+                        self._t("AI Agent Workflow"),
                     ]
                 )
                 self.workflow_mode_combo.setCurrentIndex(current_index)

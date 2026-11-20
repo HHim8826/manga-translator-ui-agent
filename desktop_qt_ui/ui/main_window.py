@@ -144,6 +144,7 @@ class MainWindow(FluentWindow):
                 FIF.HOME,
                 self._t("Translation Interface"),
             ),
+            ("agents", self.main_view.agents_page, FIF.ROBOT, self._t("Agents")),
             (
                 "settings",
                 self.main_view.settings_page,
@@ -870,6 +871,7 @@ class MainWindow(FluentWindow):
     def _refresh_navigation_texts(self):
         nav_labels = {
             "translation": self._t("Translation Interface"),
+            "agents": self._t("Agents"),
             "settings": self._t("Settings"),
             "about": self._t("About Application"),
             "env": self._t("API Management"),
