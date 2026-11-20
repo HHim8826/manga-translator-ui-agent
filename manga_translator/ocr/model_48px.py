@@ -151,7 +151,7 @@ class Model48pxOCR(OfflineOCR):
                     compression_params = [cv2.IMWRITE_PNG_COMPRESSION, 9]
                     imwrite_unicode(os.path.join(ocr_result_dir, f'{ix-N+i}.png'), img_data, self.logger, compression_params)
             image_tensor = (torch.from_numpy(region).float() - 127.5) / 127.5
-            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W')
+            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W').contiguous()
             if self.use_gpu:
                 image_tensor = image_tensor.to(self.device)
             with torch.no_grad():

@@ -611,7 +611,7 @@ class ModelPaddleOCR(OfflineOCR):
                 
                 # 转换为 tensor
                 image_tensor = (torch.from_numpy(batch_region).float() - 127.5) / 127.5
-                image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W')
+                image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W').contiguous()
                 
                 # GPU 加速
                 if self.use_gpu:
@@ -703,7 +703,7 @@ class ModelPaddleOCR(OfflineOCR):
             batch_region = np.zeros((1, text_height, canvas_w, 3), dtype=np.uint8)
             batch_region[0, :, :new_w, :] = region_resized
             image_tensor = (torch.from_numpy(batch_region).float() - 127.5) / 127.5
-            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W')
+            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W').contiguous()
             
             # GPU 加速
             if self.use_gpu:

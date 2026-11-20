@@ -102,7 +102,7 @@ class Model32pxOCR(OfflineOCR):
                         imwrite_unicode(os.path.join(ocr_result_dir, f'{ix}.png'), cv2.cvtColor(region[i, :, :, :], cv2.COLOR_RGB2BGR), self.logger)
                 ix += 1
             image_tensor = (torch.from_numpy(region).float() - 127.5) / 127.5
-            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W')
+            image_tensor = einops.rearrange(image_tensor, 'N H W C -> N C H W').contiguous()
             if self.use_gpu:
                 image_tensor = image_tensor.to(self.device)
             with torch.no_grad():

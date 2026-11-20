@@ -9,7 +9,14 @@ from typing import Any, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-from ultralytics import YOLO
+
+# ultralytics calls cv2.setNumThreads(0) on import, which silently makes every
+# later OpenCV call in the pipeline single-threaded (bilateralFilter etc. ~5x
+# slower). Restore the previous thread count right after importing it.
+_CV2_THREADS_BEFORE_ULTRALYTICS = cv2.getNumThreads()
+from ultralytics import YOLO  # noqa: E402
+
+cv2.setNumThreads(_CV2_THREADS_BEFORE_ULTRALYTICS)
 
 from ..utils import Quadrilateral, build_det_rearrange_plan, det_rearrange_patch_array
 from .common import OfflineDetector

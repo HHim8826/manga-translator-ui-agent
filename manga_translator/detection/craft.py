@@ -161,7 +161,7 @@ class CRAFTDetector(OfflineDetector):
 
         # preprocessing
         x = imgproc.normalizeMeanVariance(img_resized)
-        x = torch.from_numpy(x).permute(2, 0, 1)    # [h, w, c] to [c, h, w]
+        x = torch.from_numpy(x).permute(2, 0, 1).contiguous()    # [h, w, c] to [c, h, w]
         x = x.unsqueeze(0).to(self.device)                # [c, h, w] to [b, c, h, w]
 
         with torch.no_grad() :

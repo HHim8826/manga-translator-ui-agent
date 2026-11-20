@@ -114,6 +114,18 @@ class Kumiko:
 			)
 		)
 
+	def parse_array(self, img_bgr, name = 'image.png'):
+		"""Parse an in-memory BGR uint8 image without writing it to disk."""
+		self.page_list.append(
+			Page(
+				name,
+				numbering = "rtl" if self.options['rtl'] else "ltr",
+				min_panel_size_ratio = self.options['min_panel_size_ratio'],
+				panel_expansion = self.panel_expansion,
+				img = img_bgr,
+			)
+		)
+
 	def get_infos(self):
 		return list(map(lambda p: p.get_infos(), self.page_list))
 

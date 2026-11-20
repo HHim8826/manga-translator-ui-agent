@@ -120,7 +120,7 @@ class Model48pxCTCOCR(OfflineOCR):
                     else:
                         imwrite_unicode(os.path.join(ocr_result_dir, f'{ix-N+i}.png'), cv2.cvtColor(region[i, :, :, :], cv2.COLOR_RGB2BGR), self.logger)
             images = (torch.from_numpy(region).float() - 127.5) / 127.5
-            images = einops.rearrange(images, 'N H W C -> N C H W')
+            images = einops.rearrange(images, 'N H W C -> N C H W').contiguous()
             if self.use_gpu:
                 images = images.to(self.device)
             with torch.inference_mode():

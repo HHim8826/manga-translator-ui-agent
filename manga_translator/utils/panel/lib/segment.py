@@ -196,27 +196,33 @@ class Segment:
 
 		return split_segment
 
+	def _key(self):
+		"""Hashable key matching __eq__ (endpoints compared without direction)."""
+		return (self.a, self.b) if self.a <= self.b else (self.b, self.a)
+
 	@staticmethod
 	def union_all(segments):
 		unioned_segments = True
 		while unioned_segments:
 			unioned_segments = False
 			dedup_segments = []
-			used = []
+			# Set of _key() values: same semantics as the former list + __eq__
+			# membership test, without the O(n) scan per lookup.
+			used = set()
 			for i, s1 in enumerate(segments):
 				for s2 in segments[i + 1:]:
-					if s2 in used:
+					if s2._key() in used:
 						continue
 
 					s3 = s1.union(s2)
 					if s3 is not None:
 						unioned_segments = True
 						dedup_segments += [s3]
-						used.append(s1)
-						used.append(s2)
+						used.add(s1._key())
+						used.add(s2._key())
 						break
 
-				if s1 not in used:
+				if s1._key() not in used:
 					dedup_segments += [s1]
 
 			segments = dedup_segments

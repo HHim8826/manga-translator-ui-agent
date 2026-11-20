@@ -39,7 +39,8 @@ class Page:
 		debug = False,
 		url = None,
 		min_panel_size_ratio = None,
-		panel_expansion = True
+		panel_expansion = True,
+		img = None
 	):
 		self.filename = filename
 		self.panels = []
@@ -48,10 +49,14 @@ class Page:
 		self.processing_time = None
 		t1 = time.time_ns()
 
-		with open(filename, 'rb') as f:
-			chunk = f.read()
-		nparr = np.frombuffer(chunk, np.uint8)
-		self.img = cv.imdecode(nparr, cv.IMREAD_COLOR)
+		if img is not None:
+			# In-memory BGR uint8 image (avoids a PNG round trip through a temp file).
+			self.img = img
+		else:
+			with open(filename, 'rb') as f:
+				chunk = f.read()
+			nparr = np.frombuffer(chunk, np.uint8)
+			self.img = cv.imdecode(nparr, cv.IMREAD_COLOR)
 		if not isinstance(self.img, np.ndarray) or self.img.size == 0:
 			raise NotAnImageException(f"File {filename} is not an image")
 
@@ -70,7 +75,7 @@ class Page:
 
 		# get license for this file
 		self.license = None
-		if os.path.isfile(filename + '.license'):
+		if img is None and os.path.isfile(filename + '.license'):
 			with open(filename + '.license', encoding = "utf8") as fh:
 				try:
 					self.license = json.load(fh)

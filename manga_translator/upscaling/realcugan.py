@@ -299,7 +299,7 @@ class RealCUGANUpscaler(OfflineUpscaler):
             # Grayscale: expand to 3 channels
             np_img = np.stack([np_img] * 3, axis=2)
         
-        tensor = torch.from_numpy(np_img).permute(2, 0, 1).unsqueeze(0).to(device)
+        tensor = torch.from_numpy(np_img).permute(2, 0, 1).contiguous().unsqueeze(0).to(device)
         
         # Determine model parameters
         is_pro = '-pro' in self.model_name

@@ -16,7 +16,9 @@ def det_batch_forward_default(batch: np.ndarray, device: str):
     if isinstance(batch, list):
         batch = np.array(batch)
     batch = einops.rearrange(batch.astype(np.float32) / 127.5 - 1.0, 'n h w c -> n c h w')
-    batch = torch.from_numpy(batch).to(device)
+    # einops on numpy returns a transposed view; keep NCHW contiguous so cuDNN
+    # does not fall back to slow per-shape channels_last plan selection.
+    batch = torch.from_numpy(np.ascontiguousarray(batch)).to(device)
     with torch.no_grad():
         db, mask = MODEL(batch)
         db = db.sigmoid().cpu().numpy()

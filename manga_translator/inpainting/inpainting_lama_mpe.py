@@ -249,9 +249,9 @@ class LamaMPEInpainter(OfflineInpainter):
         mask = np.where(mask > 0, 255, 0).astype(np.uint8)
         self.logger.info(f'Inpainting resolution: {new_w}x{new_h}')
         if isinstance(self.model, LamaFourier):
-            img_torch = torch.from_numpy(image).permute(2, 0, 1).unsqueeze_(0).float() / 255.
+            img_torch = torch.from_numpy(image).permute(2, 0, 1).contiguous().unsqueeze_(0).float() / 255.
         else:
-            img_torch = torch.from_numpy(image).permute(2, 0, 1).unsqueeze_(0).float() / 127.5 - 1.0
+            img_torch = torch.from_numpy(image).permute(2, 0, 1).contiguous().unsqueeze_(0).float() / 127.5 - 1.0
         mask_torch = torch.from_numpy(mask).unsqueeze_(0).unsqueeze_(0).float() / 255.0
         mask_torch[mask_torch < 0.5] = 0
         mask_torch[mask_torch >= 0.5] = 1
@@ -659,9 +659,9 @@ class LamaLargeInpainter(LamaMPEInpainter):
         mask_pad = prep.pop('mask_pad')
 
         if isinstance(self.model, LamaFourier):
-            img_torch = torch.from_numpy(image_pad).permute(2, 0, 1).unsqueeze_(0).float() / 255.0
+            img_torch = torch.from_numpy(image_pad).permute(2, 0, 1).contiguous().unsqueeze_(0).float() / 255.0
         else:
-            img_torch = torch.from_numpy(image_pad).permute(2, 0, 1).unsqueeze_(0).float() / 127.5 - 1.0
+            img_torch = torch.from_numpy(image_pad).permute(2, 0, 1).contiguous().unsqueeze_(0).float() / 127.5 - 1.0
 
         mask_torch = torch.from_numpy(mask_pad[:, :, 0]).unsqueeze_(0).unsqueeze_(0).float()
         del image_pad, mask_pad
