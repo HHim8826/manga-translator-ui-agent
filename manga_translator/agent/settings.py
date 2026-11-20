@@ -23,6 +23,15 @@ class AgentSettings(BaseModel):
     """Before each page, a separate model call looks for text the detector
     missed; what it finds is snapped to the strokes and added as regions.
     The call for the next page runs while the agent works on the current one."""
+    inpaint_review: bool = True
+    """After the translation agent, a separate review conversation per page
+    checks and fixes the inpainting; render then reuses its result."""
+    inpaint_attempts_per_region: int = Field(default=3, ge=1)
+    """New inpainting attempts the review may make per area (the first pass not counted)."""
+    ops_per_region: int = Field(default=15, ge=1)
+    """Review operations (views, mask edits, attempts) per area."""
+    inpaint_review_steps: int = Field(default=30, ge=1)
+    """Model calls allowed for one page's inpaint review."""
     low_confidence_threshold: float = 0.7
     """Pages marked done below this confidence go to the review list."""
     request_timeout: int = 300

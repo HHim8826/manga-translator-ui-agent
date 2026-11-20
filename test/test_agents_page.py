@@ -116,3 +116,28 @@ def test_live_events_arrive_through_the_listener(app, tmp_path):
     assert page.timeline.topLevelItem(0).text(3) == "boom"
     page.deleteLater()
     app.processEvents()
+
+
+def test_inpaint_review_events(app):
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["005.jpg"], "model": "m"},
+        {"type": "page_done", "page": "005", "status": "done", "confidence": 0.99, "flags": 0},
+        {"type": "inpaint_start", "page": "005", "agent": "inpaint", "units": 9, "issues": 2},
+        {"type": "tool_call", "page": "005", "agent": "inpaint", "tool": "protect_lines", "args": {"id": 3},
+         "reason": "泡泡邊框被擦斷"},
+        {"type": "tool_result", "page": "005", "agent": "inpaint", "tool": "protect_lines", "ok": True,
+         "summary": "#3 protect lines 2px"},
+    ])
+    assert page.page_list.item(1).text() == "005 · Agent Page Inpainting · 99%"
+    page.handle_event({"type": "inpaint_done", "page": "005", "agent": "inpaint", "status": "done", "units": 9,
+                       "retried": 1, "flagged": 1, "confidence": 0.731, "flags": 1})
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(2) for r in rows] == ["Agents Inpaint", "Agent Tool protect_lines", "Agents Inpaint"]
+    assert rows[0].text(3) == "Agents Inpaint Start issues=2 units=9"
+    assert rows[2].text(3) == "Agents Inpaint Detail flagged=1 retried=1 units=9"
+    page.problems_only.setChecked(True)
+    assert [r.isHidden() for r in rows] == [True, True, False]
+    assert page.page_list.item(1).text() == "005 · Agent Page Done · 73% · Agents Flag Count count=1"

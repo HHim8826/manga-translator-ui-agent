@@ -1568,5 +1568,18 @@
   "Agent Tool undo": "Deshacer",
   "Agent Tool add_region": "Añadir región",
   "Agents Recall": "Búsqueda de texto omitido",
-  "Agents Recall Detail": "{added} añadidas, {ignored} ignoradas"
+  "Agents Recall Detail": "{added} añadidas, {ignored} ignoradas",
+  "Agent Tool view_region": "Ver área",
+  "Agent Tool mask_select": "Seleccionar partes de la máscara",
+  "Agent Tool adjust_mask": "Ajustar máscara",
+  "Agent Tool mask_paint": "Pintar máscara",
+  "Agent Tool protect_lines": "Proteger líneas",
+  "Agent Tool inpaint_region": "Rellenar de nuevo",
+  "Agent Tool pick_candidate": "Elegir candidato",
+  "Agent Tool finish_review": "Terminar revisión del relleno",
+  "Agent Page Inpainting": "Revisión del relleno",
+  "Agents Inpaint": "Revisión del relleno",
+  "Agents Inpaint Start": "{units} áreas, {issues} con hallazgos del programa",
+  "Agents Inpaint Detail": "{units} áreas, {retried} rehechas, {flagged} marcadas",
+  "Agents Inpaint Progress": "Revisión del relleno: {page}"
 }

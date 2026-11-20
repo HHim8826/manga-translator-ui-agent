@@ -56,10 +56,19 @@ TOOL_KEYS = {
     "mark_page_done": "Agent Tool mark_page_done",
     "budget_status": "Agent Tool budget_status",
     "undo": "Agent Tool undo",
+    "view_region": "Agent Tool view_region",
+    "mask_select": "Agent Tool mask_select",
+    "adjust_mask": "Agent Tool adjust_mask",
+    "mask_paint": "Agent Tool mask_paint",
+    "protect_lines": "Agent Tool protect_lines",
+    "inpaint_region": "Agent Tool inpaint_region",
+    "pick_candidate": "Agent Tool pick_candidate",
+    "finish_review": "Agent Tool finish_review",
 }
 PAGE_STATE_KEYS = {
     "waiting": "Agent Page Waiting",
     "working": "Agent Page Working",
+    "inpainting": "Agent Page Inpainting",
     "done": "Agent Page Done",
     "incomplete": "Agent Page Incomplete",
     "error": "Agent Page Error",
@@ -222,6 +231,21 @@ class AgentsPage(QWidget):
                 if added:
                     detail += " · " + ", ".join(f"#{i}" for i in added)
                 self._add_row(event, self._t("Agents Recall"), detail, "")
+        elif kind == "inpaint_start":
+            self._set_page(page, state="inpainting")
+            self.status_label.setText(self._t("Agents Inpaint Progress", page=page))
+            self._add_row(event, self._t("Agents Inpaint"),
+                          self._t("Agents Inpaint Start", units=event.get("units", 0), issues=event.get("issues", 0)),
+                          "")
+        elif kind == "inpaint_done":
+            flagged = int(event.get("flagged") or 0)
+            row = self._add_row(event, self._t("Agents Inpaint"),
+                                self._t("Agents Inpaint Detail", units=event.get("units", 0),
+                                        retried=event.get("retried", 0), flagged=flagged), "", problem=flagged > 0)
+            if flagged:
+                self._paint(row, WARN)
+            self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
+                           confidence=event.get("confidence"))
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)

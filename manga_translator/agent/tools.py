@@ -522,28 +522,43 @@ class ToolRegistry:
         return [{"type": "function", "function": {"name": t.name, "description": t.description,
                                                   "parameters": t.parameters}} for t in self.tools.values()]
 
-    def execute(self, name: str, raw_args: Any) -> ToolResult:
+    def prepare(self, name: str, raw_args: Any):
+        """(tool, args, None), or (None, None, error result) when the call cannot run."""
         tool = self.tools.get(name)
         if tool is None:
-            return ToolResult(text=f"Error: there is no tool named {name!r}. Available: {', '.join(self.tools)}.",
-                              ok=False, summary="unknown tool")
+            return None, None, ToolResult(
+                text=f"Error: there is no tool named {name!r}. Available: {', '.join(self.tools)}.",
+                ok=False, summary="unknown tool")
         try:
             args = raw_args if isinstance(raw_args, dict) else json.loads(raw_args or "{}")
         except json.JSONDecodeError as exc:
-            return ToolResult(text=f"Error: arguments are not valid JSON ({exc}).", ok=False, summary="bad JSON")
+            return None, None, ToolResult(text=f"Error: arguments are not valid JSON ({exc}).", ok=False,
+                                          summary="bad JSON")
         if not isinstance(args, dict):
-            return ToolResult(text="Error: arguments must be a JSON object.", ok=False, summary="bad arguments")
+            return None, None, ToolResult(text="Error: arguments must be a JSON object.", ok=False,
+                                          summary="bad arguments")
         missing = [p for p in tool.parameters.get("required", []) if args.get(p) in (None, "")]
         if missing:
-            return ToolResult(text=f"Error: missing required argument(s): {', '.join(missing)}.", ok=False,
-                              summary="missing " + ", ".join(missing))
+            return None, None, ToolResult(text=f"Error: missing required argument(s): {', '.join(missing)}.",
+                                          ok=False, summary="missing " + ", ".join(missing))
         if self.session.doc is None and name not in ("glossary_search", "character_get", "story_summary_get"):
-            return ToolResult(text="Error: no page is open.", ok=False, summary="no page")
+            return None, None, ToolResult(text="Error: no page is open.", ok=False, summary="no page")
+        return tool, args, None
+
+    @staticmethod
+    def failure(name: str, exc: Exception) -> ToolResult:
+        if isinstance(exc, (RegionError, ValueError, KeyError, TypeError)):
+            return ToolResult(text=f"Error: {exc}", ok=False, summary=str(exc)[:80])
+        # a tool bug must not end the run
+        logger.error(f"agent tool {name} failed", exc_info=exc)
+        return ToolResult(text=f"Error: the tool failed internally ({type(exc).__name__}: {exc}).", ok=False,
+                          summary=f"{type(exc).__name__}")
+
+    def execute(self, name: str, raw_args: Any) -> ToolResult:
+        tool, args, error = self.prepare(name, raw_args)
+        if error is not None:
+            return error
         try:
             return tool.handler(self.session, args)
-        except (RegionError, ValueError, KeyError, TypeError) as exc:
-            return ToolResult(text=f"Error: {exc}", ok=False, summary=str(exc)[:80])
-        except Exception as exc:  # a tool bug must not end the run
-            logger.exception(f"agent tool {name} failed")
-            return ToolResult(text=f"Error: the tool failed internally ({type(exc).__name__}: {exc}).", ok=False,
-                              summary=f"{type(exc).__name__}")
+        except Exception as exc:
+            return self.failure(name, exc)

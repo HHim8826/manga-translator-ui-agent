@@ -1,0 +1,551 @@
+"""Inpainting of one page for the review agent (design doc, "修圖審查與修補").
+
+The page mask (the refined mask in the page JSON, after the translation agent's
+edits) is split into *units*: the mask components of one kept region. A unit
+has a box around it, a working mask and a list of attempts; each attempt is
+the inpainted pixels under its mask. The page result is the original with
+every unit's chosen attempt pasted in under that attempt's mask, so pixels
+outside the mask never change and a retry always starts again from the
+original (only the other units' results are kept as context).
+
+Precise operations (design doc, "精準操作設計") work on numbers the program
+draws, not on coordinates: mask components M1..Mn and stroke candidates
+S1..Sn, grid cells of the last view, and parameters such as "dilate 3 px
+around the residual text". The checks from ``inpainting/quality_checks.py``
+run after every attempt.
+
+The inpainting models are reached through an ``InpaintBackend`` so tests can
+run without them.
+"""
+from __future__ import annotations
+
+import base64
+import os
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple
+
+import cv2
+import numpy as np
+
+from ..inpainting import quality_checks as qc
+from .snap import MAX_ELONGATION
+
+Box = Tuple[int, int, int, int]
+FILL = "fill"
+FLAT_SPREAD = 12.0
+"""90th percentile of the color distance around a mask above which a flat fill shows."""
+
+
+class InpaintBackend(Protocol):
+    def methods(self) -> List[str]:
+        """Inpainting models that can run without a download, configured one first."""
+
+    async def inpaint(self, method: str, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Inpaint ``image`` (RGB) under ``mask`` (uint8, >0 = fill), block by block at native size."""
+
+    async def text_map(self, image: np.ndarray) -> Optional[np.ndarray]:
+        """The text detector's text map (0-255) of ``image``, for the residual text check."""
+
+
+@dataclass
+class Attempt:
+    n: int
+    method: str
+    mask: np.ndarray
+    """Bool patch in the unit box: the pixels this attempt replaced."""
+    result: np.ndarray
+    """RGB patch in the unit box."""
+    ops: List[str]
+    note: str = ""
+    residual: List[Box] = field(default_factory=list)
+    broken: List[Box] = field(default_factory=list)
+    entries: int = 0
+    checked: bool = False
+
+    @property
+    def issues(self) -> List[str]:
+        out = []
+        if self.residual:
+            out.append("residual_text")
+        if self.broken:
+            out.append("broken_lines")
+        return out
+
+    def describe(self) -> str:
+        how = self.method + (f" after {', '.join(self.ops)}" if self.ops else "")
+        checks = (f"residual text {len(self.residual)}, broken lines {len(self.broken)}/{self.entries}"
+                  if self.checked else "not checked")
+        return f"attempt {self.n} ({how}): {checks}" + (f"; {self.note}" if self.note else "")
+
+
+@dataclass
+class Unit:
+    id: int
+    regions: List[int]
+    box: Box
+    base_mask: np.ndarray
+    """The page mask inside the box that belongs to this unit (bool)."""
+    attempts: List[Attempt] = field(default_factory=list)
+    chosen: int = 0
+    work: Optional[np.ndarray] = None
+    """Mask for the next attempt; mask edits change it."""
+    work_ops: List[str] = field(default_factory=list)
+    history: List[Tuple[np.ndarray, List[str]]] = field(default_factory=list)
+    steps: int = 0
+    retries: int = 0
+    flagged: bool = False
+    extra: bool = False
+    """Mask area that belongs to no kept region."""
+    view: Optional[Dict] = None
+    """Grid of the last view of this unit, for mask_paint."""
+
+    @property
+    def current(self) -> Attempt:
+        return self.attempts[self.chosen]
+
+    @property
+    def size(self) -> Tuple[int, int]:
+        x1, y1, x2, y2 = self.box
+        return x2 - x1, y2 - y1
+
+
+class InpaintError(ValueError):
+    """A request the model can correct (bad number, nothing to do...)."""
+
+
+# --- helpers -----------------------------------------------------------------------
+def _kernel(radius: int) -> np.ndarray:
+    size = 2 * max(1, int(radius)) + 1
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+
+
+def decode_mask(encoded: str) -> Optional[np.ndarray]:
+    mask = cv2.imdecode(np.frombuffer(base64.b64decode(encoded), np.uint8), cv2.IMREAD_UNCHANGED)
+    if mask is None:
+        return None
+    return mask[:, :, 0] if mask.ndim == 3 else mask
+
+
+def encode_mask(mask: np.ndarray) -> str:
+    ok, png = cv2.imencode(".png", np.where(mask > 0, 255, 0).astype(np.uint8))
+    if not ok:
+        raise RuntimeError("could not encode the mask")
+    return base64.b64encode(png.tobytes()).decode("ascii")
+
+
+def fill_patch(crop: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, str]:
+    """Flat fill with the color around the mask; the note warns when the background is not flat."""
+    m = mask.astype(np.uint8)
+    ring = (cv2.dilate(m, _kernel(5)) > 0) & ~(cv2.dilate(m, _kernel(2)) > 0)
+    paper = ring & ~ink(crop, mask)  # outlines and nearby strokes are not the background
+    pixels = crop[paper] if paper.sum() >= 10 else crop[ring] if ring.any() else crop[~mask]
+    if len(pixels) == 0:
+        raise InpaintError("no background around the mask to take a color from")
+    color = np.median(pixels.reshape(-1, crop.shape[2]), axis=0)
+    spread = float(np.percentile(np.abs(pixels.astype(np.float32) - color).max(axis=1), 75))
+    out = crop.copy()
+    out[mask] = color.astype(np.uint8)
+    note = "" if spread <= FLAT_SPREAD else \
+        f"the background around it is not flat (spread {spread:.0f}), so a flat fill may show"
+    return out, note
+
+
+def ink(crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Ink pixels of ``crop`` (bool): Otsu on the area around the mask; the
+    strokes are the minority under the mask (dark text, or light text on a dark background)."""
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.ndim == 3 else crop
+    near = cv2.dilate(mask.astype(np.uint8), _kernel(6)) > 0
+    sample = gray[near] if near.any() else gray.ravel()
+    if sample.size < 2 or float(sample.std()) < 4.0:
+        return np.zeros(gray.shape, bool)
+    threshold, _ = cv2.threshold(sample.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    dark = gray < threshold
+    inside = dark[mask] if mask.any() else dark[near]
+    return ~dark if inside.size and inside.mean() > 0.5 else dark
+
+
+def _components(binary: np.ndarray) -> Tuple[np.ndarray, List[Dict]]:
+    """Labels and per-component info, numbered top to bottom, then right to left."""
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary.astype(np.uint8), connectivity=8)
+    dist = cv2.distanceTransform(binary.astype(np.uint8), cv2.DIST_L2, 3)
+    thickness = np.zeros(count, np.float32)
+    np.maximum.at(thickness, labels.ravel(), dist.ravel())
+    comps = []
+    for label in range(1, count):
+        x, y, w, h, area = (int(v) for v in stats[label])
+        comps.append({"label": label, "box": (x, y, x + w, y + h), "area": area,
+                      "textlike": max(w, h) <= MAX_ELONGATION * max(1.0, 2.0 * float(thickness[label]))})
+    comps.sort(key=lambda c: (c["box"][1] // 12, -c["box"][2]))
+    return labels, comps
+
+
+# --- page --------------------------------------------------------------------------
+class InpaintPage:
+    """One page: original, units, attempts, and the precise mask operations."""
+
+    def __init__(self, image: np.ndarray, mask: np.ndarray, regions: Sequence[Tuple[int, List[np.ndarray], Box]],
+                 backend: InpaintBackend, stem: str = ""):
+        if mask.shape[:2] != image.shape[:2]:
+            mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+        self.original = np.ascontiguousarray(image[:, :, :3])
+        self.mask = mask > 0
+        self.backend = backend
+        self.stem = stem
+        self.units: List[Unit] = []
+        self.by_id: Dict[int, Unit] = {}
+        self._build_units(regions)
+
+    # --- units ---------------------------------------------------------------------
+    def _build_units(self, regions: Sequence[Tuple[int, List[np.ndarray], Box]]) -> None:
+        height, width = self.mask.shape
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(self.mask.astype(np.uint8), connectivity=8)
+        if count <= 1:
+            return
+        overlap = np.zeros((len(regions), count), np.int64)
+        for index, (_rid, polygons, _box) in enumerate(regions):
+            canvas = np.zeros((height, width), np.uint8)
+            polys = [np.round(np.asarray(p)).astype(np.int32).reshape(-1, 1, 2) for p in polygons]
+            if polys:
+                cv2.fillPoly(canvas, polys, 1)
+            canvas = cv2.dilate(canvas, _kernel(6))
+            overlap[index] = np.bincount(labels[canvas > 0], minlength=count)[:count]
+        owner: Dict[int, int] = {}
+        for label in range(1, count):
+            column = overlap[:, label] if len(regions) else np.zeros(0)
+            if column.size and column.max() > 0:
+                owner[label] = int(column.argmax())
+                continue
+            x, y, w, h, _ = (int(v) for v in stats[label])
+            best, best_gap = None, 41
+            for index, (_rid, _polys, rbox) in enumerate(regions):
+                gap = max(0, max(x, rbox[0]) - min(x + w, rbox[2]), max(y, rbox[1]) - min(y + h, rbox[3]))
+                if gap < best_gap:
+                    best, best_gap = index, gap
+            owner[label] = best if best is not None else -label
+        groups: Dict[int, List[int]] = {}
+        for label, index in owner.items():
+            groups.setdefault(index, []).append(label)
+        max_id = max((rid for rid, _p, _b in regions), default=0)
+        next_extra = (max_id // 100 + 1) * 100 + 1
+        for index, members in sorted(groups.items(), key=lambda kv: (kv[0] < 0, abs(kv[0]))):
+            xs1 = [int(stats[m][0]) for m in members]
+            ys1 = [int(stats[m][1]) for m in members]
+            xs2 = [int(stats[m][0] + stats[m][2]) for m in members]
+            ys2 = [int(stats[m][1] + stats[m][3]) for m in members]
+            if index >= 0:
+                rid, _polys, rbox = regions[index]
+                xs1.append(int(rbox[0])); ys1.append(int(rbox[1])); xs2.append(int(rbox[2])); ys2.append(int(rbox[3]))
+                touched = [regions[i][0] for i in range(len(regions)) if overlap[i, members].sum() > 0]
+                uid, extra = rid, False
+            else:
+                uid, extra, touched = next_extra, True, []
+                next_extra += 1
+            x1, y1, x2, y2 = min(xs1), min(ys1), max(xs2), max(ys2)
+            pad = int(max(24, min(80, 0.3 * max(x2 - x1, y2 - y1))))
+            box = (max(0, x1 - pad), max(0, y1 - pad), min(width, x2 + pad), min(height, y2 + pad))
+            bx1, by1, bx2, by2 = box
+            base = np.isin(labels[by1:by2, bx1:bx2], members)
+            unit = Unit(id=uid, regions=touched or ([uid] if not extra else []), box=box, base_mask=base,
+                        work=base.copy(), extra=extra)
+            self.units.append(unit)
+            self.by_id[uid] = unit
+
+    def unit(self, uid) -> Unit:
+        try:
+            key = int(str(uid).lstrip("#"))
+        except (TypeError, ValueError):
+            raise InpaintError(f"{uid!r} is not a region number")
+        if key not in self.by_id:
+            known = ", ".join(f"#{u.id}" for u in self.units) or "none"
+            raise InpaintError(f"#{key} has no inpainted area on this page (areas: {known})")
+        return self.by_id[key]
+
+    def crop(self, unit: Unit, image: Optional[np.ndarray] = None) -> np.ndarray:
+        x1, y1, x2, y2 = unit.box
+        return (self.original if image is None else image)[y1:y2, x1:x2]
+
+    def others_mask(self, unit: Unit) -> np.ndarray:
+        """Other units' current masks inside this unit's box (bool)."""
+        x1, y1, x2, y2 = unit.box
+        out = np.zeros((y2 - y1, x2 - x1), bool)
+        for other in self.units:
+            if other is unit:
+                continue
+            ox1, oy1, ox2, oy2 = other.box
+            ix1, iy1, ix2, iy2 = max(x1, ox1), max(y1, oy1), min(x2, ox2), min(y2, oy2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            mask = other.current.mask if other.attempts else other.base_mask
+            out[iy1 - y1:iy2 - y1, ix1 - x1:ix2 - x1] |= mask[iy1 - oy1:iy2 - oy1, ix1 - ox1:ix2 - ox1]
+        return out
+
+    # --- attempts ------------------------------------------------------------------
+    def composite(self, skip: Optional[Unit] = None) -> np.ndarray:
+        out = self.original.copy()
+        for unit in self.units:
+            if unit is skip or not unit.attempts:
+                continue
+            attempt = unit.current
+            x1, y1, x2, y2 = unit.box
+            view = out[y1:y2, x1:x2]
+            view[attempt.mask] = attempt.result[attempt.mask]
+        return out
+
+    def final_mask(self) -> np.ndarray:
+        out = self.mask.copy()
+        for unit in self.units:
+            x1, y1, x2, y2 = unit.box
+            out[y1:y2, x1:x2][unit.base_mask] = False
+        for unit in self.units:
+            x1, y1, x2, y2 = unit.box
+            out[y1:y2, x1:x2] |= unit.current.mask if unit.attempts else unit.base_mask
+        return out
+
+    async def initial(self, method: str) -> None:
+        """First attempt for every unit: the whole page mask, block by block, as the pipeline does."""
+        if not self.units:
+            return
+        result = await self.backend.inpaint(method, self.original, self.mask.astype(np.uint8) * 255)
+        for unit in self.units:
+            x1, y1, x2, y2 = unit.box
+            unit.attempts = [Attempt(1, method, unit.base_mask.copy(), result[y1:y2, x1:x2].copy(), [])]
+            unit.chosen = 0
+            unit.work = unit.base_mask.copy()
+        await self.check(self.units)
+
+    async def retry(self, unit: Unit, method: str) -> Attempt:
+        if unit.work is None or not unit.work.any():
+            raise InpaintError(f"#{unit.id}: the mask is empty; undo or add to it first")
+        base = self.composite(skip=unit)
+        x1, y1, x2, y2 = unit.box
+        note = ""
+        if method == FILL:
+            patch, note = fill_patch(base[y1:y2, x1:x2], unit.work)
+        else:
+            full = np.zeros(self.mask.shape, np.uint8)
+            full[y1:y2, x1:x2][unit.work] = 255
+            patch = (await self.backend.inpaint(method, base, full))[y1:y2, x1:x2]
+        attempt = Attempt(len(unit.attempts) + 1, method, unit.work.copy(), np.ascontiguousarray(patch).copy(),
+                          list(unit.work_ops), note=note)
+        unit.attempts.append(attempt)
+        unit.chosen = len(unit.attempts) - 1
+        unit.retries += 1
+        unit.history.clear()
+        await self.check([unit])
+        return attempt
+
+    def pick(self, unit: Unit, n: int) -> Attempt:
+        if not 1 <= int(n) <= len(unit.attempts):
+            raise InpaintError(f"#{unit.id} has attempts 1-{len(unit.attempts)}")
+        unit.chosen = int(n) - 1
+        unit.work = unit.current.mask.copy()
+        unit.work_ops = list(unit.current.ops)
+        unit.history.clear()
+        return unit.current
+
+    async def check(self, units: Sequence[Unit]) -> None:
+        page = self.composite()
+        text_map = await self.backend.text_map(page)
+        if text_map is not None and text_map.shape[:2] != page.shape[:2]:
+            text_map = cv2.resize(text_map, (page.shape[1], page.shape[0]), interpolation=cv2.INTER_LINEAR)
+        for unit in units:
+            attempt = unit.current
+            x1, y1, x2, y2 = unit.box
+            mask = attempt.mask.astype(np.uint8)
+            if text_map is not None:
+                _pixels, _ratio, boxes = qc.residual_text(text_map[y1:y2, x1:x2], mask)
+                attempt.residual = [(bx1 + x1, by1 + y1, bx2 + x1, by2 + y1) for bx1, by1, bx2, by2 in boxes]
+            _n, total, boxes = qc.broken_lines(self.original[y1:y2, x1:x2], page[y1:y2, x1:x2], mask)
+            attempt.broken = [(bx1 + x1, by1 + y1, bx2 + x1, by2 + y1) for bx1, by1, bx2, by2 in boxes]
+            attempt.entries = total
+            attempt.checked = True
+
+    # --- precise mask operations ---------------------------------------------------
+    def _edit(self, unit: Unit, new: np.ndarray, label: str) -> Tuple[int, int]:
+        before = int(unit.work.sum())
+        unit.history.append((unit.work.copy(), list(unit.work_ops)))
+        unit.work = new
+        unit.work_ops.append(label)
+        return before, int(new.sum())
+
+    def undo(self, unit: Unit) -> str:
+        if not unit.history:
+            raise InpaintError(f"#{unit.id}: no mask edit to undo since the last attempt")
+        label = unit.work_ops[-1] if unit.work_ops else "edit"
+        unit.work, unit.work_ops = unit.history.pop()
+        return label
+
+    def components(self, unit: Unit) -> Tuple[List[Dict], List[Dict]]:
+        """Mask components (M1..) and stroke candidates (S1..): ink near the mask that it does not cover."""
+        crop = self.crop(unit)
+        mask_labels, mask_comps = _components(unit.work)
+        for number, comp in enumerate(mask_comps, 1):
+            comp["name"] = f"M{number}"
+            comp["pixels"] = mask_labels == comp["label"]
+        # text of other areas is theirs to erase, not a candidate here
+        strokes = ink(crop, unit.work) & ~(cv2.dilate(self.others_mask(unit).astype(np.uint8), _kernel(2)) > 0)
+        near = cv2.dilate(unit.work.astype(np.uint8), _kernel(max(6, min(16, self._char_size(unit) // 3)))) > 0
+        stroke_labels, stroke_comps = _components(strokes)
+        candidates = []
+        for comp in stroke_comps:
+            pixels = stroke_labels == comp["label"]
+            area = comp["area"]
+            covered = int((pixels & unit.work).sum())
+            if area < 4 or covered > 0.6 * area or not comp["textlike"] or not (pixels & near).any():
+                continue
+            comp["pixels"] = pixels
+            candidates.append(comp)
+        for number, comp in enumerate(candidates, 1):
+            comp["name"] = f"S{number}"
+        return mask_comps, candidates
+
+    def _char_size(self, unit: Unit) -> int:
+        _labels, comps = _components(unit.base_mask)
+        sizes = [min(c["box"][2] - c["box"][0], c["box"][3] - c["box"][1]) for c in comps]
+        return int(np.median(sizes)) if sizes else 24
+
+    def select(self, unit: Unit, add: Sequence[int], remove: Sequence[int]) -> Tuple[str, int, int]:
+        mask_comps, strokes = self.components(unit)
+        new = unit.work.copy()
+        done = []
+        for number in add or []:
+            if not 1 <= int(number) <= len(strokes):
+                raise InpaintError(f"S{number} does not exist (S1-S{len(strokes)}); view_region with "
+                                   "show=components to see the numbers")
+            new |= cv2.dilate(strokes[int(number) - 1]["pixels"].astype(np.uint8), _kernel(2)) > 0
+            done.append(f"+S{number}")
+        for number in remove or []:
+            if not 1 <= int(number) <= len(mask_comps):
+                raise InpaintError(f"M{number} does not exist (M1-M{len(mask_comps)})")
+            new &= ~mask_comps[int(number) - 1]["pixels"]
+            done.append(f"-M{number}")
+        if not done:
+            raise InpaintError("give stroke numbers to add and/or mask component numbers to remove")
+        label = "select " + " ".join(done)
+        before, after = self._edit(unit, new, label)
+        return label, before, after
+
+    def adjust(self, unit: Unit, op: str, px: int, scope: str = "all",
+               components: Sequence[int] = ()) -> Tuple[str, int, int]:
+        px = int(px)
+        if not 1 <= px <= 12:
+            raise InpaintError("px must be 1-12")
+        work = unit.work.astype(np.uint8)
+        if op == "dilate":
+            changed = cv2.dilate(work, _kernel(px)) > 0
+        elif op == "erode":
+            changed = cv2.erode(work, _kernel(px)) > 0
+        else:
+            raise InpaintError("op must be dilate or erode")
+        if scope == "all":
+            zone = np.ones(work.shape, bool)
+        elif scope == "residual":
+            if not unit.current.residual:
+                raise InpaintError(f"#{unit.id} has no residual text marked; use scope all or components")
+            zone = np.zeros(work.shape, bool)
+            x0, y0 = unit.box[:2]
+            for bx1, by1, bx2, by2 in unit.current.residual:
+                m = px + 4
+                zone[max(0, by1 - y0 - m):max(0, by2 - y0 + m), max(0, bx1 - x0 - m):max(0, bx2 - x0 + m)] = True
+        elif scope == "components":
+            mask_comps, _strokes = self.components(unit)
+            zone = np.zeros(work.shape, bool)
+            for number in components or []:
+                if not 1 <= int(number) <= len(mask_comps):
+                    raise InpaintError(f"M{number} does not exist (M1-M{len(mask_comps)})")
+                zone |= cv2.dilate(mask_comps[int(number) - 1]["pixels"].astype(np.uint8), _kernel(px + 1)) > 0
+            if not zone.any():
+                raise InpaintError("scope components needs component numbers")
+        else:
+            raise InpaintError("scope must be all, residual or components")
+        new = np.where(zone, changed, unit.work)
+        label = f"{op} {px}px"
+        if scope == "residual":
+            label += " (residual)"
+        elif scope == "components":
+            label += " (" + ",".join(f"M{c}" for c in components) + ")"
+        before, after = self._edit(unit, new, label)
+        return label, before, after
+
+    def paint(self, unit: Unit, cell_box: Tuple[float, float, float, float], mode: str,
+              ink_only: bool = True) -> Tuple[str, int, int]:
+        """Add or remove the mask in a rectangle of the unit box (from grid cells)."""
+        h, w = unit.work.shape
+        x1, y1, x2, y2 = (int(round(v)) for v in cell_box)
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            raise InpaintError("those cells are outside this region's view")
+        zone = np.zeros((h, w), bool)
+        zone[y1:y2, x1:x2] = True
+        new = unit.work.copy()
+        if mode == "add":
+            if ink_only:
+                strokes = ink(self.crop(unit), unit.work | zone)
+                zone &= cv2.dilate(strokes.astype(np.uint8), _kernel(2)) > 0
+            new |= zone
+        elif mode == "remove":
+            new &= ~zone
+        else:
+            raise InpaintError("mode must be add or remove")
+        label = f"paint {mode}"
+        before, after = self._edit(unit, new, label)
+        return label, before, after
+
+    def protect_lines(self, unit: Unit, width: int = 2) -> Tuple[str, int, int, int]:
+        """Take art lines out of the mask: ink that crosses the mask but lies mostly
+        outside it (bubble outlines, panel borders, hair) or is too long to be text."""
+        width = max(1, min(6, int(width)))
+        strokes = ink(self.crop(unit), unit.work)
+        labels, comps = _components(strokes)
+        band = np.zeros(unit.work.shape, np.uint8)
+        lines = 0
+        for comp in comps:
+            pixels = labels == comp["label"]
+            inside = int((pixels & unit.work).sum())
+            if inside == 0:
+                continue
+            if inside < 0.5 * comp["area"] and comp["area"] >= 12 or not comp["textlike"]:
+                band |= pixels.astype(np.uint8)
+                lines += 1
+        if not lines:
+            raise InpaintError(f"#{unit.id}: no art line crosses the mask")
+        new = unit.work & ~(cv2.dilate(band, _kernel(width)) > 0)
+        label = f"protect lines {width}px"
+        before, after = self._edit(unit, new, label)
+        return label, before, after, lines
+
+    # --- results -------------------------------------------------------------------
+    def score(self) -> float:
+        """Lowest unit score: residual text left x0.65, broken lines left x0.9, flagged x0.75."""
+        score = 1.0
+        for unit in self.units:
+            if not unit.attempts:
+                continue
+            s = 1.0
+            if unit.current.residual:
+                s *= 0.65
+            if unit.current.broken:
+                s *= 0.9
+            if unit.flagged:
+                s *= 0.75
+            score = min(score, s)
+        return round(score, 3)
+
+    def save_candidates(self, folder: str) -> Dict[str, Dict]:
+        """Every attempt as a PNG patch plus its mask, and the sidecar entries."""
+        os.makedirs(folder, exist_ok=True)
+        out: Dict[str, Dict] = {}
+        for unit in self.units:
+            attempts = []
+            for attempt in unit.attempts:
+                name = f"r{unit.id}_a{attempt.n}"
+                cv2.imwrite(os.path.join(folder, name + ".png"), cv2.cvtColor(attempt.result, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(folder, name + "_mask.png"), attempt.mask.astype(np.uint8) * 255)
+                attempts.append({"method": attempt.method, "ops": attempt.ops, "verdict": attempt.issues or ["pass"],
+                                 "residual": [list(b) for b in attempt.residual],
+                                 "broken_lines": [list(b) for b in attempt.broken], "line_entries": attempt.entries,
+                                 "note": attempt.note, "file": name + ".png", "mask": name + "_mask.png"})
+            out[str(unit.id)] = {"box": list(unit.box), "regions": unit.regions, "extra": unit.extra,
+                                 "attempts": attempts, "chosen": unit.chosen + 1, "flagged": unit.flagged}
+        return out

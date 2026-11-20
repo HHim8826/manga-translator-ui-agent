@@ -69,6 +69,9 @@ class AgentStore:
     def save_sidecar(self, stem: str, data: dict) -> None:
         write_json_atomic(self.sidecar_path(stem), {"version": SIDECAR_VERSION, **data})
 
+    def candidates_dir(self, stem: str) -> str:
+        return os.path.join(self.agent_dir, "candidates", stem)
+
     def run_log_path(self, run_id: str) -> str:
         return os.path.join(self.runs_dir, f"{run_id}.jsonl")
 

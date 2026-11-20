@@ -1578,5 +1578,18 @@
   "Agent Tool undo": "撤销",
   "Agent Tool add_region": "新增文本框",
   "Agents Recall": "补漏检查",
-  "Agents Recall Detail": "新增 {added} 个，忽略 {ignored} 个"
+  "Agents Recall Detail": "新增 {added} 个，忽略 {ignored} 个",
+  "Agent Tool view_region": "查看修图区域",
+  "Agent Tool mask_select": "选取蒙版区块",
+  "Agent Tool adjust_mask": "调整蒙版",
+  "Agent Tool mask_paint": "涂改蒙版",
+  "Agent Tool protect_lines": "保护线条",
+  "Agent Tool inpaint_region": "重新修复",
+  "Agent Tool pick_candidate": "选择候选",
+  "Agent Tool finish_review": "完成修图审查",
+  "Agent Page Inpainting": "修图审查",
+  "Agents Inpaint": "修图审查",
+  "Agents Inpaint Start": "{units} 个区域，程序检查发现 {issues} 个有问题",
+  "Agents Inpaint Detail": "{units} 个区域，重修 {retried} 个，待确认 {flagged} 个",
+  "Agents Inpaint Progress": "修图审查：{page}"
 }

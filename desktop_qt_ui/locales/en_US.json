@@ -1579,5 +1579,18 @@
   "Agent Tool undo": "Undo",
   "Agent Tool add_region": "Add region",
   "Agents Recall": "Recall check",
-  "Agents Recall Detail": "{added} added, {ignored} ignored"
+  "Agents Recall Detail": "{added} added, {ignored} ignored",
+  "Agent Tool view_region": "View area",
+  "Agent Tool mask_select": "Select mask parts",
+  "Agent Tool adjust_mask": "Adjust mask",
+  "Agent Tool mask_paint": "Paint mask",
+  "Agent Tool protect_lines": "Protect lines",
+  "Agent Tool inpaint_region": "Inpaint again",
+  "Agent Tool pick_candidate": "Pick candidate",
+  "Agent Tool finish_review": "Finish inpaint review",
+  "Agent Page Inpainting": "Inpaint review",
+  "Agents Inpaint": "Inpaint review",
+  "Agents Inpaint Start": "{units} areas, {issues} with program findings",
+  "Agents Inpaint Detail": "{units} areas, {retried} redone, {flagged} flagged",
+  "Agents Inpaint Progress": "Inpaint review: {page}"
 }

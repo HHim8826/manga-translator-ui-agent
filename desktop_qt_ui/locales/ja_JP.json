@@ -1568,5 +1568,18 @@
   "Agent Tool undo": "元に戻す",
   "Agent Tool add_region": "領域を追加",
   "Agents Recall": "検出漏れチェック",
-  "Agents Recall Detail": "{added} 個追加、{ignored} 個無視"
+  "Agents Recall Detail": "{added} 個追加、{ignored} 個無視",
+  "Agent Tool view_region": "修復領域を表示",
+  "Agent Tool mask_select": "マスクの部分を選択",
+  "Agent Tool adjust_mask": "マスクを調整",
+  "Agent Tool mask_paint": "マスクを塗る",
+  "Agent Tool protect_lines": "線を保護",
+  "Agent Tool inpaint_region": "再修復",
+  "Agent Tool pick_candidate": "候補を選択",
+  "Agent Tool finish_review": "修復レビュー完了",
+  "Agent Page Inpainting": "修復レビュー",
+  "Agents Inpaint": "修復レビュー",
+  "Agents Inpaint Start": "{units} 領域、プログラム検査で {issues} 件の問題",
+  "Agents Inpaint Detail": "{units} 領域、{retried} 件を再修復、{flagged} 件を要確認",
+  "Agents Inpaint Progress": "修復レビュー：{page}"
 }

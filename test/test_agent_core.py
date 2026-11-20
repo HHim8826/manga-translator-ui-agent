@@ -200,8 +200,12 @@ class ScriptedClient:
         self.recall = list(recall or [])
         self.requests = []
         self.recall_requests = []
+        self.review_requests = []
 
     async def complete(self, messages, tools, tool_choice):
+        if tools and tools[0]["function"]["name"] == "view_region":  # inpaint review: accept as it is
+            self.review_requests.append(messages)
+            return _calls(("finish_review", {}))
         if tools and tools[0]["function"]["name"] == "report_unboxed_text":
             self.recall_requests.append(messages)
             items = self.recall.pop(0) if self.recall else []
@@ -329,7 +333,8 @@ def test_workflow_runs_preprocess_agent_render(tmp_path):
 
     translator = FakeTranslator(tmp_path)
     client = ScriptedClient(_finish_page() + _finish_page())
-    result = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client, log=lambda m: None))
+    result = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client, log=lambda m: None,
+                                            agent_settings={"inpaint_review": False}))
     assert result == ["ctx:001.png", "ctx:002.png"]
     assert translator.calls[0]["template"] and translator.calls[0]["save_text"]
     assert translator.calls[1] == {"template": False, "save_text": True, "load_text": True, "skip_txt_import": True,
@@ -569,3 +574,30 @@ def test_overflow_counts_letters_not_punctuation(tmp_path):
 
     assert codes("不行。") == [] and codes("不行……！") == []
     assert codes("絕對不行") == ["overflow"]
+
+
+def test_workflow_reviews_inpainting_and_render_reuses_it(tmp_path):
+    from test_agent_inpaint import FakeBackend
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    translator = FakeTranslator(tmp_path)
+    # page 002 fails in the agent stage: it is not reviewed and must not reuse an old inpainted image
+    client = ScriptedClient(_finish_page() + [RuntimeError("refused")] * 3)
+    backend = FakeBackend()
+    result = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client,
+                                            log=lambda m: None, inpaint_backend=backend,
+                                            agent_settings={"retry_attempts": 1}))
+    assert len(client.review_requests) == 1 and list(backend.saved) == [paths[0]]
+    renders = translator.calls[1:]
+    assert [c["ignore_existing_inpainted"] for c in renders] == [False, True]
+    assert result == ["ctx:001.png", "ctx:002.png"]
+    store = AgentStore(str(folder / "manga_translator_work"))
+    assert store.load_sidecar("001")["inpaint"]["finished"]
+    assert "inpaint" not in store.load_sidecar("002")
