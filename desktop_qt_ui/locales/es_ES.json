@@ -1589,5 +1589,9 @@
   "Agents Proofread": "Revisión",
   "Agents Proofread Start": "{pages} páginas, {regions} regiones",
   "Agents Proofread Detail": "{revised} corregidas, {flagged} marcadas",
-  "Agents Proofread Progress": "Revisando el capítulo"
+  "Agents Proofread Progress": "Revisando el capítulo",
+  "Agents Fonts": "Fuentes",
+  "Agents Fonts Detail": "{changed} regiones cambiadas, {unfixed} con caracteres que faltan",
+  "Agents Fonts Missing": "sin {chars}",
+  "Agents Fonts Layout": "movería el texto"
 }

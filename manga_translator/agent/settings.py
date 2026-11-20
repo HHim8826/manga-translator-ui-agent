@@ -44,6 +44,14 @@ class AgentSettings(BaseModel):
     translations at once and fixes what is really wrong (off by default)."""
     proofread_steps: int = Field(default=20, ge=1)
     """Model calls allowed for the proofreading of one chapter."""
+    choose_fonts: bool = True
+    """The translation agent sees a sheet of the installed fonts that have every common character of
+    the target language (Chinese, Japanese, Korean) and may give a region the one that looks like its
+    original lettering (narration, handwriting, a sign); normal dialogue keeps the user's font."""
+    fix_missing_glyphs: bool = True
+    """After the agents, a region whose font has no glyph for one of its characters gets the most
+    similar installed font that has them all. Every font change is checked by rendering the region
+    with both fonts; a change that would move or resize the text is not made."""
     low_confidence_threshold: float = 0.7
     """Pages marked done below this confidence go to the review list."""
     request_timeout: int = 300

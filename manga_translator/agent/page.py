@@ -55,6 +55,8 @@ class Region:
     """What the recall check thought the text was (dialogue, sfx, ...)."""
     erase: Optional[tuple] = None
     """Added regions: (x, y, 0/1 patch) of pixels to add to the mask."""
+    font: str = ""
+    """The agent's font for this region (from the font sheet); empty keeps the JSON's font."""
 
     @property
     def polygons(self) -> List[np.ndarray]:
@@ -357,6 +359,8 @@ class PageDoc:
             data["translation_raw"] = region.translation or ""
             data.pop("translation_rich", None)
             data["center"] = region.center
+            if region.font:
+                data["font_family"] = region.font
             out.append(data)
         return out
 
@@ -455,6 +459,7 @@ class PageDoc:
                     "merged_into": r.merged_into,
                     "link_group": r.link_group,
                     "reasons": r.reasons,
+                    "font": r.font,
                     "checks": [c["code"] for c in self.checks if c.get("region") == r.id],
                 }
                 for r in (self.regions[i] for i in self.order)

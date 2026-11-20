@@ -62,6 +62,8 @@ class AgentSession:
         self.page_steps = 0
         self.work_terms: List[Any] = []
         """Glossary terms of the work's prompt file (``work_prompt.WorkTerm``), for the checks."""
+        self.font_choices: List[str] = []
+        """Fonts on the font sheet (font_family values); set_text font n picks font_choices[n - 1]."""
         self._reset_page_state()
 
     def _reset_page_state(self) -> None:
@@ -312,13 +314,36 @@ def link_regions(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 
 # --- text ---------------------------------------------------------------------
+def _font_choice(s: AgentSession, value: Any) -> Optional[str]:
+    """None leaves the region's font as it is; 0 is the user's font."""
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise RegionError("font must be a number from the font sheet (0 = the user's font)")
+    if number == 0:
+        return ""
+    if not s.font_choices:
+        raise RegionError("this run has no font sheet; leave font out")
+    if not 1 <= number <= len(s.font_choices):
+        raise RegionError(f"there is no font {number}; the font sheet lists 0-{len(s.font_choices)}")
+    return s.font_choices[number - 1]
+
+
 def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    font = _font_choice(s, a.get("font"))
     region = s.doc.set_text(a["id"], a.get("source_text", ""), a.get("translation", ""),
                             a.get("category") or "dialogue", a.get("confidence"), a.get("ruby", ""),
                             a.get("reason", ""))
+    if font is not None:
+        region.font = font
     remaining = len(s.doc.missing())
+    summary = f"#{region.id}: {_short(region.source_text, 24)} → {_short(region.translation, 30)}"
+    if region.font:
+        summary += f" [{region.font}]"
     return ToolResult(text=f"#{region.id} saved. {remaining} region(s) on this page still need a result.",
-                      summary=f"#{region.id}: {_short(region.source_text, 24)} → {_short(region.translation, 30)}")
+                      summary=summary)
 
 
 def set_line_breaks(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -483,6 +508,9 @@ TOOLS: List[Tool] = [
                "translation": {"type": "string", "description": "The translation that will be typeset"},
                "category": {"type": "string", "enum": list(CATEGORIES)},
                "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
+               "font": {"type": "integer", "description": "Only when the original lettering is clearly not "
+                        "normal dialogue: number of the closest font on the font sheet (0 = the user's font). "
+                        "Leave out to keep the font as it is."},
                "reason": REASON},
               ["id", "source_text", "translation", "category", "confidence"]), set_text, writes=True),
     Tool("set_line_breaks", "Put explicit line breaks (\\n) into a region's current translation.",

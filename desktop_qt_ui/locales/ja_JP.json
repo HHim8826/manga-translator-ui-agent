@@ -1589,5 +1589,9 @@
   "Agents Proofread": "校正",
   "Agents Proofread Start": "{pages} ページ、{regions} 領域",
   "Agents Proofread Detail": "{revised} 件を修正、{flagged} 件を要確認",
-  "Agents Proofread Progress": "話全体を校正中"
+  "Agents Proofread Progress": "話全体を校正中",
+  "Agents Fonts": "フォント",
+  "Agents Fonts Detail": "{changed} 領域を変更、{unfixed} 領域で字形不足",
+  "Agents Fonts Missing": "「{chars}」なし",
+  "Agents Fonts Layout": "配置がずれる"
 }

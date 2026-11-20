@@ -116,6 +116,10 @@ Write every reason, note and review flag in {reason_lang}; a human reads them.
 Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. Update the story summary every few pages with story_summary_update.{extra}"""
 
 
+FONT_PROMPT = """
+
+Fonts: every region is typeset in the user's font ({default}) unless you give set_text a font. The font sheet in the first message shows the other installed fonts that have every {target} character, numbered. Give font only when a region's original lettering is clearly a different style from the normal dialogue around it (a narration box in a serif face, handwriting, cute or pop lettering, brush writing, a sign, title or screen), and pick the listed font that looks most like that lettering. Use the same font for the same kind of text all through the chapter, and leave font out for normal dialogue. The program keeps a font only if the text still fits the same place."""
+
 BATCHED_SAVES = ("set_text", "skip_region")
 BATCH_HINT = (" {left} region(s) are left: save them all in your next response (several set_text / skip_region "
               "calls in one response), not one per response.")
@@ -143,9 +147,11 @@ class AgentRunner:
                  pages: List[str], target_lang: str,
                  should_stop: Callable[[], bool] = lambda: False,
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
-                 work_prompt: Optional[WorkPrompt] = None):
+                 work_prompt: Optional[WorkPrompt] = None, fonts=None):
         self.settings = settings
         self.work_prompt = work_prompt
+        self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
+        """``fonts.FontService`` with a font sheet for set_text font, or None."""
         """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.client = client
         self.store = store
@@ -158,6 +164,7 @@ class AgentRunner:
         self.memory = store.memory()
         self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
         self.session.work_terms = list(work_prompt.terms) if work_prompt else []
+        self.session.font_choices = [face.value for face in self.fonts.choices] if self.fonts else []
         self.registry = ToolRegistry(self.session)
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
@@ -175,6 +182,8 @@ class AgentRunner:
         if self.work_prompt is not None:
             extra += (f"\n\nNotes for this work from the user's prompt file {self.work_prompt.name}. Follow them, and "
                       f"use its glossary over your own choices and over the glossary tools:\n{self.work_prompt.text}")
+        if self.fonts is not None:
+            extra += FONT_PROMPT.format(default=self.fonts.default_font, target=target)
         if self.settings.extra_instructions.strip():
             extra += f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}"
         return SYSTEM_PROMPT.format(double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
@@ -185,8 +194,14 @@ class AgentRunner:
                  + ", ".join(os.path.basename(p) for p in self.pages) + ".\n\n" + self.memory.snapshot_text())
         if recap:
             intro += "\n\n" + recap
+        content: Any = intro
+        if self.fonts is not None:
+            content = [{"type": "text", "text": intro + "\n\nFont sheet (set_text font):\n" + self.fonts.sheet_text()}]
+            if self.fonts.sheet_url:
+                content.append({"type": "image_url", "image_url": {"url": self.fonts.sheet_url,
+                                                                   "detail": self.settings.image_detail}})
         self.preamble = [{"role": "system", "content": self.system_prompt()},
-                         {"role": "user", "content": intro}]
+                         {"role": "user", "content": content}]
 
     def _load_past(self) -> None:
         """Earlier results of this chapter (previous runs) for search_past_translations."""
@@ -419,7 +434,8 @@ class AgentRunner:
                          model=getattr(self.client, "model_label", ""), target_lang=self.target_lang,
                          memory=self.memory.counts(),
                          work_prompt={"name": self.work_prompt.name, "terms": len(self.work_prompt.terms)}
-                         if self.work_prompt else None)
+                         if self.work_prompt else None,
+                         fonts=list(self.session.font_choices) or None)
         outcomes: List[Dict[str, Any]] = []
         failures_in_a_row = 0
         try:

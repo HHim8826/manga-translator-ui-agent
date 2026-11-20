@@ -274,6 +274,18 @@ class AgentsPage(QWidget):
             if flagged:
                 self._paint(row, WARN)
             self._show_finished_if_idle()
+        elif kind == "fonts":
+            unfixed = int(event.get("unfixed") or 0)
+            reasons = []
+            for change in event.get("changes") or []:
+                why = self._t("Agents Fonts Missing", chars=change["missing"]) if change.get("missing") else \
+                    self._t("Agents Fonts Layout") if change.get("reason") == "layout" else ""
+                reasons.append(f"#{change.get('region')} → {change.get('to')}" + (f" ({why})" if why else ""))
+            row = self._add_row(event, self._t("Agents Fonts"),
+                                self._t("Agents Fonts Detail", changed=event.get("changed", 0), unfixed=unfixed),
+                                "; ".join(reasons), problem=unfixed > 0)
+            if unfixed:
+                self._paint(row, WARN)
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)

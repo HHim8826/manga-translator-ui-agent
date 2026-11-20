@@ -191,3 +191,21 @@ def test_proofread_events(app):
     assert rows[0].text(3) == "Agents Proofread Start pages=1 regions=7"
     assert rows[2].text(3) == "Agents Proofread Detail flagged=1 revised=1" and rows[2].text(4) == "ok"
     assert page.status_label.text().startswith("Agents Finished")
+
+
+def test_font_events(app):
+    from PyQt6.QtCore import Qt
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["001.jpg"], "model": "m"},
+        {"type": "fonts", "page": "001", "agent": "fonts", "changed": 2, "unfixed": 1, "changes": [
+            {"region": 5, "from": "A", "to": "Noto Sans TC::Bold", "reason": "missing", "missing": "值"},
+            {"region": 2, "from": "B", "to": "A", "reason": "layout"}]},
+    ])
+    row = page.timeline.topLevelItem(0)
+    assert row.text(2) == "Agents Fonts" and row.text(3) == "Agents Fonts Detail changed=2 unfixed=1"
+    assert row.text(4) == ("#5 → Noto Sans TC::Bold (Agents Fonts Missing chars=值); "
+                           "#2 → A (Agents Fonts Layout)")
+    assert row.data(0, Qt.ItemDataRole.UserRole + 1) is True

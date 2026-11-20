@@ -1589,5 +1589,9 @@
   "Agents Proofread": "교정",
   "Agents Proofread Start": "{pages}페이지, {regions}개 영역",
   "Agents Proofread Detail": "{revised}곳 수정, {flagged}개 확인 필요",
-  "Agents Proofread Progress": "화 전체 교정 중"
+  "Agents Proofread Progress": "화 전체 교정 중",
+  "Agents Fonts": "글꼴",
+  "Agents Fonts Detail": "{changed}개 영역 변경, {unfixed}개 글자 누락",
+  "Agents Fonts Missing": "「{chars}」 없음",
+  "Agents Fonts Layout": "배치가 어긋남"
 }

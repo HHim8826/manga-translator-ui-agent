@@ -1599,5 +1599,9 @@
   "Agents Proofread": "校对",
   "Agents Proofread Start": "{pages} 页，{regions} 个区域",
   "Agents Proofread Detail": "修改 {revised} 处，待确认 {flagged} 个",
-  "Agents Proofread Progress": "正在校对整话"
+  "Agents Proofread Progress": "正在校对整话",
+  "Agents Fonts": "字体",
+  "Agents Fonts Detail": "更换 {changed} 个区域，仍缺字 {unfixed} 个",
+  "Agents Fonts Missing": "缺「{chars}」",
+  "Agents Fonts Layout": "换字体后会跑位"
 }

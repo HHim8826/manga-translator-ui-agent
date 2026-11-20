@@ -1600,5 +1600,9 @@
   "Agents Proofread": "Proofreading",
   "Agents Proofread Start": "{pages} pages, {regions} regions",
   "Agents Proofread Detail": "{revised} revised, {flagged} flagged",
-  "Agents Proofread Progress": "Proofreading the chapter"
+  "Agents Proofread Progress": "Proofreading the chapter",
+  "Agents Fonts": "Fonts",
+  "Agents Fonts Detail": "{changed} region(s) changed, {unfixed} still missing characters",
+  "Agents Fonts Missing": "lacks {chars}",
+  "Agents Fonts Layout": "would move the text"
 }
