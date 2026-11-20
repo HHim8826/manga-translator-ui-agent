@@ -248,6 +248,8 @@ def main():
     
     # 1. 创建 QApplication 实例
     app = QApplication(sys.argv)
+    # 尽早安装 qfluentwidgets 的 InfoBar / ScrollBar 防崩补丁（原先要等第一次弹通知才导入）
+    import ui.widgets.toast_notification  # noqa: F401
     app.setApplicationName("Manga Translator UI")
     app.setOrganizationName("Manga Translator UI")
     app_version = get_app_version()

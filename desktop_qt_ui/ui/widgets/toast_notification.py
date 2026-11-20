@@ -7,7 +7,7 @@ import platform
 import subprocess
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QParallelAnimationGroup, Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import FluentIcon as FIF, InfoBar, InfoBarPosition, PushButton
 from qfluentwidgets.components.widgets.info_bar import InfoBarManager
@@ -44,15 +44,21 @@ def _install_infobar_manager_safety_patches():
                 pass
 
         if p not in self.infoBars:
+            # 不要在这里预建 infoBars[p]：原版 add() 只在 p 不在 infoBars 时才会
+            # 创建 aniGroups[p] 并安装 eventFilter；抢先放一个空列表会让同一父控件的
+            # 第二条通知在 aniGroups[p] 处 KeyError（编辑器导出时每次都会触发）。
             try:
                 p.destroyed.connect(lambda _, pw=p: self._cleanup_parent(pw))
             except Exception:
                 pass
-            self.infoBars[p] = []
         else:
             self.infoBars[p] = [
                 b for b in self.infoBars[p] if not sip.isdeleted(b)
             ]
+            if hasattr(self, "aniGroups") and p not in self.aniGroups:
+                # 自愈：已登记父控件却缺少动画组时补上，并补装位置跟随的 eventFilter
+                self.aniGroups[p] = QParallelAnimationGroup(self)
+                p.installEventFilter(self)
         return orig_add(self, infoBar)
 
     def _cleanup_parent(self, parent_widget):
@@ -132,6 +138,36 @@ def _install_infobar_manager_safety_patches():
 
 
 _install_infobar_manager_safety_patches()
+
+
+def _install_scrollbar_event_filter_patch():
+    """qfluentwidgets ScrollBar.eventFilter 在 Resize 事件上调用 e.size()。
+
+    PyQt6 偶尔会把 Resize 事件包装成别的事件类型（复用了已销毁事件的 sip 包装），
+    结果抛出 AttributeError: 'QShowEvent' object has no attribute 'size'。
+    此时改用父控件当前尺寸，效果相同。
+    """
+    from qfluentwidgets.components.widgets.scroll_bar import ScrollBar
+
+    if getattr(ScrollBar, "_resize_event_patch_installed", False):
+        return
+    ScrollBar._resize_event_patch_installed = True
+    orig_event_filter = ScrollBar.eventFilter
+
+    def safe_event_filter(self, obj, e):
+        if (
+            obj is self.parent()
+            and e.type() == QEvent.Type.Resize
+            and not hasattr(e, "size")
+        ):
+            self._adjustPos(obj.size())
+            return QWidget.eventFilter(self, obj, e)
+        return orig_event_filter(self, obj, e)
+
+    ScrollBar.eventFilter = safe_event_filter
+
+
+_install_scrollbar_event_filter_patch()
 
 
 class ToastNotification(QObject):
