@@ -317,7 +317,7 @@
   "label_translator": "翻譯器",
   "label_target_lang": "目標語言",
   "label_keep_lang": "保留來源語言",
-  "label_enable_streaming": "啟用流式傳輸",
+  "label_enable_streaming": "啟用串流傳輸",
   "label_no_text_lang_skip": "不略過目標語言文本",
   "label_high_quality_prompt_path": "自定義提示詞",
   "label_extract_glossary": "自動提取新術語",
@@ -903,7 +903,7 @@
   "web_error": "錯誤",
   "web_success": "成功",
   "web_warning": "警告",
-  "web_info": "信息",
+  "web_info": "資訊",
   "web_permission_denied": "權限不足",
   "web_quota_exceeded": "配額已用完",
   "web_file_too_large": "文件過大",
@@ -958,7 +958,7 @@
   "web_session_logs": "對話框日誌",
   "web_system_logs": "系統日誌",
   "web_log_level": "日誌級別",
-  "web_log_info": "信息",
+  "web_log_info": "資訊",
   "web_log_warning": "警告",
   "web_log_error": "錯誤",
   "web_export_logs": "導出日誌",
@@ -1151,7 +1151,7 @@
   "desc_translator_translator": "選擇翻譯引擎。目前 Qt UI 可選翻譯器包括 OpenAI、Google Gemini、Sakura、高品質翻譯 OpenAI、高品質翻譯 Gemini，以及「不翻譯」「保留原文」。推薦高品質翻譯 OpenAI。",
   "desc_translator_target_lang": "翻譯的目標語言。支援簡體中文、繁體中文、英語、日語、韓語等。",
   "desc_translator_keep_lang": "文字框合併完成後，依辨識出的來源語言過濾後續處理區域；不符合的區域會保持原圖，不擦除、不翻譯、不渲染。設為「不過濾」即可停用。",
-  "desc_translator_enable_streaming": "啟用後，OpenAI/Gemini（含高品質模式）會優先使用統一流式傳輸層即時接收增量回應；關閉後一律使用普通非流式請求。",
+  "desc_translator_enable_streaming": "啟用後，OpenAI/Gemini（含高品質模式）會優先使用統一串流傳輸層即時接收增量回應；關閉後一律使用普通非串流請求。",
   "desc_translator_no_text_lang_skip": "不跳過已是目標語言的文字，強制進行翻譯。",
   "desc_translator_extract_glossary": "自動從翻譯結果中提取人名、地名等專有名詞，確保長篇漫畫翻譯一致性。",
   "desc_translator_max_requests_per_minute": "每分鐘最大請求數。設為 0 表示不限制。用於避免觸發 API 速率限制。",
@@ -1512,5 +1512,5 @@
   "api_test_error_remote_image": "下載產生的圖片失敗：HTTP {status}",
   "api_test_error_sakura_base": "請先設定 SAKURA_API_BASE。",
   "api_test_error_unsupported": "此翻譯器不支援 API 測試。",
-  "api_test_stream_modes": "流式：{stream}  非流式：{non_stream}"
+  "api_test_stream_modes": "串流：{stream}  非串流：{non_stream}"
 }
