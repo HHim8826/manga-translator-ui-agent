@@ -252,3 +252,109 @@ def test_workflow_checks_fonts_after_the_agents(tmp_path):
     store = AgentStore(str(folder / "manga_translator_work"))
     log = os.path.join(store.runs_dir, sorted(os.listdir(store.runs_dir))[-1])
     assert any(e["type"] == "error" and e.get("agent") == "fonts" for e in read_events(log))
+
+
+def test_workflow_scans_fonts_while_preprocessing(tmp_path, monkeypatch):
+    from manga_translator.agent import workflow
+    from test_agent_core import FakeTranslator, _finish_page
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    order = []
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    async def font_service(translator, config, settings, target_lang, log):
+        order.append("fonts start")
+        await asyncio.sleep(0)
+        order.append("fonts done")
+        return None
+
+    class Translator(FakeTranslator):
+        async def translate_batch(self, images_with_configs, save_info=None):
+            if self.template:
+                order.append("preprocess start")
+                await asyncio.sleep(0.01)
+                order.append("preprocess done")
+            return await super().translate_batch(images_with_configs, save_info)
+
+    monkeypatch.setattr(workflow, "_font_service", font_service)
+    asyncio.run(workflow.run_agent_workflow(Translator(tmp_path), [(str(folder / "001.png"), Cfg)], {},
+                                            client=ScriptedClient(_finish_page()), log=lambda m: None,
+                                            agent_settings={"inpaint_review": False, "recall_pass": False}))
+    assert order == ["preprocess start", "fonts start", "fonts done", "preprocess done"]
+
+
+def _face(family, *names):
+    return fonts.FontFace("x.ttf", 0, family, "Regular", 400, tuple(names), frozenset())
+
+
+def test_design_classes_come_from_the_names():
+    cases = {
+        ("MingLiU", "細明體"): "serif", ("PMingLiU",): "serif", ("Yu Mincho", "游明朝"): "serif",
+        ("SimSun", "宋体"): "serif", ("Source Han Serif TC",): "serif",
+        ("Microsoft JhengHei", "微軟正黑體"): "sans", ("A-OTF Shin Go Pr6N", "A-OTF 新ゴ Pr6N"): "sans",
+        ("FZLanTingHei-M-GBK",): "sans", ("Microsoft Sans Serif",): "sans", ("Yu Gothic",): "sans",
+        ("FangSong", "仿宋"): "fangsong", ("DFKai-SB", "標楷體"): "kai", ("KaiTi",): "kai",
+        ("FZZhunYuan-M02",): "round", ("LiSu", "隶书"): "clerical",
+        ("FOT-Humming Std",): None, ("Lolita",): None,  # "Ming" in Humming is not a Ming face
+    }
+    for names, kind in cases.items():
+        assert fonts.design_class(_face(*names)) == kind, names
+    ming, mincho, hei = _face("MingLiU"), _face("Yu Mincho"), _face("SimHei")
+    assert fonts.class_term(ming, mincho) == fonts.CLASS_BONUS
+    assert fonts.class_term(ming, hei) == -fonts.CLASS_BONUS
+    assert fonts.class_term(ming, _face("Lolita")) == 0.0
+
+
+class _Face:
+    def __init__(self, value, lacks=""):
+        self.value = self.label = value
+        self.lacks = lacks
+
+    def missing(self, chars):
+        return "".join(sorted(c for c in set(chars) if c in self.lacks))
+
+
+class _OneChoice:
+    """A catalog whose only replacement for MingLiU scores ``score``."""
+
+    def __init__(self, score):
+        self.score = score
+        self.by_name = {"MingLiU": _Face("MingLiU", "︒值"), "Yu Mincho": _Face("Yu Mincho")}
+
+    def find(self, value):
+        return self.by_name.get(value.split("::")[0])
+
+    def similar(self, ref, chars, target_lang):
+        return [(self.score, self.by_name["Yu Mincho"])]
+
+
+def _vertical(json_path):
+    raw = json.load(open(json_path, encoding="utf-8"))
+    for region in next(iter(raw.values()))["regions"]:
+        region["direction"] = "v"
+    json.dump(raw, open(json_path, "w", encoding="utf-8"), ensure_ascii=False)
+
+
+def test_missing_punctuation_needs_a_close_font_missing_letters_do_not(tmp_path, vertical_rules):
+    texts = [("好。", "MingLiU"), ("值。", "MingLiU")]
+    image_path, json_path, store, events = _page(tmp_path, texts)
+    _vertical(json_path)
+    result = asyncio.run(FontService(_OneChoice(0.1), FakeBackend(), "MingLiU", "CHT").fix_page(
+        image_path, store, events))
+    events.close()
+    # punctuation only: no close font, so it keeps its font and borrows the mark (not a review item)
+    assert result["changed"] == 1 and result["unfixed"] == 0
+    assert _saved_fonts(json_path) == ["MingLiU", "Yu Mincho"]
+    side = store.load_sidecar("001")
+    assert side["fonts"]["kept"] == [{"region": 1, "font": "MingLiU", "missing": "︒", "tried": []}]
+    assert not side.get("review_flags")
+
+    image_path, json_path, store, events = _page(tmp_path / "close", texts)
+    _vertical(json_path)
+    asyncio.run(FontService(_OneChoice(0.5), FakeBackend(), "MingLiU", "CHT").fix_page(image_path, store, events))
+    events.close()
+    assert _saved_fonts(json_path) == ["Yu Mincho", "Yu Mincho"]

@@ -68,6 +68,9 @@ SAME_DESIGN = 0.85
 """Glyph shapes this similar (weight aside) are one design, like Noto Sans TC and Noto Sans HK."""
 CANDIDATES = 6
 """Similar fonts tried (each with a layout check) for a region with missing glyphs."""
+PUNCT_MIN_SCORE = 0.3
+"""When only punctuation is missing (a Ming face without vertical forms), a font must score at least
+this in ``similar`` to replace it; otherwise the region keeps its font and borrows the punctuation."""
 
 
 # --- languages ----------------------------------------------------------------
@@ -465,7 +468,7 @@ class FontCatalog:
                 continue
             score = self.similarity(ref, face, kind)
             if score is not None:
-                ranked.append((score + locale_term(face, target_lang), face))
+                ranked.append((score + locale_term(face, target_lang) + class_term(ref, face), face))
         ranked.sort(key=lambda item: -item[0])
         return ranked[:limit]
 
@@ -504,6 +507,49 @@ _STEM_DROP = {"tc", "hk", "sc", "jp", "kr", "cn", "tw", "gb", "gbk", "ui", "std"
 def design_stem(family: str) -> str:
     """The family name without region and version words: Noto Sans TC / HK / SC are one design."""
     return " ".join(t for t in re.split(r"[\s_\-]+", family.casefold()) if len(t) > 1 and t not in _STEM_DROP)
+
+
+# Kinds of typeface, from the font's names. Checked in this order: "FangSong" is not a Song (Ming)
+# face, a rounded gothic is round, "Microsoft Sans Serif" is a sans. Short Latin words must be a
+# whole word of the name ("Ming" in "PMingLiU", not in "Humming"); long ones may be part of a word.
+DESIGN_CLASSES = (
+    ("fangsong", ("fangsong", "仿宋"), ()),
+    ("kai", ("kyokasho", "楷", "教科書"), ("kai",)),
+    ("round", ("rounded", "圓", "圆", "丸"), ("yuan", "round", "maru")),
+    ("clerical", ("lisu", "reisho", "隶", "隸"), ()),
+    ("sans", ("sans", "gothic", "yahei", "jhenghei", "dengxian", "heiti", "meiryo", "malgun", "gulim", "dotum",
+              "shin go", "黑", "ゴシック", "新ゴ", "고딕", "돋움", "굴림"), ("hei", "go")),
+    ("serif", ("mincho", "serif", "simsun", "batang", "myeongjo", "明", "宋", "명조", "바탕"),
+     ("ming", "song", "sung")),
+)
+CLASS_BONUS = 0.25
+"""Same kind of typeface counts for, another kind against; more than the locale term, so a
+Japanese Mincho beats a Chinese gothic for a Ming face (the shapes alone hardly tell them apart)."""
+
+
+def _words(name: str) -> List[str]:
+    """``PMingLiU`` -> p ming li u; ``FZLanTingHei-M-GBK`` -> fz lan ting hei m gbk."""
+    return [w.casefold() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", name)]
+
+
+def design_class(face: Optional[FontFace]) -> Optional[str]:
+    """``serif`` (Ming, Song, Mincho), ``sans``, ``kai``, ``fangsong``, ``round``, ``clerical`` or None."""
+    if face is None:
+        return None
+    names = [face.family, *face.names]
+    folded = [n.casefold() for n in names]
+    words = {w for n in names for w in _words(n)}
+    for kind, parts, whole in DESIGN_CLASSES:
+        if any(p in n for p in parts for n in folded) or any(w in words for w in whole):
+            return kind
+    return None
+
+
+def class_term(ref: FontFace, face: FontFace) -> float:
+    a, b = design_class(ref), design_class(face)
+    if a is None or b is None:
+        return 0.0
+    return CLASS_BONUS if a == b else -CLASS_BONUS
 
 
 def locale_term(face: FontFace, target_lang: str) -> float:
@@ -724,6 +770,7 @@ class FontService:
         regions = entry.get("regions", []) if isinstance(entry, dict) else entry
         changes: List[Dict[str, Any]] = []
         unfixed: List[Dict[str, Any]] = []
+        kept: List[Dict[str, Any]] = []  # only punctuation missing and no close font: it is borrowed
         new_fonts: Dict[int, str] = {}
         for index, region in enumerate(regions):
             text = str(region.get("translation") or "")
@@ -745,6 +792,9 @@ class FontService:
                 fixed = False
                 tried = []
                 ranked = await asyncio.to_thread(self.catalog.similar, face, chars, self.target_lang)
+                punctuation = all(unicodedata.category(c)[0] in "PSZ" for c in missing)
+                if punctuation:  # borrowed punctuation is a small blemish; a font of another kind is not
+                    ranked = [(s, f) for s, f in ranked if s >= PUNCT_MIN_SCORE]
                 for _score, candidate in ranked:
                     ok, why = await self._fits(image_path, index, current, candidate.value, cache)
                     if ok:
@@ -754,8 +804,9 @@ class FontService:
                         fixed = True
                         break
                     tried.append(f"{candidate.label}: {why}")
-                if not fixed:
-                    unfixed.append({"region": index + 1, "font": current, "missing": missing, "tried": tried})
+                if not fixed:  # only missing letters go on the review list
+                    (kept if punctuation else unfixed).append(
+                        {"region": index + 1, "font": current, "missing": missing, "tried": tried})
             if current != original:
                 new_fonts[index] = current
         if hasattr(self.backend, "done"):
@@ -769,13 +820,13 @@ class FontService:
                 if index < len(saved):
                     saved[index]["font_family"] = font
             write_json_atomic(json_path, raw)
-        if changes or unfixed:
+        if changes or unfixed or kept:
             side = store.load_sidecar(stem) or {}
             side.pop("version", None)
             flags = [{"region": u["region"], "type": "layout",
                       "reason": _human(self.target_lang, font=u["font"], chars=u["missing"])} for u in unfixed]
             side["review_flags"] = list(side.get("review_flags") or []) + flags
-            side["fonts"] = {"changes": changes, "unfixed": unfixed}
+            side["fonts"] = {"changes": changes, "unfixed": unfixed, "kept": kept}
             store.save_sidecar(stem, side)
             for flag in flags:
                 events.emit("flag", page=stem, agent="fonts", region=flag["region"], flag="layout",

@@ -255,7 +255,11 @@ async def run_agent_workflow(
     config = images_with_configs[0][1]
     paths = [_image_path(image) for image, _ in images_with_configs]
     saved = {name: getattr(translator, name, False) for name in MODE_FLAGS}
+    target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
+    font_task: Optional[asyncio.Future] = None
     try:
+        if fonts is None:  # scanning the installed fonts takes seconds: do it while the pages are preprocessed
+            font_task = asyncio.ensure_future(_font_service(translator, config, settings, target_lang, log))
         if preprocess:
             log("[Agent] 1/4 Preprocess: detection, local OCR and masks")
             _set_mode(translator, template=True, save_text=True)
@@ -266,7 +270,6 @@ async def run_agent_workflow(
         if client is None:
             from .client import build_client
             client = build_client(config, settings)
-        target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
         log(f"[Agent] 2/4 Agent: {len(paths)} page(s), model {getattr(client, 'model_label', '')}")
         work_prompt = None
         if settings.use_work_prompt:
@@ -274,8 +277,7 @@ async def run_agent_workflow(
             work_prompt = load_work_prompt(prompt_path, language_name(target_lang))
             if work_prompt is not None:
                 log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
-        font_service = fonts if fonts is not None else \
-            await _font_service(translator, config, settings, target_lang, log)
+        font_service = fonts if font_task is None else await font_task
         outcomes: List[dict] = []
         reviewed: set = set()
         chapter_logs: Dict[str, Tuple[str, str]] = {}
@@ -385,5 +387,7 @@ async def run_agent_workflow(
             render_events.close()
         return results
     finally:
+        if font_task is not None and not font_task.done():  # stopped during the preprocess
+            font_task.cancel()
         for name, value in saved.items():
             setattr(translator, name, value)
