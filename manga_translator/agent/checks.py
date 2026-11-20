@@ -155,6 +155,18 @@ def _alternatives(target: str) -> List[str]:
     return [normalize(p) for p in parts if normalize(p)]
 
 
+def _work_terms_in(session: "AgentSession", src_norm: str) -> list:
+    """Terms of the work's prompt file found in the source; a term inside a longer one that is also
+    there (みゃー in みゃーさん) is left to the longer one."""
+    found = {}
+    for term in getattr(session, "work_terms", None) or []:
+        key = normalize(term.source)
+        if len(key) >= 2 and key in src_norm:
+            found.setdefault(key, term)
+    return [term for key, term in found.items()
+            if not any(key != other and key in other for other in found)]
+
+
 def _capacity(region: "Region") -> int:
     x1, y1, x2, y2 = region.bbox
     w, h = max(1, x2 - x1), max(1, y2 - y1)
@@ -178,7 +190,17 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
 
     src_norm, tr_norm = normalize(source), normalize(translation)
     if src_norm:
+        checked = set()
+        for term in _work_terms_in(session, src_norm):  # the work's prompt file comes first
+            checked.add(normalize(term.source))
+            alternatives = [a for target in term.targets for a in _alternatives(target)]
+            if alternatives and not any(a in tr_norm for a in alternatives):
+                issues.append(Issue("glossary_mismatch", region.id,
+                                    {"source": term.source, "target": " / ".join(term.targets)},
+                                    WEIGHTS["glossary_mismatch"]))
         for entry in session.memory.glossary:
+            if normalize(entry.get("source", "")) in checked:
+                continue
             term = normalize(entry.get("source", ""))
             alternatives = _alternatives(entry.get("target", ""))
             if len(term) >= 2 and term in src_norm and alternatives and not any(a in tr_norm for a in alternatives):

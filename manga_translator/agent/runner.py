@@ -4,7 +4,8 @@ Context rules (design doc, "上下文與記憶管理"):
 
 * the system prompt, tool definitions and memory snapshot come first and stay
   fixed until a compaction, so the prefix is cached;
-* pages older than ``keep_images_last_n_pages`` keep their text but lose their images;
+* pages older than ``keep_images_last_n_pages`` keep their text but lose their images,
+  n pages at a time so the cached prefix changes once every n pages;
 * at a page boundary, once a request reached ``compact_threshold_tokens``, the
   conversation restarts from the state files (memory + earlier results are
   reachable through tools);
@@ -32,6 +33,7 @@ from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentStore
 from .tools import AgentSession, ToolRegistry
+from .work_prompt import WorkPrompt
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -105,12 +107,18 @@ For every page:
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
 4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear.
-5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Several set_text calls in one turn are fine.
+5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Save the whole page in one response: every set_text and skip_region call (plus set_reading_order and glossary or character updates) together.
 6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
-7. Finish with mark_page_done and your confidence for the page. It fails while any region has neither a translation nor a skip.
+7. Finish with mark_page_done and your confidence for the page; it can go in the same response as the saves. It fails while any region has neither a translation nor a skip.
 
+Each response takes several seconds, so call independent tools together in one response: all the zooms you need at once, then all the saves at once. Wait for a result only when your next call depends on it (add_region, merge_regions, a zoom you have to see first).
 Write every reason, note and review flag in {reason_lang}; a human reads them.
 Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. Update the story summary every few pages with story_summary_update.{extra}"""
+
+
+BATCHED_SAVES = ("set_text", "skip_region")
+BATCH_HINT = (" {left} region(s) are left: save them all in your next response (several set_text / skip_region "
+              "calls in one response), not one per response.")
 
 
 def language_name(code: str) -> str:
@@ -133,16 +141,23 @@ def strip_images(message: dict, label: str) -> dict:
 class AgentRunner:
     def __init__(self, settings: AgentSettings, client: ChatClient, store: AgentStore, events: EventLog,
                  pages: List[str], target_lang: str,
-                 should_stop: Callable[[], bool] = lambda: False):
+                 should_stop: Callable[[], bool] = lambda: False,
+                 on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 work_prompt: Optional[WorkPrompt] = None):
         self.settings = settings
+        self.work_prompt = work_prompt
+        """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.client = client
         self.store = store
         self.events = events
         self.pages = pages
         self.target_lang = target_lang
         self.should_stop = should_stop
+        self.on_page_done = on_page_done
+        """Called with each page's outcome once its JSON and sidecar are saved (the inpaint review starts there)."""
         self.memory = store.memory()
         self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
+        self.session.work_terms = list(work_prompt.terms) if work_prompt else []
         self.registry = ToolRegistry(self.session)
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
@@ -156,8 +171,12 @@ class AgentRunner:
     # --- conversation -------------------------------------------------------
     def system_prompt(self) -> str:
         target = language_name(self.target_lang)
-        extra = f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}" \
-            if self.settings.extra_instructions.strip() else ""
+        extra = ""
+        if self.work_prompt is not None:
+            extra += (f"\n\nNotes for this work from the user's prompt file {self.work_prompt.name}. Follow them, and "
+                      f"use its glossary over your own choices and over the glossary tools:\n{self.work_prompt.text}")
+        if self.settings.extra_instructions.strip():
+            extra += f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}"
         return SYSTEM_PROMPT.format(double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
                                     target=target, reason_lang=target, extra=extra)
 
@@ -185,8 +204,15 @@ class AgentRunner:
                                               "source": region.get("ocr_agent") or region.get("ocr_local") or "",
                                               "translation": region["translation"], "category": region.get("category")})
 
+    def image_pages_from(self, current_page: int) -> int:
+        """First page whose images stay in the conversation. Images are dropped n pages at a time, so the
+        start of the conversation (and the API's prompt cache) changes once every n pages instead of on
+        every page; between n and 2n - 1 pages keep their images."""
+        n = self.settings.keep_images_last_n_pages
+        return max(0, ((current_page + 1) // n - 1) * n)
+
     def request_messages(self, current_page: int) -> List[dict]:
-        keep_from = current_page - self.settings.keep_images_last_n_pages + 1
+        keep_from = self.image_pages_from(current_page)
         out = list(self.preamble)
         for page_index, message in self.history:
             if page_index < keep_from:
@@ -343,6 +369,7 @@ class AgentRunner:
                 self.history.append((index, {"role": "user", "content":
                                              "Continue with tool calls and finish the page with mark_page_done."}))
                 continue
+            single = len(reply.tool_calls) == 1
             for call in reply.tool_calls:
                 try:
                     args = json.loads(call.arguments or "{}")
@@ -356,8 +383,11 @@ class AgentRunner:
                 self.events.emit("tool_result", page=page, tool=call.name, ok=result.ok, summary=result.summary,
                                  images=len(result.images))
                 content: Any = result.text
+                if single and result.ok and call.name in BATCHED_SAVES and len(doc.missing()) >= 2:
+                    # One save per response costs a request each; ask for the rest in one go.
+                    content += BATCH_HINT.format(left=len(doc.missing()))
                 if result.images:
-                    content = [{"type": "text", "text": result.text}] + [
+                    content = [{"type": "text", "text": content}] + [
                         {"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in result.images]
                 self.history.append((index, {"role": "tool", "tool_call_id": call.id, "content": content}))
                 done = done or result.page_done
@@ -387,7 +417,9 @@ class AgentRunner:
     async def run(self) -> List[Dict[str, Any]]:
         self.events.emit("run_start", pages=[os.path.basename(p) for p in self.pages],
                          model=getattr(self.client, "model_label", ""), target_lang=self.target_lang,
-                         memory=self.memory.counts())
+                         memory=self.memory.counts(),
+                         work_prompt={"name": self.work_prompt.name, "terms": len(self.work_prompt.terms)}
+                         if self.work_prompt else None)
         outcomes: List[Dict[str, Any]] = []
         failures_in_a_row = 0
         try:
@@ -402,8 +434,11 @@ class AgentRunner:
                     outcomes.append({"page": stem, "image": path, "status": "error", "error": str(exc)})
                     continue
                 try:
-                    outcomes.append(await self.run_page(index, doc))
+                    outcome = await self.run_page(index, doc)
+                    outcomes.append(outcome)
                     failures_in_a_row = 0
+                    if self.on_page_done is not None:
+                        self.on_page_done(outcome)
                 except AgentStopped:
                     doc.status = "stopped"
                     self._finish_page(doc)

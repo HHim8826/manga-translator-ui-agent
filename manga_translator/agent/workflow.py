@@ -20,13 +20,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .events import EventLog, new_run_id
 from .inpaint_review import InpaintReviewer
-from .runner import AgentRunner, AgentStopped
+from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
+from .work_prompt import load_work_prompt
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -106,6 +108,16 @@ class PipelineInpaintBackend:
         self.translator._save_inpainted_image(image_path, image)
 
 
+async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> List[dict]:
+    """Review pages as they arrive until ``None``."""
+    outcomes: List[dict] = []
+    while True:
+        path = await queue.get()
+        if path is None:
+            return outcomes
+        outcomes.extend(await reviewer.run([path]))
+
+
 def group_by_chapter(paths: Sequence[str]) -> List[Tuple[str, List[str]]]:
     """(work dir, pages) per folder, folders in first-seen order, pages in input order."""
     from ..utils.path_manager import get_work_dir
@@ -148,6 +160,12 @@ async def run_agent_workflow(
             client = build_client(config, settings)
         target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
         log(f"[Agent] 2/4 Agent: {len(paths)} page(s), model {getattr(client, 'model_label', '')}")
+        work_prompt = None
+        if settings.use_work_prompt:
+            prompt_path = getattr(getattr(config, "translator", None), "high_quality_prompt_path", None) or ""
+            work_prompt = load_work_prompt(prompt_path, language_name(target_lang))
+            if work_prompt is not None:
+                log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
         outcomes: List[dict] = []
         reviewed: set = set()
         for work_dir, pages in group_by_chapter(paths):
@@ -155,22 +173,46 @@ async def run_agent_workflow(
             run_id = new_run_id()
             events = EventLog(store.run_log_path(run_id), run_id)
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
+            if hasattr(client, "session_id"):  # one session per chapter run on the API side
+                client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"
             try:
-                runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop)
-                try:
-                    chapter = await runner.run()
-                except AgentStopped:
-                    raise asyncio.CancelledError("Agent workflow stopped by user")
-                to_review = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
-                if settings.inpaint_review and to_review:
+                reviewer = None
+                if settings.inpaint_review:
                     backend = inpaint_backend or PipelineInpaintBackend(translator, config)
-                    log(f"[Agent] 3/4 Inpaint review: {len(to_review)} page(s)")
                     reviewer = InpaintReviewer(settings, client, store, events, target_lang, backend, should_stop,
                                                save_image=getattr(backend, "save", None))
+                queue: asyncio.Queue = asyncio.Queue()
+                review_task: Optional[asyncio.Future] = None
+                if reviewer is not None and settings.review_while_translating:
+                    log("[Agent] 3/4 Inpaint review: each page as soon as the agent finishes it")
+                    review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
+
+                def page_done(outcome: dict) -> None:
+                    if review_task is not None and outcome.get("status") in ("done", "incomplete"):
+                        queue.put_nowait(outcome["image"])
+
+                runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
+                                     on_page_done=page_done, work_prompt=work_prompt)
+                review: List[dict] = []
+                try:
                     try:
-                        review = await reviewer.run(to_review)
-                    except AgentStopped:
-                        raise asyncio.CancelledError("Agent workflow stopped by user")
+                        chapter = await runner.run()
+                    except BaseException:
+                        if review_task is not None:
+                            review_task.cancel()
+                            await asyncio.gather(review_task, return_exceptions=True)
+                        raise
+                    if review_task is not None:
+                        queue.put_nowait(None)
+                        review = await review_task
+                    elif reviewer is not None:
+                        to_review = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
+                        if to_review:
+                            log(f"[Agent] 3/4 Inpaint review: {len(to_review)} page(s)")
+                            review = await reviewer.run(to_review)
+                except AgentStopped:
+                    raise asyncio.CancelledError("Agent workflow stopped by user")
+                if reviewer is not None:
                     for item in review:
                         if item.get("status") == "reviewed":
                             reviewed.add(_key(item["image"]))

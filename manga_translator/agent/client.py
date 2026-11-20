@@ -19,6 +19,9 @@ class OpenAIChatClient:
         self.settings = settings
         self.runtime_config = runtime_config
         self._clients: Dict[str, object] = {}
+        self.session_id: Optional[str] = None
+        """Sent as the ``session_id`` header, so a proxy that groups requests (for example an
+        API proxy) shows one chapter run, with its recall and review calls, as one session."""
 
     @property
     def model_label(self) -> str:
@@ -37,10 +40,12 @@ class OpenAIChatClient:
     async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str) -> ChatReply:
         from ..api_key_rotation import run_with_api_candidates
 
+        headers = {"session_id": self.session_id} if self.session_id else None
+
         async def operation(endpoint) -> ChatReply:
             response = await self._client(endpoint).chat.completions.create(
                 model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
-                tool_choice=tool_choice)
+                tool_choice=tool_choice, extra_headers=headers)
             if not response.choices:
                 raise RuntimeError("the API returned no choices")
             message = response.choices[0].message

@@ -60,6 +60,8 @@ class AgentSession:
         self.past: List[Dict[str, Any]] = []
         self.last_prompt_tokens = 0
         self.page_steps = 0
+        self.work_terms: List[Any] = []
+        """Glossary terms of the work's prompt file (``work_prompt.WorkTerm``), for the checks."""
         self._reset_page_state()
 
     def _reset_page_state(self) -> None:
@@ -326,7 +328,11 @@ def set_line_breaks(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 # --- memory -------------------------------------------------------------------
 def glossary_search(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
-    hits = s.memory.glossary_search(a.get("query", ""))
+    q = normalize(a.get("query", ""))
+    work = [{"source": t.source, "target": " / ".join(t.targets), "note": t.condition, "from": "work prompt file"}
+            for t in s.work_terms
+            if not q or q in normalize(t.source) or any(q in normalize(x) for x in t.targets)]
+    hits = work[:30] + s.memory.glossary_search(a.get("query", ""))
     return ToolResult(text=json.dumps(hits, ensure_ascii=False) if hits else "No glossary entries match.",
                       summary=f"{_short(a.get('query', ''), 20)}: {len(hits)}")
 

@@ -291,6 +291,77 @@ def test_runner_step_limit_and_compaction(tmp_path):
     assert "Pages already finished in this run: 001" in client.requests[2][1]["content"]
 
 
+def test_single_saves_get_a_hint_to_save_the_rest_together(tmp_path):
+    pages = [make_page(tmp_path, "001", boxes=((20, 20, 60, 120), (100, 20, 140, 120), (200, 150, 280, 180),
+                                                (300, 20, 340, 120)))]
+    say = [("set_text", {"id": i, "source_text": f"text{i}", "translation": f"譯{i}", "category": "dialogue",
+                         "confidence": 0.9}) for i in range(1, 5)]
+    script = [_calls(say[0]), _calls(say[1], say[2]), _calls(say[3]), _calls(("mark_page_done", {"confidence": 0.9}))]
+    runner, client, store, events = _runner(tmp_path, pages, script)
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert outcomes[0]["status"] == "done"
+    tool_text = lambda request: request[-1]["content"]  # noqa: E731
+    assert "3 region(s) are left: save them all in your next response" in tool_text(client.requests[1])
+    assert "left:" not in tool_text(client.requests[2])  # two saves in one response: no hint
+    assert "left:" not in tool_text(client.requests[3])  # nothing left after the last one
+    assert "Save the whole page in one response" in runner.system_prompt()
+
+
+def test_on_page_done_gets_each_finished_page(tmp_path):
+    pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
+    script = [_calls(("set_text", {"id": 1, "source_text": "s", "translation": "t", "category": "dialogue",
+                                   "confidence": 1})), RuntimeError("content refused")] + _finish_page()
+    seen = []
+    store = AgentStore(os.path.join(os.path.dirname(pages[0][0]), "manga_translator_work"))
+    events = EventLog(store.run_log_path("r1"), "r1")
+    runner = AgentRunner(AgentSettings(), ScriptedClient(script), store, events, [p for p, _ in pages], "CHT",
+                         on_page_done=lambda outcome: seen.append((outcome["page"], outcome["status"],
+                                                                   store.load_sidecar(outcome["page"])["status"])))
+    asyncio.run(runner.run())
+    events.close()
+    assert seen == [("002", "done", "done")]  # the failed page is not handed on; the sidecar is already saved
+
+
+def test_old_page_images_are_dropped_in_blocks():
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.settings = AgentSettings(keep_images_last_n_pages=5)
+    assert [runner.image_pages_from(i) for i in range(16)] == [0] * 9 + [5] * 5 + [10] * 2
+    for current in range(40):  # always at least n pages, at most 2n - 1 pages with images
+        assert 5 <= current - runner.image_pages_from(current) + 1 <= 9 or current < 5
+    runner.settings = AgentSettings(keep_images_last_n_pages=1)
+    assert [runner.image_pages_from(i) for i in range(4)] == [0, 1, 2, 3]
+
+
+def test_client_sends_the_session_header(monkeypatch):
+    from types import SimpleNamespace
+
+    from manga_translator import api_key_rotation
+    from manga_translator.agent.client import OpenAIChatClient
+
+    seen = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            seen.update(kwargs)
+            call = SimpleNamespace(id="c0", function=SimpleNamespace(name="zoom", arguments="{}"))
+            message = SimpleNamespace(content=None, tool_calls=[call], refusal=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+    async def run(*, endpoints, operation, **_):
+        return await operation(endpoints[0])
+
+    monkeypatch.setattr(api_key_rotation, "run_with_api_candidates", run)
+    endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
+    client = OpenAIChatClient((endpoint,), "failover", AgentSettings())
+    monkeypatch.setattr(client, "_client", lambda e: SimpleNamespace(chat=SimpleNamespace(completions=Completions())))
+    reply = asyncio.run(client.complete([], [], "required"))
+    assert reply.tool_calls[0].name == "zoom" and seen["extra_headers"] is None
+    client.session_id = "manga-translator-r1"
+    asyncio.run(client.complete([], [], "required"))
+    assert seen["extra_headers"] == {"session_id": "manga-translator-r1"}
+
+
 def test_strip_images_keeps_text():
     message = {"role": "user", "content": [{"type": "text", "text": "hi"},
                                            {"type": "image_url", "image_url": {"url": "x"}}]}
@@ -601,3 +672,50 @@ def test_workflow_reviews_inpainting_and_render_reuses_it(tmp_path):
     store = AgentStore(str(folder / "manga_translator_work"))
     assert store.load_sidecar("001")["inpaint"]["finished"]
     assert "inpaint" not in store.load_sidecar("002")
+
+
+def _review_workflow(tmp_path, **settings):
+    from test_agent_inpaint import FakeBackend
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    class NetworkClient(ScriptedClient):  # a real request waits on the network and lets other tasks run
+        session_id = None
+
+        async def complete(self, messages, tools, tool_choice):
+            self.sessions = getattr(self, "sessions", set()) | {self.session_id}
+            await asyncio.sleep(0.01)
+            return await super().complete(messages, tools, tool_choice)
+
+    translator = FakeTranslator(tmp_path)
+    client = NetworkClient(_finish_page() + _finish_page())
+    backend = FakeBackend()
+    asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client, log=lambda m: None,
+                                   inpaint_backend=backend, agent_settings=settings))
+    store = AgentStore(str(folder / "manga_translator_work"))
+    log = sorted(os.listdir(store.runs_dir))[-1]
+    events = read_events(os.path.join(store.runs_dir, log))
+    order = [(e.get("agent"), e["type"], e.get("page")) for e in events
+             if e["type"] in ("page_done", "inpaint_start", "inpaint_done", "run_end")]
+    # translator, recall and review requests of the chapter share one session id
+    assert len(client.sessions) == 1 and next(iter(client.sessions)).startswith("manga-translator-r")
+    return order, backend, paths
+
+
+def test_workflow_reviews_each_page_while_the_agent_works_on_the_next(tmp_path):
+    order, backend, paths = _review_workflow(tmp_path)
+    assert order.index(("inpaint", "inpaint_start", "001")) < order.index(("translator", "page_done", "002"))
+    assert order[-1] == ("inpaint", "inpaint_done", "002")
+    assert sorted(backend.saved) == sorted(paths)
+
+
+def test_workflow_can_review_after_the_whole_chapter(tmp_path):
+    order, backend, paths = _review_workflow(tmp_path, review_while_translating=False)
+    assert order.index(("translator", "run_end", None)) < order.index(("inpaint", "inpaint_start", "001"))
+    assert sorted(backend.saved) == sorted(paths)

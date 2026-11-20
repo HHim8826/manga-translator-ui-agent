@@ -91,6 +91,8 @@ class AgentsPage(QWidget):
         self._pending_rows: Dict[str, List[QTreeWidgetItem]] = {}
         self._page_filter = ALL_PAGES
         self._limit = 400_000
+        self._translating = False
+        self._finished_text = ""
         self._build()
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
@@ -176,6 +178,8 @@ class AgentsPage(QWidget):
         page = event.get("page") or ""
         if kind == "run_start":
             self._reset([os.path.splitext(p)[0] for p in event.get("pages", [])])
+            self._translating = True
+            self._finished_text = ""
             self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
             self._update_memory(event.get("memory"))
         elif kind == "page_start":
@@ -233,7 +237,8 @@ class AgentsPage(QWidget):
                 self._add_row(event, self._t("Agents Recall"), detail, "")
         elif kind == "inpaint_start":
             self._set_page(page, state="inpainting")
-            self.status_label.setText(self._t("Agents Inpaint Progress", page=page))
+            if not self._translating:  # while the agent still translates, the status line follows it
+                self.status_label.setText(self._t("Agents Inpaint Progress", page=page))
             self._add_row(event, self._t("Agents Inpaint"),
                           self._t("Agents Inpaint Start", units=event.get("units", 0), issues=event.get("issues", 0)),
                           "")
@@ -248,19 +253,36 @@ class AgentsPage(QWidget):
                 self._paint(row, WARN)
             self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
                            confidence=event.get("confidence"))
+            self._show_finished_if_idle()
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)
+            if event.get("agent") == "inpaint" and self._pages.get(page, {}).get("state") == "inpainting":
+                # the review failed; the translation stands and render inpaints the page again
+                self._set_page(page, state="done")
+                self._show_finished_if_idle()
         elif kind == "page_done":
             self._set_page(page, state=event.get("status") or "done", flags=event.get("flags"),
                            confidence=event.get("confidence"))
             self._update_memory(event.get("memory"))
         elif kind == "run_end":
             totals = event.get("totals") or {}
-            self.status_label.setText(self._t("Agents Finished", done=event.get("done", 0),
-                                              pages=event.get("pages", 0), flagged=event.get("flagged", 0),
-                                              requests=totals.get("requests", 0)))
+            self._translating = False
+            self._finished_text = self._t("Agents Finished", done=event.get("done", 0),
+                                          pages=event.get("pages", 0), flagged=event.get("flagged", 0),
+                                          requests=totals.get("requests", 0))
+            reviewing = [p for p in self._order if self._pages.get(p, {}).get("state") == "inpainting"]
+            if reviewing:  # the inpaint review of the last page(s) is still running
+                self.status_label.setText(self._t("Agents Inpaint Progress", page=reviewing[0]))
+            else:
+                self.status_label.setText(self._finished_text)
             self._update_memory(event.get("memory"))
+
+    def _show_finished_if_idle(self) -> None:
+        if self._translating or not self._finished_text:
+            return
+        if not any(info.get("state") == "inpainting" for info in self._pages.values()):
+            self.status_label.setText(self._finished_text)
 
     def replay(self, events: List[dict]) -> None:
         for event in events:

@@ -26,6 +26,9 @@ class AgentSettings(BaseModel):
     inpaint_review: bool = True
     """After the translation agent, a separate review conversation per page
     checks and fixes the inpainting; render then reuses its result."""
+    review_while_translating: bool = True
+    """Review each page's inpainting as soon as the translation agent finishes it, while the
+    agent works on the next page; off waits for the whole chapter first."""
     fill_flat_areas: bool = True
     """In the review's first pass, areas on a flat background (plain bubbles and boxes) are
     filled with the paper color instead of using the model's result, unless the program
@@ -45,5 +48,9 @@ class AgentSettings(BaseModel):
     memory_dir: str = ""
     """Glossary, characters and story summary. Empty keeps them in the chapter's
     ``manga_translator_work/agent/memory``; point several chapters at one folder to share them."""
+    use_work_prompt: bool = True
+    """Use the translator's prompt file for the work (``translator.high_quality_prompt_path``, for
+    example ``dict/<work>.yaml``): its instructions and glossary go into the agent's system prompt,
+    and the program checks the glossary translations. The file is only read."""
     extra_instructions: str = ""
     """Extra instructions appended to the agent's system prompt."""

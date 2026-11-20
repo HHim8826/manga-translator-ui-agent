@@ -145,3 +145,26 @@ def test_inpaint_review_events(app):
     row = page.timeline.topLevelItem(page.timeline.topLevelItemCount() - 1)
     assert row.text(3) == "Agents Inpaint Detail Filled filled=9 flagged=0 retried=0 units=12" and row.isHidden()
     assert page.page_list.item(1).text() == "005 · Agent Page Done · 73% · Agents Flag Count count=1"
+
+
+def test_status_follows_the_agent_while_pages_are_reviewed_alongside(app):
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["001.jpg", "002.jpg"], "model": "m"},
+        {"type": "page_start", "page": "001", "index": 0, "total": 2},
+        {"type": "page_done", "page": "001", "status": "done", "confidence": 0.99, "flags": 0},
+        {"type": "page_start", "page": "002", "index": 1, "total": 2},
+        {"type": "inpaint_start", "page": "001", "agent": "inpaint", "units": 3, "issues": 0},
+    ])
+    assert page.status_label.text().startswith("Agents Page Progress") and "page=002" in page.status_label.text()
+    page.handle_event({"type": "inpaint_done", "page": "001", "agent": "inpaint", "status": "done", "units": 3,
+                       "retried": 0, "flagged": 0, "confidence": 0.99, "flags": 0})
+    page.handle_event({"type": "page_done", "page": "002", "status": "done", "confidence": 0.99, "flags": 0})
+    page.handle_event({"type": "inpaint_start", "page": "002", "agent": "inpaint", "units": 2, "issues": 0})
+    page.handle_event({"type": "run_end", "pages": 2, "done": 2, "flagged": 0, "totals": {"requests": 6}})
+    assert page.status_label.text() == "Agents Inpaint Progress page=002"
+    page.handle_event({"type": "error", "page": "002", "agent": "inpaint", "error": "RuntimeError: boom"})
+    assert page.status_label.text().startswith("Agents Finished") and "done=2" in page.status_label.text()
+    assert page.page_list.item(2).text().startswith("002 · Agent Page Done")
