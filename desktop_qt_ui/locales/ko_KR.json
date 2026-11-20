@@ -1510,5 +1510,8 @@
   "api_test_error_remote_image": "생성된 이미지를 다운로드하지 못했습니다: HTTP {status}",
   "api_test_error_sakura_base": "먼저 SAKURA_API_BASE를 설정해 주세요.",
   "api_test_error_unsupported": "이 번역기는 API 테스트를 지원하지 않습니다.",
-  "api_test_stream_modes": "스트리밍: {stream}  비스트리밍: {non_stream}"
+  "api_test_stream_modes": "스트리밍: {stream}  비스트리밍: {non_stream}",
+  "Editor Empty Hint": "파일 목록에서 이미지를 선택하여 편집을 시작하세요",
+  "Progress Idle": "시작 대기 중",
+  "Progress Completed Count": "{current}/{total} 완료"
 }

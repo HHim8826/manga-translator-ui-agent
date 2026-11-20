@@ -62,6 +62,13 @@ def update_workflow_mode_description(self, index: int | None = None):
 
 
 
+def _show_idle_progress_text(self):
+    """No task running: say so instead of showing a meaningless "0/0 (0%)"."""
+    self.progress_count_label.setText("")
+    if hasattr(self, "progress_info_label"):
+        self.progress_info_label.setText(self._t("Progress Idle"))
+
+
 def update_progress(self, current: int, total: int, message: str = ""):
     """更新进度条。"""
     progress_state = (int(current), int(total), str(message or ""))
@@ -75,7 +82,9 @@ def update_progress(self, current: int, total: int, message: str = ""):
         percentage = int((current / total) * 100) if total > 0 else 0
         self.progress_count_label.setText(f"{current}/{total} ({percentage}%)")
         if hasattr(self, "progress_info_label"):
-            self.progress_info_label.setText(message or f"已完成 {current}/{total}")
+            self.progress_info_label.setText(
+                message or self._t("Progress Completed Count", current=current, total=total)
+            )
 
         if not getattr(self, "_progress_active", False):
             self._progress_active = True
@@ -84,9 +93,7 @@ def update_progress(self, current: int, total: int, message: str = ""):
         self._progress_active = False
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
-        self.progress_count_label.setText("0/0 (0%)")
-        if hasattr(self, "progress_info_label"):
-            self.progress_info_label.setText("")
+        _show_idle_progress_text(self)
         _set_progress_state(self, "idle")
 
 
@@ -96,9 +103,7 @@ def reset_progress(self):
     self._progress_active = False
     self.progress_bar.setMaximum(100)
     self.progress_bar.setValue(0)
-    self.progress_count_label.setText("0/0 (0%)")
-    if hasattr(self, "progress_info_label"):
-        self.progress_info_label.setText("")
+    _show_idle_progress_text(self)
     _set_progress_state(self, "idle")
 
 

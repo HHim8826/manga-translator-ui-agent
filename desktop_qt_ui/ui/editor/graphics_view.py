@@ -196,6 +196,37 @@ class GraphicsView(
         self.scene.update()
         self.viewport().update()
 
+    def _empty_canvas_hint(self) -> str:
+        try:
+            from services import get_i18n_manager
+
+            i18n = get_i18n_manager()
+            if i18n:
+                return i18n.translate("Editor Empty Hint")
+        except Exception:
+            pass
+        return "Select an image from the file list to start editing"
+
+    def drawForeground(self, painter, rect):  # noqa: N802 - Qt API naming
+        super().drawForeground(painter, rect)
+        if self._image_item is not None:
+            return
+        # 没有打开图片时，画布中央给出下一步提示，而不是一整块空白。
+        painter.save()
+        painter.resetTransform()
+        font = painter.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() * 1.15)
+        painter.setFont(font)
+        painter.setPen(QColor("#8A8F98") if is_dark_theme() else QColor("#7A7F87"))
+        area = self.viewport().rect().adjusted(24, 24, -24, -24)
+        painter.drawText(
+            area,
+            int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+            self._empty_canvas_hint(),
+        )
+        painter.restore()
+
     def _connect_model_signals(self):
         self.model.display_layers_changed.connect(self.on_display_layers_changed)
         self.model.regions_changed.connect(self.on_regions_changed)

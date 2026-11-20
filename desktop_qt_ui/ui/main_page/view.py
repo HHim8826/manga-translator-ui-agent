@@ -193,11 +193,11 @@ class MainView(QObject):
         progress_header_layout.setContentsMargins(0, 0, 0, 0)
         progress_header_layout.setSpacing(8)
 
-        self.progress_info_label = BodyLabel("")
+        self.progress_info_label = BodyLabel(self._t("Progress Idle"))
         self.progress_info_label.setWordWrap(True)
         progress_header_layout.addWidget(self.progress_info_label, 1)
 
-        self.progress_count_label = CaptionLabel("0/0 (0%)")
+        self.progress_count_label = CaptionLabel("")
         self.progress_count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         progress_header_layout.addWidget(self.progress_count_label)
         progress_layout.addWidget(progress_header)
@@ -384,6 +384,9 @@ class MainView(QObject):
             self._refresh_about_page_texts()
         self.refresh_tab_titles()
 
+
+        if hasattr(self, "progress_info_label") and not getattr(self, "_progress_active", False):
+            self.progress_info_label.setText(self._t("Progress Idle"))
 
         if hasattr(self, "translation_page_title"):
             self.translation_page_title.setText(self._t("Translation Interface"))

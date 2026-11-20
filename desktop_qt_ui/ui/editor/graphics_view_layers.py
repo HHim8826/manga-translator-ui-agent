@@ -48,6 +48,7 @@ class GraphicsViewLayersMixin:
                     self.scene.removeItem(self._image_item)
                 self._image_item.setPixmap(QPixmap())
                 self._image_item = None
+                self.viewport().update()  # repaint the empty-canvas hint
 
             self.overlay_layers.clear()
             self._q_image_ref = None
@@ -180,6 +181,7 @@ class GraphicsViewLayersMixin:
         if self._image_item is None:
             self._image_item = self.scene.addPixmap(pixmap)
             self._image_item.setZValue(2)
+            self.viewport().update()  # drop the empty-canvas hint everywhere
         else:
             self._image_item.setPixmap(pixmap)
             if self._image_item.scene() is None:

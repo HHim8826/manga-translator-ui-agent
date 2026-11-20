@@ -495,6 +495,9 @@ class EditorView(QWidget):
             )
         if self.region_list_view is not None:
             self.region_list_view.refresh_ui_texts()
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is not None:
+            graphics_view.viewport().update()  # empty-canvas hint text
 
         # 刷新工具栏
         if self.toolbar is not None:

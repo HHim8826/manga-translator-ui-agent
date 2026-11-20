@@ -1521,5 +1521,8 @@
   "api_test_error_sakura_base": "Please configure SAKURA_API_BASE first.",
   "api_test_error_unsupported": "This translator does not support API testing.",
   "api_test_stream_modes": "Streaming: {stream}  Non-streaming: {non_stream}",
-  "Clear Selected": "Clear Selected"
+  "Clear Selected": "Clear Selected",
+  "Editor Empty Hint": "Select an image from the file list to start editing",
+  "Progress Idle": "Waiting to start",
+  "Progress Completed Count": "Completed {current}/{total}"
 }
