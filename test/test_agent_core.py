@@ -471,3 +471,12 @@ def test_recall_failure_does_not_stop_the_page(tmp_path):
     assert outcomes[0]["status"] == "done"
     recall = [e for e in read_events(events.path) if e["type"] == "recall"]
     assert recall and "recall down" in recall[0]["error"]
+
+
+def test_system_prompt_keeps_sound_effects_as_drawn(tmp_path):
+    pages = [make_page(tmp_path, "001")]
+    runner, client, store, events = _runner(tmp_path, pages, [])
+    events.close()
+    prompt = runner.system_prompt()
+    assert "never translated: skip_region with category sfx" in prompt
+    assert "Text inside a speech bubble is dialogue and gets translated" in prompt

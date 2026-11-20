@@ -100,7 +100,8 @@ Each page arrives as an image with numbered boxes plus a candidate list. A progr
 
 For every page:
 1. Look at the numbered image. Use get_neighbors when a spread or a line of dialogue may continue across pages.
-2. Fix the structure: merge_regions for one text block split over several boxes; skip_region for text that must stay as drawn (background signs, credits, sound effects woven into the art) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
+2. Fix the structure: merge_regions for one text block split over several boxes; skip_region for text that stays as drawn (background signs, credits) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
+   Sound effects drawn on the art (onomatopoeia such as impacts, footsteps, breathing outside a bubble) are never translated: skip_region with category sfx, even when they are large or easy to read. Text inside a speech bubble is dialogue and gets translated, even when it is a sound.
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
 4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear.
