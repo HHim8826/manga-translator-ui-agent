@@ -11,6 +11,7 @@ import os
 from functools import lru_cache
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 GRID_COLUMNS = "ABCDEFGH"
@@ -101,6 +102,39 @@ def zoom(page: Image.Image, bbox: Sequence[int], others: Sequence[Sequence[Tuple
                         "cell_page_px": [round((right - left) / len(GRID_COLUMNS), 1),
                                          round((bottom - top) / GRID_ROWS, 1)]}
     return crop, info
+
+
+def snap_preview(page: Image.Image, bbox: Sequence[int], lines: Sequence[Sequence[Sequence[float]]],
+                 erase: np.ndarray, erase_origin: Tuple[int, int],
+                 others: Sequence[Sequence[Tuple[float, float]]] = (), pad: int = 40,
+                 max_side: int = 1400) -> Image.Image:
+    """Crop around a region added by snapping: the pixels that will be erased
+    tinted red, its box in green, other regions' boxes in gray."""
+    x1, y1, x2, y2 = bbox
+    left, top = max(0, int(x1) - pad), max(0, int(y1) - pad)
+    right, bottom = min(page.width, int(x2) + pad), min(page.height, int(y2) + pad)
+    crop = np.asarray(page.crop((left, top, right, bottom))).astype(np.float32)
+    ox, oy = erase_origin
+    eh, ew = erase.shape
+    sx1, sy1 = max(ox, left), max(oy, top)
+    sx2, sy2 = min(ox + ew, right), min(oy + eh, bottom)
+    if sx2 > sx1 and sy2 > sy1:
+        sel = erase[sy1 - oy:sy2 - oy, sx1 - ox:sx2 - ox] > 0
+        view = crop[sy1 - top:sy2 - top, sx1 - left:sx2 - left]
+        view[sel] = view[sel] * 0.45 + np.array([255, 0, 0], np.float32) * 0.55
+    out = Image.fromarray(crop.clip(0, 255).astype(np.uint8))
+    scale = max(1.0, min(3.0, max_side / max(1, max(out.size))))
+    out = out.resize((max(1, int(out.width * scale)), max(1, int(out.height * scale))), Image.LANCZOS)
+    draw = ImageDraw.Draw(out)
+    for poly in others:
+        pts = [((px - left) * scale, (py - top) * scale) for px, py in poly]
+        draw.polygon(pts, outline=SKIP_COLOR)
+    for quad in lines:
+        pts = [((px - left) * scale, (py - top) * scale) for px, py in quad]
+        draw.polygon(pts, outline=(255, 150, 0))
+    draw.rectangle(((x1 - left) * scale - 3, (y1 - top) * scale - 3, (x2 - left) * scale + 3, (y2 - top) * scale + 3),
+                   outline=DONE_COLOR, width=3)
+    return out
 
 
 def thumbnail(path: str, max_side: int = 640) -> Image.Image:

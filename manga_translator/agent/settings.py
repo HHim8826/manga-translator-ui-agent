@@ -19,6 +19,10 @@ class AgentSettings(BaseModel):
     """``detail`` of page images: ``high`` (about 2.9k tokens per page) or ``low``."""
     double_read: str = "small_or_handwritten"
     """Which regions get a second, zoomed read: ``all`` / ``small_or_handwritten`` / ``none``."""
+    recall_pass: bool = True
+    """Before each page, a separate model call looks for text the detector
+    missed; what it finds is snapped to the strokes and added as regions.
+    The call for the next page runs while the agent works on the current one."""
     low_confidence_threshold: float = 0.7
     """Pages marked done below this confidence go to the review list."""
     request_timeout: int = 300

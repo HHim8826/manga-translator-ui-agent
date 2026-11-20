@@ -11,6 +11,11 @@ Context rules (design doc, "上下文與記憶管理"):
 * a page whose request passes ``max_context_tokens`` is stopped and flagged.
 
 A failed page (API error, refusal, step limit) is flagged and the run moves on.
+
+Recall check (``recall_pass``): before the agent sees a page, a separate call
+lists text that no box covers; each item is snapped to its strokes and added as
+a region. It does not enter the main conversation, and the call for the next
+page runs while the agent works on the current one.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 from .events import EventLog
 from .page import PageDoc
 from .settings import AgentSettings
+from .snap import snap_text
 from .store import AgentStore
 from .tools import AgentSession, ToolRegistry
 
@@ -59,6 +65,25 @@ class ChatClient(Protocol):
     async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str) -> ChatReply: ...
 
 
+RECALL_KINDS = ("dialogue", "narration", "handwritten", "sfx", "sign", "ui", "punctuation", "other")
+RECALL_TOOL = {"type": "function", "function": {
+    "name": "report_unboxed_text",
+    "description": "Report every piece of text that no numbered box covers (empty list if there is none).",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["items"], "properties": {
+        "items": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["box", "text", "kind", "direction"],
+            "properties": {
+                "box": {"type": "array", "items": {"type": "number"},
+                        "description": "[x1, y1, x2, y2] in pixels of this image, tight around the text itself"},
+                "text": {"type": "string", "description": "The text as written"},
+                "kind": {"type": "string", "enum": list(RECALL_KINDS)},
+                "direction": {"type": "string", "enum": ["v", "h"]}}}}}}}}
+
+RECALL_PROMPT = """You check manga pages for text that an automatic text detector missed. Red numbered boxes on the page mark the text it found.
+
+List every piece of text that is not inside a numbered box: speech and thoughts, narration, handwritten notes, small or faint text, text in tables, menus and status screens, signs, and sound effects. Give each separate text block its own item with a box in pixels of the image, tight around the letters themselves (not the whole bubble). Use kind "punctuation" for bubbles that hold only punctuation such as …, ? or !. Do not report text that is already inside a box, and do not report art that only looks like letters. Report an empty list when everything is boxed. Answer only by calling report_unboxed_text once."""
+
+
 DOUBLE_READ = {
     "all": "Zoom into every region for a second read before saving it.",
     "small_or_handwritten": ("Zoom for a second read whenever text is small, handwritten, stylized, on screentone, "
@@ -76,10 +101,11 @@ Each page arrives as an image with numbered boxes plus a candidate list. A progr
 For every page:
 1. Look at the numbered image. Use get_neighbors when a spread or a line of dialogue may continue across pages.
 2. Fix the structure: merge_regions for one text block split over several boxes; skip_region for text that must stay as drawn (background signs, credits, sound effects woven into the art) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
+   Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
 4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear.
 5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Several set_text calls in one turn are fine.
-6. When something is uncertain (unreadable text, a pun without a good equivalent, text the boxes missed), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
+6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
 7. Finish with mark_page_done and your confidence for the page. It fails while any region has neither a translation nor a skip.
 
 Write every reason, note and review flag in {reason_lang}; a human reads them.
@@ -120,7 +146,9 @@ class AgentRunner:
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
         self.done_pages: List[str] = []
-        self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0}
+        self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0,
+                       "recall_requests": 0}
+        self._recall_tasks: Dict[int, asyncio.Future] = {}
         self._load_past()
         self._build_preamble()
 
@@ -193,12 +221,89 @@ class AgentRunner:
                          limit=self.settings.max_context_tokens)
         return reply
 
-    def _page_message(self, index: int, doc: PageDoc) -> dict:
+    # --- recall check -------------------------------------------------------
+    def _start_recall(self, index: int) -> None:
+        if self.settings.recall_pass and 0 <= index < len(self.pages) and index not in self._recall_tasks:
+            self._recall_tasks[index] = asyncio.ensure_future(self._recall_request(self.pages[index]))
+
+    async def _recall_request(self, path: str) -> List[dict]:
+        from . import images
+        doc = PageDoc.load(path)
+        page = images.open_page(path)
+        marked = images.draw_marks(page, [(r.id, r.bbox, "pending") for r in doc.active_regions()])
+        messages = [{"role": "system", "content": RECALL_PROMPT},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": f"This page is {page.width}x{page.height} pixels."},
+                        {"type": "image_url", "image_url": {"url": images.data_url(marked),
+                                                            "detail": self.settings.image_detail}}]}]
+        reply = await self.client.complete(messages, [RECALL_TOOL], "required")
+        for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
+            self.totals[key] += getattr(reply, key)
+        self.totals["recall_requests"] += 1
+        for call in reply.tool_calls:
+            if call.name == RECALL_TOOL["function"]["name"]:
+                items = json.loads(call.arguments or "{}").get("items", [])
+                return items if isinstance(items, list) else []
+        return []
+
+    async def _recall(self, index: int, doc: PageDoc) -> List[int]:
+        """Add the regions the recall check found; returns their ids."""
+        self._start_recall(index)
+        task = self._recall_tasks.pop(index)
+        self._start_recall(index + 1)  # the next page's check runs while the agent works on this one
+        try:
+            items = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"recall check failed for {doc.stem}: {exc}")
+            self.events.emit("recall", page=doc.stem, added=[], error=f"{type(exc).__name__}: {str(exc)[:200]}")
+            return []
+        image = self.session.page_array
+        added: List[int] = []
+        ignored = {"punctuation": 0, "duplicate": 0, "no_strokes": 0, "invalid": 0}
+        for item in items[:40]:
+            if not isinstance(item, dict):
+                ignored["invalid"] += 1
+                continue
+            box, kind = item.get("box"), str(item.get("kind") or "other")
+            direction = "h" if str(item.get("direction") or "v").lower().startswith("h") else "v"
+            if kind == "punctuation":
+                ignored["punctuation"] += 1
+                continue
+            try:
+                x1, y1, x2, y2 = (float(v) for v in box)
+            except (TypeError, ValueError):
+                ignored["invalid"] += 1
+                continue
+            if doc.overlap((x1, y1, x2, y2)) > 0.6:  # already boxed
+                ignored["duplicate"] += 1
+                continue
+            snap = snap_text(image, (x1, y1, x2, y2), direction, exclude=doc.occupied(image.shape))
+            if snap is None:
+                ignored["no_strokes"] += 1
+                continue
+            if doc.overlap(snap.bbox) > 0.5:
+                ignored["duplicate"] += 1
+                continue
+            text = str(item.get("text") or "").strip()
+            added.append(doc.add_region(snap, direction, origin="recall", hint=text, kind=kind).id)
+        doc.clear_history()  # undo is for the agent's own edits
+        self.events.emit("recall", page=doc.stem, added=added, ignored=ignored, items=len(items))
+        return added
+
+    def _page_message(self, index: int, doc: PageDoc, recalled: Optional[List[int]] = None) -> dict:
         from . import images
         regions = doc.active_regions()
-        text = (f"Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)}, "
-                f"{len(regions)} candidate region(s).\n{self.session.candidate_lines()}\n"
-                "Work through this page with the tools, then call mark_page_done.")
+        page = self.session.page_image
+        text = (f"Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
+                f"({page.width}x{page.height} px), {len(regions)} candidate region(s).\n"
+                f"{self.session.candidate_lines()}\n")
+        if recalled:
+            text += ("A recall check added " + ", ".join(f"#{i}" for i in recalled)
+                     + " for text the detector missed; its reading is only a hint. Handle them like the others "
+                       "(skip_region not_text if one is not really text).\n")
+        text += "Work through this page with the tools, then call mark_page_done."
         image = images.draw_marks(self.session.page_image, self.session.marks())
         return {"role": "user", "content": [
             {"type": "text", "text": text},
@@ -214,7 +319,8 @@ class AgentRunner:
         page = doc.stem
         self.events.emit("page_start", page=page, index=index, total=len(self.pages),
                          regions=len(doc.active_regions()))
-        self.history.append((index, self._page_message(index, doc)))
+        recalled = await self._recall(index, doc) if st.recall_pass else []
+        self.history.append((index, self._page_message(index, doc, recalled)))
         done = False
         for step in range(st.max_steps_per_page):
             if self.should_stop():
@@ -311,6 +417,12 @@ class AgentRunner:
                         self.events.emit("error", error="three pages failed in a row; stopping the run")
                         break
         finally:
+            pending = list(self._recall_tasks.values())
+            self._recall_tasks.clear()
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             self.events.emit("run_end", pages=len(outcomes),
                              done=sum(1 for o in outcomes if o.get("status") == "done"),
                              flagged=sum(o.get("flags", 0) for o in outcomes), totals=self.totals,

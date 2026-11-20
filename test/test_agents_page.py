@@ -83,6 +83,24 @@ def test_flag_for_review_call_is_one_highlighted_row(app):
     assert page.page_list.item(1).text().endswith("count=2")
 
 
+def test_recall_events_show_added_regions_and_failures(app):
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["004.jpg"], "model": "m"},
+        {"type": "recall", "page": "004", "added": [12, 13], "ignored": {"punctuation": 3, "duplicate": 1}},
+        {"type": "recall", "page": "004", "added": [], "error": "RuntimeError: down"},
+        {"type": "tool_call", "page": "004", "tool": "add_region", "args": {"box": [1, 2, 3, 4]}, "reason": "手寫"},
+    ])
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(2) for r in rows] == ["Agents Recall", "Agents Recall", "Agent Tool add_region"]
+    assert rows[0].text(3) == "Agents Recall Detail added=2 ignored=4 · #12, #13"
+    assert rows[1].text(3) == "RuntimeError: down"
+    page.problems_only.setChecked(True)
+    assert [r.isHidden() for r in rows] == [True, False, True]
+
+
 def test_live_events_arrive_through_the_listener(app, tmp_path):
     from ui.main_page.pages.agents_page import AgentsPage
 

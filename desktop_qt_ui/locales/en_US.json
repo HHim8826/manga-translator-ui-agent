@@ -1576,5 +1576,8 @@
   "Agent Tool flag_for_review": "Flag for review",
   "Agent Tool mark_page_done": "Finish page",
   "Agent Tool budget_status": "Check usage",
-  "Agent Tool undo": "Undo"
+  "Agent Tool undo": "Undo",
+  "Agent Tool add_region": "Add region",
+  "Agents Recall": "Recall check",
+  "Agents Recall Detail": "{added} added, {ignored} ignored"
 }

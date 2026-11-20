@@ -1565,5 +1565,8 @@
   "Agent Tool flag_for_review": "검토 필요로 표시",
   "Agent Tool mark_page_done": "페이지 완료",
   "Agent Tool budget_status": "사용량 확인",
-  "Agent Tool undo": "실행 취소"
+  "Agent Tool undo": "실행 취소",
+  "Agent Tool add_region": "영역 추가",
+  "Agents Recall": "누락 검사",
+  "Agents Recall Detail": "{added}개 추가, {ignored}개 무시"
 }

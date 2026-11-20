@@ -38,6 +38,7 @@ TOOL_KEYS = {
     "get_neighbors": "Agent Tool get_neighbors",
     "local_ocr": "Agent Tool local_ocr",
     "measure_bubble": "Agent Tool measure_bubble",
+    "add_region": "Agent Tool add_region",
     "merge_regions": "Agent Tool merge_regions",
     "skip_region": "Agent Tool skip_region",
     "set_reading_order": "Agent Tool set_reading_order",
@@ -210,6 +211,17 @@ class AgentsPage(QWidget):
             row = self._add_row(event, self._t("Agents Compact"),
                                 self._t("Agents Compact Detail", tokens=event.get("tokens_before", 0)), "")
             self._paint(row, MUTED)
+        elif kind == "recall":
+            if event.get("error"):
+                row = self._add_row(event, self._t("Agents Recall"), str(event["error"]), "", problem=True)
+                self._paint(row, ERROR)
+            else:
+                added = event.get("added") or []
+                ignored = sum((event.get("ignored") or {}).values())
+                detail = self._t("Agents Recall Detail", added=len(added), ignored=ignored)
+                if added:
+                    detail += " · " + ", ".join(f"#{i}" for i in added)
+                self._add_row(event, self._t("Agents Recall"), detail, "")
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)

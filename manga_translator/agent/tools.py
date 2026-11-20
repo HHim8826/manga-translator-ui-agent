@@ -1,26 +1,31 @@
 """Tools the agent calls (design doc, "工具規格"), M2 subset.
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
-Structure: merge_regions, skip_region, set_reading_order, link_regions
+Structure: add_region, merge_regions, skip_region, set_reading_order, link_regions
 Text: set_text, set_line_breaks
 Memory: glossary_search, glossary_upsert, character_get, character_upsert,
         story_summary_get, story_summary_update, search_past_translations
 Flow: flag_for_review, mark_page_done, budget_status, undo
 
-Rules shared by every tool: regions are named by id, never by coordinates;
-every write takes a ``reason``; bad arguments return an error text the model
-can act on instead of raising.
+Rules shared by every tool: regions are named by id; the only coordinates the
+model gives are rough boxes for text without a region (add_region, zoom), and
+the program snaps those to the strokes. Every write takes a ``reason``; bad
+arguments return an error text the model can act on instead of raising.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+import numpy as np
 
 from . import images
 from .page import CATEGORIES, FLAG_TYPES, PageDoc, RegionError
 from .settings import AgentSettings
+from .snap import snap_text
 from .store import AgentMemory, normalize
 
 logger = logging.getLogger("manga_translator.agent")
@@ -48,6 +53,8 @@ class AgentSession:
         self.page_index = -1
         self.doc: Optional[PageDoc] = None
         self.page_image = None
+        self.page_array: Optional[np.ndarray] = None
+        self.last_view: Optional[Dict[str, Any]] = None
         self.past: List[Dict[str, Any]] = []
         self.last_prompt_tokens = 0
         self.page_steps = 0
@@ -60,6 +67,8 @@ class AgentSession:
         self.page_index = index
         self.doc = doc
         self.page_image = images.open_page(doc.image_path)
+        self.page_array = np.asarray(self.page_image)
+        self.last_view = None
         self.page_steps = 0
 
     def finish_page(self) -> None:
@@ -82,8 +91,14 @@ class AgentSession:
         for region in self.doc.active_regions():
             x1, y1, x2, y2 = region.bbox
             local = region.ocr_local.replace("\n", " / ") or "(empty)"
+            if region.origin == "recall":
+                source = f"added by the recall check ({region.origin_kind or 'text'}), its reading (hint): 「{local}」"
+            elif region.origin == "agent":
+                source = "added by you with add_region"
+            else:
+                source = f"local OCR (weak hint): 「{local}」"
             lines.append(f"#{region.id}: {region.direction}, {x2 - x1}x{y2 - y1}px, font≈{region.font_size}px, "
-                         f"local OCR (weak hint): 「{local}」, {region.status()}")
+                         f"{source}, {region.status()}")
         return "\n".join(lines) if lines else "(no candidate regions on this page)"
 
 
@@ -106,6 +121,8 @@ def _obj(properties: Dict[str, Any], required: List[str]) -> Dict[str, Any]:
 ID = {"type": "integer", "description": "Region number as drawn on the page image"}
 IDS = {"type": "array", "items": {"type": "integer"}, "description": "Region numbers"}
 REASON = {"type": "string", "description": "One short sentence: why. Shown to the human on the Agents page"}
+BOX = {"type": "array", "items": {"type": "number"},
+       "description": "[x1, y1, x2, y2] in pixels of the page image (size in the page message); a rough box is fine"}
 
 
 def _short(text: str, limit: int = 40) -> str:
@@ -117,20 +134,65 @@ def _short(text: str, limit: int = 40) -> str:
 def get_candidates(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     image = images.draw_marks(s.page_image, s.marks())
     return ToolResult(
-        text=f"Page {s.page_name}: red = pending, green = translated, gray = skipped.\n{s.candidate_lines()}",
+        text=(f"Page {s.page_name} ({s.page_image.width}x{s.page_image.height} px): red = pending, "
+              f"green = translated, gray = skipped.\n{s.candidate_lines()}"),
         images=[images.data_url(image)], summary=f"{len(s.doc.active_regions())} regions")
 
 
+def _page_box(s: AgentSession, raw: Any) -> List[float]:
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        raise RegionError("box must be [x1, y1, x2, y2] in page pixels")
+    try:
+        x1, y1, x2, y2 = (float(v) for v in raw)
+    except (TypeError, ValueError):
+        raise RegionError("box must be four numbers [x1, y1, x2, y2]")
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    w, h = s.page_image.size
+    x1, y1, x2, y2 = max(0.0, x1), max(0.0, y1), min(float(w), x2), min(float(h), y2)
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        raise RegionError(f"box {list(raw)} is empty or outside the page ({w}x{h} px)")
+    return [x1, y1, x2, y2]
+
+
+CELL = re.compile(r"\s*([A-Ha-h])\s*([1-8])\s*(?:[:\-]\s*([A-Ha-h])\s*([1-8])\s*)?")
+
+
+def _cells_box(s: AgentSession, cells: str) -> List[float]:
+    if not s.last_view:
+        raise RegionError("cells refer to the grid of your last zoom on this page; call zoom first")
+    match = CELL.fullmatch(str(cells))
+    if not match:
+        raise RegionError("cells must look like C4 or B3:D5 (grid of the last zoom)")
+    columns = images.GRID_COLUMNS
+    c1, r1 = columns.index(match[1].upper()), int(match[2]) - 1
+    c2, r2 = (columns.index(match[3].upper()), int(match[4]) - 1) if match[3] else (c1, r1)
+    c1, c2 = sorted((c1, c2))
+    r1, r2 = sorted((r1, r2))
+    left, top, right, bottom = s.last_view["crop"]
+    cw, ch = (right - left) / len(columns), (bottom - top) / images.GRID_ROWS
+    return [left + c1 * cw, top + r1 * ch, left + (c2 + 1) * cw, top + (r2 + 1) * ch]
+
+
 def zoom(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
-    region = s.doc.get(a["id"])
-    others = [poly.tolist() for r in s.doc.active_regions() if r.id != region.id for poly in r.polygons]
-    image, info = images.zoom(s.page_image, region.bbox, others, scale=float(a.get("scale") or 3),
+    if a.get("id") not in (None, ""):
+        region = s.doc.get(a["id"])
+        box, label, skip_id = region.bbox, f"#{region.id}", region.id
+    elif a.get("box") is not None:
+        box = _page_box(s, a["box"])
+        label, skip_id = "area [" + ", ".join(str(int(v)) for v in box) + "]", None
+    else:
+        raise RegionError("give id (a region) or box ([x1, y1, x2, y2] page pixels, any area of the page)")
+    others = [poly.tolist() for r in s.doc.active_regions() if r.id != skip_id for poly in r.polygons]
+    image, info = images.zoom(s.page_image, box, others, scale=float(a.get("scale") or 3),
                               mask_others=a.get("mask_others", True) is not False)
+    s.last_view = info
     cell = info.get("grid", {}).get("cell_page_px")
     return ToolResult(
-        text=(f"Zoom of #{region.id} at {info['scale']}x; other regions' text is grayed out. "
-              f"Grid A1-H8, each cell ≈ {cell[0]}x{cell[1]} page px." if cell else f"Zoom of #{region.id}."),
-        images=[images.data_url(image)], summary=f"#{region.id} ×{info['scale']}")
+        text=(f"Zoom of {label} at {info['scale']}x; other regions' text is grayed out. "
+              f"Grid A1-H8, each cell ≈ {cell[0]}x{cell[1]} page px; add_region accepts these cells."
+              if cell else f"Zoom of {label}."),
+        images=[images.data_url(image)], summary=f"{label} ×{info['scale']}")
 
 
 def get_neighbors(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -175,6 +237,31 @@ def measure_bubble(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 
 # --- structure ----------------------------------------------------------------
+def add_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    if a.get("cells"):
+        box = _cells_box(s, a["cells"])
+    elif a.get("box") is not None:
+        box = _page_box(s, a["box"])
+    else:
+        raise RegionError("give box ([x1, y1, x2, y2] page pixels) or cells (grid of your last zoom)")
+    direction = str(a.get("direction") or "")
+    snap = snap_text(s.page_array, box, direction or "v", exclude=s.doc.occupied(s.page_array.shape))
+    if snap is None:
+        raise RegionError("no text strokes found there (strokes inside other regions do not count). "
+                          "Zoom on the area and give a tighter box, or grid cells.")
+    region = s.doc.add_region(snap, direction, origin="agent", reason=a.get("reason", ""), after=a.get("after"))
+    others = [poly.tolist() for r in s.doc.active_regions() if r.id != region.id for poly in r.polygons]
+    preview = images.snap_preview(s.page_image, snap.bbox, snap.lines, snap.erase, snap.erase_origin, others)
+    x1, y1, x2, y2 = snap.bbox
+    warning = f" Warning: {snap.warning}." if snap.warning else ""
+    return ToolResult(
+        text=(f"Added #{region.id}: {x2 - x1}x{y2 - y1}px at [{x1}, {y1}, {x2}, {y2}], {len(snap.lines)} line(s), "
+              f"font≈{snap.font_size}px. Red pixels will be erased, the green box is where the translation goes.{warning} "
+              f"If it caught the wrong strokes or missed some, call undo and try a tighter or larger box. "
+              f"Then set_text or skip_region #{region.id} like any region."),
+        images=[images.data_url(preview)], summary=f"#{region.id} {x2 - x1}x{y2 - y1}")
+
+
 def merge_regions(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     kept = s.doc.merge(a["ids"], a.get("reason", ""))
     return ToolResult(text=f"Merged into #{kept.id}. Set its text again with set_text.",
@@ -306,10 +393,11 @@ def undo(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 TOOLS: List[Tool] = [
     Tool("get_candidates", "Numbered page image and the candidate list with current status. Call again to see progress.",
          _obj({}, []), get_candidates),
-    Tool("zoom", "Magnified crop of one region with an A1-H8 grid; other regions' text is grayed out. "
-         "Use it for small, handwritten, stylized or uncertain text (second read).",
-         _obj({"id": ID, "scale": {"type": "number", "description": "1-6, default 3"},
-               "mask_others": {"type": "boolean", "description": "Gray out other regions (default true)"}}, ["id"]),
+    Tool("zoom", "Magnified crop with an A1-H8 grid; other regions' text is grayed out. Give id for a region "
+         "(small, handwritten, stylized or uncertain text: second read) or box for any area of the page "
+         "(to look at text without a region before add_region).",
+         _obj({"id": ID, "box": BOX, "scale": {"type": "number", "description": "1-6, default 3"},
+               "mask_others": {"type": "boolean", "description": "Gray out other regions (default true)"}}, []),
          zoom),
     Tool("get_neighbors", "Thumbnails of the previous and next pages, for spreads and dialogue that continues.",
          _obj({"range": {"type": "integer", "description": "1 or 2"}}, []), get_neighbors),
@@ -317,6 +405,13 @@ TOOLS: List[Tool] = [
          _obj({"id": ID}, ["id"]), local_ocr),
     Tool("measure_bubble", "Size of a region's text box and roughly how many characters fit.",
          _obj({"id": ID}, ["id"]), measure_bubble),
+    Tool("add_region", "Create a region for text that has no box. Give a rough box in page pixels, or grid cells "
+         "of your last zoom; the program snaps it to the text strokes (strokes of other regions are left out) "
+         "and shows what will be erased. Then set_text or skip_region the new id.",
+         _obj({"box": BOX, "cells": {"type": "string", "description": "Grid cells of the last zoom, like C4 or B3:D5"},
+               "direction": {"type": "string", "enum": ["v", "h"], "description": "v = vertical text, h = horizontal"},
+               "after": {"type": "integer", "description": "Optional: put it after this region in reading order"},
+               "reason": REASON}, ["direction", "reason"]), add_region, writes=True),
     Tool("merge_regions", "Merge regions that are one text block (for example one bubble split in two).",
          _obj({"ids": IDS, "reason": REASON}, ["ids", "reason"]), merge_regions, writes=True),
     Tool("skip_region", "Leave a region as it is in the original: not erased, not translated. Categories: "

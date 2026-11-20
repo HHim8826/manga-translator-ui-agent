@@ -13,6 +13,7 @@ from manga_translator.agent.events import EventLog, read_events
 from manga_translator.agent.page import PageDoc, RegionError
 from manga_translator.agent.runner import AgentRunner, ChatReply, ToolCall, strip_images
 from manga_translator.agent.settings import AgentSettings
+from manga_translator.agent.snap import snap_text
 from manga_translator.agent.store import AgentMemory, AgentStore
 from manga_translator.agent.tools import AgentSession, ToolRegistry
 from manga_translator.agent.workflow import run_agent_workflow
@@ -31,8 +32,16 @@ def _decode(b64):
     return cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_UNCHANGED)
 
 
-def make_page(tmp_path, stem="001", boxes=((20, 20, 60, 120), (100, 20, 140, 120), (200, 150, 280, 180))):
-    """An image, its work dir JSON (like Export Original Text writes) and the mask."""
+def _write_column(image, x, y, letters="ABCD", step=24):
+    """Vertical 'text': letters stacked in one column (strokes the detector missed)."""
+    for i, letter in enumerate(letters):
+        cv2.putText(image, letter, (x, y + i * step), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2, cv2.LINE_AA)
+
+
+def make_page(tmp_path, stem="001", boxes=((20, 20, 60, 120), (100, 20, 140, 120), (200, 150, 280, 180)),
+              unboxed=False):
+    """An image, its work dir JSON (like Export Original Text writes) and the mask.
+    ``unboxed`` adds a column of text at x 165-185, y 22-115 that no region covers."""
     folder = tmp_path / "chapter"
     json_dir = folder / "manga_translator_work" / "json"
     json_dir.mkdir(parents=True, exist_ok=True)
@@ -45,10 +54,12 @@ def make_page(tmp_path, stem="001", boxes=((20, 20, 60, 120), (100, 20, 140, 120
         regions.append({"lines": _quad(x1, y1, x2, y2), "texts": [f"text{i + 1}"], "text": f"text{i + 1}",
                         "translation": "", "font_size": 24, "direction": "vertical", "prob": 0.9,
                         "render_box_rect_local": [0, 0, 1, 1]})
+    if unboxed:
+        _write_column(image, 165, 40)
     image_path = str(folder / f"{stem}.png")
     cv2.imwrite(image_path, image)
     data = {image_path: {"regions": regions, "mask_raw": _mask_b64(mask), "mask_is_refined": True,
-                         "skip_font_scaling": False}}
+                         "skip_font_scaling": False, "original_width": 320, "original_height": 240}}
     json_path = json_dir / f"{stem}_translations.json"
     json_path.write_text(json.dumps(data), encoding="utf-8")
     return image_path, str(json_path)
@@ -180,13 +191,21 @@ def test_memory_tools_use_page_name(tmp_path):
 
 # --- runner -------------------------------------------------------------------------
 class ScriptedClient:
+    """Main-conversation replies come from ``script`` in order; recall checks
+    (their own tool) take the next entry of ``recall`` (default: nothing found)."""
     model_label = "fake"
 
-    def __init__(self, script):
+    def __init__(self, script, recall=None):
         self.script = list(script)
+        self.recall = list(recall or [])
         self.requests = []
+        self.recall_requests = []
 
     async def complete(self, messages, tools, tool_choice):
+        if tools and tools[0]["function"]["name"] == "report_unboxed_text":
+            self.recall_requests.append(messages)
+            items = self.recall.pop(0) if self.recall else []
+            return _calls(("report_unboxed_text", {"items": items}))
         self.requests.append(messages)
         step = self.script.pop(0)
         if isinstance(step, Exception):
@@ -205,10 +224,10 @@ def _finish_page(n_regions=3):
     return [_calls(*calls), _calls(("mark_page_done", {"confidence": 0.9}))]
 
 
-def _runner(tmp_path, pages, script, **settings):
+def _runner(tmp_path, pages, script, recall=None, **settings):
     store = AgentStore(os.path.join(os.path.dirname(pages[0][0]), "manga_translator_work"))
     events = EventLog(store.run_log_path("r1"), "r1")
-    client = ScriptedClient(script)
+    client = ScriptedClient(script, recall)
     runner = AgentRunner(AgentSettings(**settings), client, store, events, [p for p, _ in pages], "CHT")
     return runner, client, store, events
 
@@ -319,3 +338,136 @@ def test_workflow_runs_preprocess_agent_render(tmp_path):
     assert not translator.load_text and not translator.template  # flags restored
     runs = os.listdir(folder / "manga_translator_work" / "agent" / "runs")
     assert len(runs) == 1 and runs[0].endswith(".jsonl")
+
+
+# --- recall: snapping, add_region, recall check ----------------------------------------
+def _bubble_page():
+    """A speech bubble with two columns of text, screentone outside the bubble."""
+    image = np.full((300, 400, 3), 255, np.uint8)
+    inside = np.zeros((300, 400), np.uint8)
+    cv2.ellipse(inside, (200, 150), (80, 115), 0, 0, 360, 1, -1)
+    for y in range(2, 300, 6):
+        for x in range(2, 400, 6):
+            if not inside[y, x]:
+                cv2.circle(image, (x, y), 1, (60, 60, 60), -1)
+    cv2.ellipse(image, (200, 150), (80, 115), 0, 0, 360, (0, 0, 0), 3)
+    _write_column(image, 210, 90, "ABCDE")
+    _write_column(image, 180, 90, "FGHIJ")
+    return image
+
+
+def test_snap_text_tightens_a_loose_box_and_ignores_outline_and_tone():
+    image = _bubble_page()
+    # text spans x 180-228, y 73-190; the box is loose and reaches past the bubble into the screentone
+    snap = snap_text(image, (150, 20, 250, 215), "v")
+    assert snap is not None
+    x1, y1, x2, y2 = snap.bbox
+    assert 176 <= x1 <= 182 and 224 <= x2 <= 232 and 70 <= y1 <= 76 and 186 <= y2 <= 194
+    assert len(snap.lines) == 2 and 14 <= snap.font_size <= 24
+    assert snap.fg[0] < 80 and snap.bg[0] > 200
+    ox, oy = snap.erase_origin
+    assert ox >= x1 - 8 and oy >= y1 - 8 and snap.erase.any()
+    # a box that cuts the text off still gets the whole column
+    cut = snap_text(image, (205, 85, 235, 160), "v")
+    assert cut.bbox[1] <= 76 and cut.bbox[3] >= 186
+    # strokes that belong to another region are left out
+    taken = np.zeros(image.shape[:2], np.uint8)
+    taken[60:200, 200:240] = 1
+    other = snap_text(image, (170, 60, 240, 200), "v", exclude=taken)
+    assert other.bbox[2] <= 202
+    # a flat area holds no text
+    assert snap_text(image, (150, 230, 190, 255), "v") is None
+
+
+def test_add_region_tool_snaps_saves_and_undoes(tmp_path):
+    image_path, json_path = make_page(tmp_path, unboxed=True)
+    session = AgentSession(AgentSettings(), AgentMemory(str(tmp_path / "mem")), [image_path])
+    session.start_page(0, PageDoc.load(image_path, json_path))
+    registry = ToolRegistry(session)
+    bad = registry.execute("add_region", {"direction": "v", "reason": "r"})
+    assert not bad.ok and "box" in bad.text
+    nothing = registry.execute("add_region", {"box": [150, 200, 190, 230], "direction": "v", "reason": "r"})
+    assert not nothing.ok and "no text strokes" in nothing.text
+    added = registry.execute("add_region", {"box": [158, 30, 196, 100], "direction": "v", "reason": "手寫字",
+                                            "after": 2})
+    assert added.ok and added.images and "Added #4" in added.text
+    doc = session.doc
+    region = doc.get(4)
+    x1, y1, x2, y2 = region.bbox
+    assert 160 <= x1 <= 168 and 178 <= x2 <= 192 and y1 <= 26 and y2 >= 108
+    assert doc.order == [1, 2, 4, 3] and region.origin == "agent" and region.direction == "v"
+    assert "added by you" in session.candidate_lines()
+    registry.execute("set_text", {"id": 4, "source_text": "ABCD", "translation": "甲乙", "category": "handwritten",
+                                  "confidence": 0.8})
+    doc.save()
+    saved = next(iter(json.load(open(json_path, encoding="utf-8")).values()))
+    assert [r["translation"] for r in saved["regions"]] == ["", "", "甲乙", ""]
+    assert saved["regions"][2]["direction"] == "v" and saved["regions"][2]["font_size"] > 0
+    mask = _decode(saved["mask_raw"])
+    assert mask[60, 172] == 255 and mask[200, 172] == 0  # the new text is erased, nothing else
+    assert {r["id"]: r["origin"] for r in doc.sidecar()["regions"]}[4] == "agent"
+    # merged into a detector region, the added strokes are still erased
+    registry.execute("merge_regions", {"ids": [2, 4], "reason": "同一個框"})
+    doc.save()
+    merged = next(iter(json.load(open(json_path, encoding="utf-8")).values()))
+    assert len(merged["regions"]) == 3 and _decode(merged["mask_raw"])[60, 172] == 255
+    registry.execute("undo", {})
+    # undo the text, then the region
+    registry.execute("undo", {})
+    registry.execute("undo", {})
+    assert 4 not in doc.regions and doc.order == [1, 2, 3]
+    # grid cells of a zoom on an area work as well
+    zoomed = registry.execute("zoom", {"box": [150, 10, 200, 120]})
+    assert zoomed.ok and "add_region accepts these cells" in zoomed.text
+    by_cells = registry.execute("add_region", {"cells": "A1:H8", "direction": "v", "reason": "r"})
+    assert by_cells.ok and doc.get(4).bbox[0] >= 158
+
+
+def test_recall_check_adds_missed_text_before_the_page(tmp_path):
+    pages = [make_page(tmp_path, "001", unboxed=True), make_page(tmp_path, "002")]
+    recall = [[
+        {"box": [160, 25, 195, 115], "text": "ABCD", "kind": "handwritten", "direction": "v"},
+        {"box": [20, 20, 60, 120], "text": "text1", "kind": "dialogue", "direction": "v"},   # already boxed
+        {"box": [290, 200, 300, 210], "text": "…", "kind": "punctuation", "direction": "v"},
+        {"box": [150, 200, 190, 230], "text": "?", "kind": "other", "direction": "v"},      # nothing there
+        {"box": "bad", "text": "", "kind": "other", "direction": "v"},
+    ], []]
+    script = [_calls(*[("set_text", {"id": i, "source_text": f"s{i}", "translation": f"譯{i}",
+                                     "category": "dialogue", "confidence": 0.9}) for i in range(1, 5)]),
+              _calls(("mark_page_done", {"confidence": 0.9}))] + _finish_page()
+    runner, client, store, events = _runner(tmp_path, pages, script, recall=recall)
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert [o["status"] for o in outcomes] == ["done", "done"]
+    assert len(client.recall_requests) == 2
+    first_page = client.requests[0][-1]["content"][0]["text"]
+    assert "A recall check added #4" in first_page and "added by the recall check (handwritten)" in first_page
+    assert "(320x240 px)" in first_page
+    logged = [e for e in read_events(events.path) if e["type"] == "recall"]
+    assert logged[0]["added"] == [4]
+    assert logged[0]["ignored"] == {"punctuation": 1, "duplicate": 1, "no_strokes": 1, "invalid": 1}
+    assert logged[1]["added"] == []
+    saved = next(iter(json.load(open(pages[0][1], encoding="utf-8")).values()))
+    assert [r["translation"] for r in saved["regions"]] == ["譯1", "譯2", "譯3", "譯4"]
+    assert store.load_sidecar("001")["regions"][3]["origin"] == "recall"
+    assert runner.totals["recall_requests"] == 2
+
+
+def test_recall_failure_does_not_stop_the_page(tmp_path):
+    pages = [make_page(tmp_path, "001")]
+
+    class FailingRecall(ScriptedClient):
+        async def complete(self, messages, tools, tool_choice):
+            if tools and tools[0]["function"]["name"] == "report_unboxed_text":
+                raise RuntimeError("recall down")
+            return await super().complete(messages, tools, tool_choice)
+
+    store = AgentStore(os.path.join(os.path.dirname(pages[0][0]), "manga_translator_work"))
+    events = EventLog(store.run_log_path("r1"), "r1")
+    client = FailingRecall(_finish_page())
+    runner = AgentRunner(AgentSettings(), client, store, events, [pages[0][0]], "CHT")
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert outcomes[0]["status"] == "done"
+    recall = [e for e in read_events(events.path) if e["type"] == "recall"]
+    assert recall and "recall down" in recall[0]["error"]

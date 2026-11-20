@@ -1565,5 +1565,8 @@
   "Agent Tool flag_for_review": "要確認に追加",
   "Agent Tool mark_page_done": "ページを完了",
   "Agent Tool budget_status": "使用量を確認",
-  "Agent Tool undo": "元に戻す"
+  "Agent Tool undo": "元に戻す",
+  "Agent Tool add_region": "領域を追加",
+  "Agents Recall": "検出漏れチェック",
+  "Agents Recall Detail": "{added} 個追加、{ignored} 個無視"
 }

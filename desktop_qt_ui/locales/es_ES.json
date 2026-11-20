@@ -1565,5 +1565,8 @@
   "Agent Tool flag_for_review": "Marcar para revisar",
   "Agent Tool mark_page_done": "Terminar página",
   "Agent Tool budget_status": "Ver uso",
-  "Agent Tool undo": "Deshacer"
+  "Agent Tool undo": "Deshacer",
+  "Agent Tool add_region": "Añadir región",
+  "Agents Recall": "Búsqueda de texto omitido",
+  "Agents Recall Detail": "{added} añadidas, {ignored} ignoradas"
 }

@@ -1574,5 +1574,8 @@
   "Agent Tool flag_for_review": "標記待確認",
   "Agent Tool mark_page_done": "完成這一頁",
   "Agent Tool budget_status": "查看用量",
-  "Agent Tool undo": "復原"
+  "Agent Tool undo": "復原",
+  "Agent Tool add_region": "新增文字框",
+  "Agents Recall": "補漏檢查",
+  "Agents Recall Detail": "新增 {added} 個，忽略 {ignored} 個"
 }
