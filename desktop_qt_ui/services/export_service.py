@@ -153,6 +153,47 @@ class ExportService:
             return os.path.normpath(saved.strip())
         return None
 
+    def _mapped_output_directory(
+        self, output_root: str, source_path: str
+    ) -> Optional[str]:
+        """The folder under ``output_root`` whose translation_map.json lists ``source_path``:
+        where the batch saved the page (``<output>/<chapter>/``) when its JSON does not say so,
+        so the export does not land in the output root, where pages of other chapters with the
+        same name replace it."""
+        source = os.path.normcase(os.path.normpath(os.path.abspath(source_path)))
+        chapter = os.path.basename(os.path.dirname(source_path))
+        candidates = [os.path.join(output_root, chapter), output_root]
+        try:
+            candidates += sorted(
+                entry.path for entry in os.scandir(output_root) if entry.is_dir()
+            )
+        except OSError:
+            pass
+        seen = set()
+        for folder in candidates:
+            key = os.path.normcase(os.path.normpath(folder))
+            if key in seen:
+                continue
+            seen.add(key)
+            map_path = os.path.join(folder, "translation_map.json")
+            if not os.path.isfile(map_path):
+                continue
+            try:
+                with open(map_path, "r", encoding="utf-8") as f:
+                    mapping = json.load(f)
+            except Exception as e:
+                self.logger.debug(f"Failed to read {map_path}: {e}")
+                continue
+            if not isinstance(mapping, dict):
+                continue
+            for mapped_source in mapping.values():
+                if (
+                    isinstance(mapped_source, str)
+                    and os.path.normcase(os.path.normpath(mapped_source)) == source
+                ):
+                    return os.path.normpath(folder)  # the map sits beside the pages it lists
+        return None
+
     def build_output_path(self, config: Dict[str, Any], source_path: str) -> str:
         """Resolve the editor output path from persisted and current configuration."""
         cli = config.get("cli", {})
@@ -166,11 +207,13 @@ class ExportService:
             )
         if not output_dir:
             configured = app.get("last_output_path")
-            output_dir = (
-                configured
-                if configured and os.path.exists(configured)
-                else os.path.dirname(source_path)
-            )
+            if configured and os.path.exists(configured):
+                output_dir = (
+                    self._mapped_output_directory(configured, source_path)
+                    or configured
+                )
+            else:
+                output_dir = os.path.dirname(source_path)
         os.makedirs(output_dir, exist_ok=True)
 
         base_name = os.path.splitext(os.path.basename(source_path))[0]

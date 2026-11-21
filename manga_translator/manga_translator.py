@@ -4173,6 +4173,15 @@ class MangaTranslator:
                                         f"{os.path.basename(ctx.image_name)}; skipped JSON write-back to protect the project file"
                                     )
                                 else:
+                                    if save_info and ctx.result is not None and not getattr(ctx, 'final_output_dir', None):
+                                        # The image is saved after this write: record its folder now, or the JSON
+                                        # has no last_export_dir and the editor exports the page to the output root,
+                                        # where pages of other chapters with the same name replace it.
+                                        try:
+                                            ctx.final_output_dir = os.path.dirname(
+                                                self._calculate_output_path(ctx.image_name, save_info))
+                                        except Exception as dir_err:
+                                            logger.debug(f"Failed to resolve the output folder for {os.path.basename(ctx.image_name)}: {dir_err}")
                                     try:
                                         self._save_text_to_file(ctx.image_name, ctx, config)
                                     except Exception as save_json_err:
