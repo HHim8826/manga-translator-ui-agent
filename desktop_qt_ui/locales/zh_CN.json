@@ -1666,7 +1666,7 @@
   "Agent Effort high": "高 (high)",
   "Agent Effort xhigh": "极高 (xhigh)",
   "label_update_work_glossary": "新词写回作品提示词",
-  "desc_agent_update_work_glossary": "每话翻完（校对后），把 Agent 新记下、而且最终译文有用到的人名和术语加进作品提示词文件，之后的每一话和其他翻译器都会用到。原有的词条一律不改；YAML 的注释和排版保留；写入前的文件留作 .bak。声音、一次性用语等不算术语的词只留在该话的记录里。",
+  "desc_agent_update_work_glossary": "每话翻完（校对后），把 Agent 新记下、而且最终译文有用到的人名和术语加进作品提示词文件，之后的每一话和其他翻译器都会用到。原有的词条一律不改；YAML 的注释和排版保留；第一次写入前的原文件留作 .bak（之后不再覆盖），每次写入前的版本另存在 agent/backups（保留最近 5 份）。声音、一次性用语等不算术语的词只留在该话的记录里。",
   "Agents Work Glossary": "写回作品提示词",
   "Agents Work Glossary Detail": "新增 {added} 个词到 {file}",
   "Agents Work Glossary Skipped": "没加入：已有 {known} 个、不是术语 {other} 个、译文没用到 {unused} 个",

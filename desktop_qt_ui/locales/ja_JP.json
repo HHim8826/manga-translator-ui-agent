@@ -1656,7 +1656,7 @@
   "Agent Effort high": "高 (high)",
   "Agent Effort xhigh": "非常に高い (xhigh)",
   "label_update_work_glossary": "新しい用語を作品プロンプトに追加",
-  "desc_agent_update_work_glossary": "各話の翻訳後（校正の後）、エージェントが新しく記録し最終的な訳文で使った人名と用語を作品プロンプトファイルに追加します。以降の話やほかの翻訳器でも使われます。既存の項目は変更せず、YAML のコメントと書式も保ちます。書き込み前のファイルは .bak として残します。音や一度きりの言葉はその話の記録にだけ残ります。",
+  "desc_agent_update_work_glossary": "各話の翻訳後（校正の後）、エージェントが新しく記録し最終的な訳文で使った人名と用語を作品プロンプトファイルに追加します。以降の話やほかの翻訳器でも使われます。既存の項目は変更せず、YAML のコメントと書式も保ちます。最初の書き込み前のファイルは .bak として残し（以後は上書きしません）、毎回の書き込み前の版は agent/backups に保存します（最新 5 件）。音や一度きりの言葉はその話の記録にだけ残ります。",
   "Agents Work Glossary": "作品プロンプト",
   "Agents Work Glossary Detail": "{file} に {added} 語を追加",
   "Agents Work Glossary Skipped": "追加しなかった語：既存 {known}、用語でない {other}、訳文で未使用 {unused}",

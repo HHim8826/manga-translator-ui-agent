@@ -74,6 +74,7 @@ class AgentSettings(BaseModel):
     update_work_glossary: bool = True
     """After each chapter, add the new names and terms the agent recorded (and used in the final
     translations) to that prompt file, so later chapters and the other translators use them. Existing
-    entries are never changed; YAML comments and layout stay; the old file is kept as ``.bak``."""
+    entries are never changed; YAML comments and layout stay; the user's own version is kept as
+    ``.bak``, and the last versions in ``agent/backups/``."""
     extra_instructions: str = ""
     """Extra instructions appended to the agent's system prompt."""

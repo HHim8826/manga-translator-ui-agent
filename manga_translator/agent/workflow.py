@@ -133,14 +133,15 @@ async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLo
     return result
 
 
-def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events: EventLog, log) -> bool:
+def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events: EventLog, log,
+                     target_lang: str = "CHT") -> bool:
     """Add the chapter's new names and terms to the work's prompt file; True when it changed.
     A failure is logged and the chapter goes on."""
     chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
     try:
         # the saved translations, after the proofreading (what the editor and the renderer use)
         translations = [ProofPage.translation(r) for p in pages for r in ProofPage(p).regions.values()]
-        result = update_work_glossary(path, memory, translations, chapter)
+        result = update_work_glossary(path, memory, translations, chapter, target_lang)
     except Exception as exc:
         logger.exception("saving new terms to the work prompt file failed")
         events.emit("error", agent="memory", error=f"new terms not saved to {os.path.basename(path)}: "
@@ -481,7 +482,7 @@ async def run_agent_workflow(
                             _save_work_styles(styles_path, runner.memory, work_dir, events, log)
                         if settings.update_work_glossary and work_prompt is not None and work_prompt.path \
                                 and finished and _save_work_terms(work_prompt.path, runner.memory, finished,
-                                                                  work_dir, events, log):
+                                                                  work_dir, events, log, target_lang):
                             # the next chapter reads the file again, with the new terms
                             work_prompt = load_work_prompt(work_prompt.path, language_name(target_lang)) \
                                 or work_prompt

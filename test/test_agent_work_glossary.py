@@ -8,7 +8,7 @@ import yaml
 
 from manga_translator.agent.events import read_events
 from manga_translator.agent.store import AgentMemory, AgentStore
-from manga_translator.agent.work_glossary import insert_yaml, update_work_glossary
+from manga_translator.agent.work_glossary import candidates, insert_yaml, update_work_glossary
 
 from test_agent_core import FakeTranslator, ScriptedClient, _calls, _finish_page, _session, make_page
 
@@ -218,3 +218,36 @@ def test_workflow_leaves_the_file_alone_when_off_or_broken(tmp_path):
     assert prompt_path.read_text(encoding="utf-8") == broken
     assert any("new terms not saved (ValueError" in line for line in lines)
     assert len(client.requests) == 5 and not client.script  # the second chapter was still translated
+
+
+def test_the_users_own_version_stays_in_the_bak_and_the_last_versions_are_kept(tmp_path, monkeypatch):
+    from manga_translator.agent import work_glossary
+
+    path = tmp_path / "work.yaml"
+    path.write_bytes(WORK.encode("utf-8"))
+    stamps = iter(f"20261121-1200{i:02d}" for i in range(20))
+    monkeypatch.setattr(work_glossary.time, "strftime", lambda fmt: next(stamps))
+    versions = []
+    for i in range(7):  # seven chapters, each adds a term
+        versions.append(path.read_bytes())
+        memory = AgentMemory(str(tmp_path / f"memory{i}"))
+        memory.glossary_upsert(f"剣{i}", f"劍{i}", "", "001", "Item")
+        assert update_work_glossary(str(path), memory, [f"劍{i}"], f"第{i}話")["added"]
+    assert (tmp_path / "work.yaml.bak").read_bytes() == WORK.encode("utf-8")  # never replaced
+    backups = tmp_path / "agent" / "backups"
+    kept = sorted(os.listdir(backups))
+    assert kept == [f"work.20261121-1200{i:02d}.yaml" for i in range(2, 7)]  # the last five
+    assert [(backups / name).read_bytes() for name in kept] == versions[2:]
+    # two changes in one second do not overwrite each other
+    monkeypatch.setattr(work_glossary.time, "strftime", lambda fmt: "20261121-120006")
+    assert work_glossary.backup(str(path)).endswith("work.20261121-120006-01.yaml")
+
+
+def test_the_note_of_an_added_term_is_in_the_target_language(tmp_path):
+    memory = AgentMemory(str(tmp_path / "memory"))
+    memory.glossary_upsert("星の剣", "Star Sword", "a weapon", "002", "Item")
+    data = {"glossary": {"Item": []}}
+    english = candidates(memory, data, ["the Star Sword"], "ch1", "ENG")[0][0]
+    assert english.description == "a weapon (added by the AI agent: ch1 p.002)"
+    simplified = candidates(memory, data, ["Star Sword"], "第1话", "CHS")[0][0]
+    assert simplified.description == "a weapon（AI agent 自动加入：第1话 p.002）"

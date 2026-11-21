@@ -11,7 +11,9 @@
 * A YAML file gets the new entries inserted as lines, in the layout of its existing entries, so its
   comments and formatting stay. The result is parsed again and must equal the old content plus the
   new entries, otherwise nothing is written. A JSON file is rewritten with two-space indentation.
-* The previous file is kept as ``<file>.bak``.
+* ``<file>.bak`` is the file as it was before the agent first changed it; it is never replaced.
+  Each change also keeps the version before it in ``<folder>/agent/backups/`` (the last
+  ``BACKUPS_KEPT``; a sub folder, so the app does not list them as prompt files).
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -69,10 +72,23 @@ def known_sources(data: Dict[str, Any]) -> set:
     return found
 
 
+BACKUPS_KEPT = 5
+
+# the note on each added entry, in the target language: (origin, note with origin)
+_ORIGIN = {
+    "CHT": ("AI agent 自動加入：{where}", "{note}（{origin}）"),
+    "CHS": ("AI agent 自动加入：{where}", "{note}（{origin}）"),
+    "JPN": ("AI agent が自動追加：{where}", "{note}（{origin}）"),
+    "KOR": ("AI agent 자동 추가: {where}", "{note} ({origin})"),
+    "": ("added by the AI agent: {where}", "{note} ({origin})"),
+}
+
+
 def candidates(memory: AgentMemory, data: Dict[str, Any], translations: Iterable[str],
-               chapter: str) -> Tuple[List[NewTerm], Dict[str, List[str]]]:
+               chapter: str, target_lang: str = "CHT") -> Tuple[List[NewTerm], Dict[str, List[str]]]:
     """The terms to add, and the others by reason: ``known`` (already in the file), ``other``
     (not a name or term of the work) and ``unused`` (not in the final translations)."""
+    origin_text, with_note = _ORIGIN.get((target_lang or "").upper(), _ORIGIN[""])
     known = known_sources(data)
     text = "\n".join(t for t in translations if t)
     terms: List[NewTerm] = []
@@ -91,9 +107,10 @@ def candidates(memory: AgentMemory, data: Dict[str, Any], translations: Iterable
         elif target not in text:
             skipped["unused"].append(source)
         else:
-            origin = f"AI agent 自動加入：{chapter}" + (f" p.{page}" if page else "")
+            origin = origin_text.format(where=chapter + (f" p.{page}" if page else ""))
             note = (note or "").strip()
-            terms.append(NewTerm(category, source, target, f"{note}（{origin}）" if note else origin))
+            terms.append(NewTerm(category, source, target, with_note.format(note=note, origin=origin)
+                                 if note else origin))
 
     for name, info in memory.characters.items():
         category = info.get("category") if info.get("category") in ("Person", "Creature") else "Person"
@@ -239,18 +256,39 @@ def write_terms(path: str, terms: List[NewTerm]) -> None:
         new_text = (insert_yaml(stripped, terms) + body[len(stripped):]).replace("\n", newline)
         if yaml.safe_load(new_text) != expected:
             raise ValueError("the edited file would not read back as the old content plus the new terms")
-    shutil.copy2(path, path + ".bak")
+    backup(path)
     tmp = path + ".tmp"
     with open(tmp, "wb") as fh:
         fh.write((codecs.BOM_UTF8 if bom else b"") + new_text.encode("utf-8"))
     os.replace(tmp, path)
 
 
+def backup(path: str) -> str:
+    """Keep ``path`` before a change: ``<path>.bak`` once (the user's own version), and a dated copy
+    in ``agent/backups/`` next to it, of which the last ``BACKUPS_KEPT`` stay. Returns the copy."""
+    first = path + ".bak"
+    if not os.path.exists(first):
+        shutil.copy2(path, first)
+    folder = os.path.join(os.path.dirname(os.path.abspath(path)), "agent", "backups")
+    os.makedirs(folder, exist_ok=True)
+    name, ext = os.path.splitext(os.path.basename(path))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target, n = os.path.join(folder, f"{name}.{stamp}{ext}"), 1
+    while os.path.exists(target):  # two changes in one second
+        target, n = os.path.join(folder, f"{name}.{stamp}-{n:02d}{ext}"), n + 1
+    shutil.copy2(path, target)
+    dated = re.compile(re.escape(name) + r"\.\d{8}-\d{6}(?:-\d{2})?" + re.escape(ext) + "$")
+    copies = sorted(f for f in os.listdir(folder) if dated.match(f))
+    for old in copies[:-BACKUPS_KEPT]:
+        os.remove(os.path.join(folder, old))
+    return target
+
+
 def update_work_glossary(path: str, memory: AgentMemory, translations: Iterable[str],
-                         chapter: str) -> Dict[str, Any]:
+                         chapter: str, target_lang: str = "CHT") -> Dict[str, Any]:
     """Save the chapter's new terms; returns what was added and what was left out (by reason)."""
     data = read_prompt_file(path)
-    terms, skipped = candidates(memory, data, translations, chapter)
+    terms, skipped = candidates(memory, data, translations, chapter, target_lang)
     if terms:
         write_terms(path, terms)
     return {"file": os.path.basename(path), "added": [t.brief() for t in terms],
