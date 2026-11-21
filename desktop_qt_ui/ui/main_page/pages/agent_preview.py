@@ -240,7 +240,8 @@ class PagePreview(QWidget):
         root.addLayout(head)
         self.stages = SegmentedWidget(self)
         for stage in STAGES:
-            self.stages.addItem(stage, stage, onClick=lambda s=stage: self._on_stage_clicked(s))
+            # itemClicked passes ``checked`` first; without the placeholder it would replace ``s``
+            self.stages.addItem(stage, stage, onClick=lambda checked=False, s=stage: self._on_stage_clicked(s))
         self.stages.setCurrentItem(ORIGINAL)
         root.addWidget(self.stages)
         self.canvas = PreviewCanvas(self)
@@ -332,7 +333,8 @@ class PagePreview(QWidget):
         info = self.pages.get(page or "", {})
         if stage == COMPARE:
             return info.get("output") or info.get("inpainted")
-        return info.get({ORIGINAL: "image", INPAINTED: "inpainted", RESULT: "output"}[stage])
+        key = {ORIGINAL: "image", INPAINTED: "inpainted", RESULT: "output"}.get(stage)
+        return info.get(key) if key else None
 
     # --- interaction ------------------------------------------------------------
     def _set_following(self, on: bool) -> None:
@@ -350,6 +352,8 @@ class PagePreview(QWidget):
             self._show(page, self.newest_stage(page), None)
 
     def _on_stage_clicked(self, stage: str) -> None:
+        if stage not in STAGES:
+            return
         self._set_following(False)
         self.stage = stage
         self._render()

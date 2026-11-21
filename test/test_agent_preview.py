@@ -181,9 +181,16 @@ def test_preview_follows_a_page_from_original_to_result(app, tmp_path):
     row = page.timeline.topLevelItem(page.timeline.topLevelItemCount() - 1)
     assert row.text(2) == "Agents Render" and row.text(3) == "Agents Render Detail file=001_output.png"
     assert page.status_label.text().startswith("Agents Finished")
-    # comparison: the original left of the divider, the result right of it
-    preview._on_stage_clicked("compare")
-    assert not preview.following
+    # comparison: the original left of the divider, the result right of it; a real click on the
+    # segment (its signal passes ``checked``, which once replaced the stage name: KeyError True)
+    preview.stages.widget("compare").click()
+    assert preview.stage == "compare" and not preview.following
+    preview.stages.widget("original").click()
+    assert preview.stage == "original" and _color(preview.canvas) == (255, 0, 0)
+    page.timeline.setCurrentItem(page.timeline.topLevelItem(1))  # a row after a click still renders
+    assert preview.shown == "001"
+    preview.stages.widget("compare").click()
+    assert preview.stage == "compare"
     canvas = preview.canvas
     assert canvas.before is not None and _color(canvas) == (0, 0, 255)
     canvas.resize(400, 600)
