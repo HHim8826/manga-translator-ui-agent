@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field
 class AgentSettings(BaseModel):
     model: str = ""
     """Model name. Empty uses OPENAI_MODEL, like the OpenAI translators."""
+    reasoning_effort: str = ""
+    """``reasoning_effort`` of the translation agent's and the proofreader's requests (``low`` /
+    ``medium`` / ``high`` / ``xhigh``, or any level the endpoint offers). Empty sends none, so the
+    model's own default applies. An endpoint that rejects the field gets requests without it."""
+    review_reasoning_effort: str = ""
+    """The same for the recall check and the inpaint review."""
     max_context_tokens: int = 400_000
     """Hard limit of one conversation."""
     compact_threshold_tokens: int = 300_000

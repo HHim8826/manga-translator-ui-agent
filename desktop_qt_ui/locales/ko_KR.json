@@ -1645,5 +1645,14 @@
   "desc_agent_inpaint_review_steps": "한 페이지의 인페인팅 검토에서 모델을 호출할 수 있는 횟수.",
   "desc_agent_inpaint_attempts_per_region": "검토가 영역마다 다시 인페인팅할 수 있는 횟수(첫 인페인팅 제외).",
   "desc_agent_proofread_steps": "한 화 교정에서 모델을 호출할 수 있는 횟수.",
-  "desc_agent_low_confidence_threshold": "신뢰도 점수가 이 값보다 낮은 페이지는 확인 목록에 들어갑니다."
+  "desc_agent_low_confidence_threshold": "신뢰도 점수가 이 값보다 낮은 페이지는 확인 목록에 들어갑니다.",
+  "label_reasoning_effort": "번역·교정 추론 강도",
+  "label_review_reasoning_effort": "누락 검사·인페인팅 검토 추론 강도",
+  "desc_agent_reasoning_effort": "번역 agent와 화 전체 교정의 요청마다 모델이 얼마나 생각할지. 높을수록 대체로 안정적이지만 느리고 사용량이 늘어납니다. \"지정 안 함\"은 값을 보내지 않아 모델 기본값을 씁니다. API가 이 항목을 받지 않으면 빼고 보냅니다.",
+  "desc_agent_review_reasoning_effort": "누락 텍스트 검사와 인페인팅 검토의 요청마다 모델이 얼마나 생각할지. 비교적 단순한 작업이라 보통 \"지정 안 함\"이면 충분합니다.",
+  "Agent Effort Default": "지정 안 함(모델 기본값)",
+  "Agent Effort low": "낮음 (low)",
+  "Agent Effort medium": "보통 (medium)",
+  "Agent Effort high": "높음 (high)",
+  "Agent Effort xhigh": "매우 높음 (xhigh)"
 }

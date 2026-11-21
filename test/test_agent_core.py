@@ -203,8 +203,10 @@ class ScriptedClient:
         self.recall_requests = []
         self.review_requests = []
         self.proof_requests = []
+        self.efforts = []
 
-    async def complete(self, messages, tools, tool_choice):
+    async def complete(self, messages, tools, tool_choice, effort=""):
+        self.efforts.append((tools[0]["function"]["name"] if tools else "", effort))
         if tools and tools[0]["function"]["name"] == "view_region":  # inpaint review: accept as it is
             self.review_requests.append(messages)
             return _calls(("finish_review", {}))
@@ -365,6 +367,72 @@ def test_client_sends_the_session_header(monkeypatch):
     client.session_id = "manga-translator-r1"
     asyncio.run(client.complete([], [], "required"))
     assert seen["extra_headers"] == {"session_id": "manga-translator-r1"}
+
+
+def test_client_sends_reasoning_effort_and_drops_it_where_refused(monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+    import openai
+
+    from manga_translator import api_key_rotation
+    from manga_translator.agent.client import OpenAIChatClient
+
+    sent = []
+
+    class Completions:
+        def __init__(self, refuse):
+            self.refuse = refuse
+
+        async def create(self, **kwargs):
+            sent.append(kwargs.get("reasoning_effort"))
+            if self.refuse and "reasoning_effort" in kwargs:
+                response = httpx.Response(400, request=httpx.Request("POST", "http://api/chat/completions"))
+                raise openai.BadRequestError("Unsupported parameter: 'reasoning_effort'", response=response, body=None)
+            call = SimpleNamespace(id="c0", function=SimpleNamespace(name="zoom", arguments="{}"))
+            message = SimpleNamespace(content=None, tool_calls=[call], refusal=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+    async def run(*, endpoints, operation, **_):
+        return await operation(endpoints[0])
+
+    monkeypatch.setattr(api_key_rotation, "run_with_api_candidates", run)
+    endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
+    for refuse, expected in ((False, ["high", None, "low"]), (True, ["high", None, None, None])):
+        sent.clear()
+        client = OpenAIChatClient((endpoint,), "failover", AgentSettings())
+        api = SimpleNamespace(chat=SimpleNamespace(completions=Completions(refuse)))
+        monkeypatch.setattr(client, "_client", lambda e, api=api: api)
+        for effort in ("High ", "", "low"):
+            assert asyncio.run(client.complete([], [], "required", effort=effort)).tool_calls[0].name == "zoom"
+        # refused once: that request is sent again without the field, and so are the later ones
+        assert sent == expected, refuse
+
+
+def test_each_agent_sends_its_reasoning_effort(tmp_path):
+    from test_agent_inpaint import FakeBackend
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    client = ScriptedClient(_finish_page() + _finish_page())
+    asyncio.run(run_agent_workflow(FakeTranslator(tmp_path), [(p, Cfg) for p in paths], {}, client=client,
+                                   log=lambda m: None, inpaint_backend=FakeBackend(),
+                                   agent_settings={"reasoning_effort": "high", "review_reasoning_effort": "low",
+                                                   "proofread": True}))
+    by_tool = {}
+    for tool, effort in client.efforts:
+        by_tool.setdefault(tool, set()).add(effort)
+    helpers = ("report_unboxed_text", "view_region", "view_page")
+    assert by_tool["report_unboxed_text"] == {"low"} and by_tool["view_region"] == {"low"}   # recall, inpaint review
+    assert by_tool["view_page"] == {"high"}                                                   # proofreading
+    assert {e for t, e in client.efforts if t not in helpers} == {"high"}                     # translation agent
+    assert AgentSettings().reasoning_effort == "" and AgentSettings().review_reasoning_effort == ""
 
 
 def test_strip_images_keeps_text():
@@ -540,10 +608,10 @@ def test_recall_failure_does_not_stop_the_page(tmp_path):
     pages = [make_page(tmp_path, "001")]
 
     class FailingRecall(ScriptedClient):
-        async def complete(self, messages, tools, tool_choice):
+        async def complete(self, messages, tools, tool_choice, effort=""):
             if tools and tools[0]["function"]["name"] == "report_unboxed_text":
                 raise RuntimeError("recall down")
-            return await super().complete(messages, tools, tool_choice)
+            return await super().complete(messages, tools, tool_choice, effort)
 
     store = AgentStore(os.path.join(os.path.dirname(pages[0][0]), "manga_translator_work"))
     events = EventLog(store.run_log_path("r1"), "r1")
@@ -693,10 +761,10 @@ def _review_workflow(tmp_path, **settings):
     class NetworkClient(ScriptedClient):  # a real request waits on the network and lets other tasks run
         session_id = None
 
-        async def complete(self, messages, tools, tool_choice):
+        async def complete(self, messages, tools, tool_choice, effort=""):
             self.sessions = getattr(self, "sessions", set()) | {self.session_id}
             await asyncio.sleep(0.01)
-            return await super().complete(messages, tools, tool_choice)
+            return await super().complete(messages, tools, tool_choice, effort)
 
     translator = FakeTranslator(tmp_path)
     client = NetworkClient(_finish_page() + _finish_page())

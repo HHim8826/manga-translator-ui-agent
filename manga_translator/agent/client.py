@@ -4,7 +4,7 @@ numbered candidates), so the agent uses the same endpoints as the OpenAI transla
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from .runner import ChatReply, ToolCall
 from .settings import AgentSettings
@@ -19,6 +19,8 @@ class OpenAIChatClient:
         self.settings = settings
         self.runtime_config = runtime_config
         self._clients: Dict[str, object] = {}
+        self._no_effort: Set[str] = set()
+        """Endpoints that rejected ``reasoning_effort``: they get requests without it."""
         self.session_id: Optional[str] = None
         """Sent as the ``session_id`` header, so a proxy that groups requests (for example an
         API proxy) shows one chapter run, with its recall and review calls, as one session."""
@@ -29,23 +31,47 @@ class OpenAIChatClient:
             return self.settings.model
         return self.endpoints[0].model_name if self.endpoints else ""
 
+    @staticmethod
+    def _key(endpoint) -> str:
+        return f"{endpoint.base_url}|{endpoint.status_key}"
+
     def _client(self, endpoint):
         from openai import AsyncOpenAI
-        key = f"{endpoint.base_url}|{endpoint.status_key}"
+        key = self._key(endpoint)
         if key not in self._clients:
             self._clients[key] = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url,
                                              timeout=self.settings.request_timeout, max_retries=0)
         return self._clients[key]
 
-    async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str) -> ChatReply:
+    async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str,
+                       effort: str = "") -> ChatReply:
+        """One chat completion. ``effort`` is sent as ``reasoning_effort`` unless empty."""
+        from openai import BadRequestError
+
         from ..api_key_rotation import run_with_api_candidates
 
         headers = {"session_id": self.session_id} if self.session_id else None
+        effort = (effort or "").strip().lower()
 
         async def operation(endpoint) -> ChatReply:
-            response = await self._client(endpoint).chat.completions.create(
-                model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
-                tool_choice=tool_choice, extra_headers=headers)
+            def create(**extra):
+                return self._client(endpoint).chat.completions.create(
+                    model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
+                    tool_choice=tool_choice, extra_headers=headers, **extra)
+
+            key = self._key(endpoint)
+            if effort and key not in self._no_effort:
+                try:
+                    response = await create(reasoning_effort=effort)
+                except BadRequestError as err:
+                    if "reasoning" not in str(err).lower():
+                        raise
+                    self._no_effort.add(key)
+                    logger.warning("The API at %s rejected reasoning_effort=%s; its requests go without it: %s",
+                                   endpoint.base_url, effort, err)
+                    response = await create()
+            else:
+                response = await create()
             if not response.choices:
                 raise RuntimeError("the API returned no choices")
             message = response.choices[0].message

@@ -1645,5 +1645,14 @@
   "desc_agent_inpaint_review_steps": "Llamadas al modelo permitidas en la revisión del borrado de una página.",
   "desc_agent_inpaint_attempts_per_region": "Nuevos intentos de borrado que la revisión puede hacer por zona (sin contar la primera pasada).",
   "desc_agent_proofread_steps": "Llamadas al modelo permitidas para corregir un capítulo.",
-  "desc_agent_low_confidence_threshold": "Las páginas con una confianza inferior a este valor pasan a la lista de revisión."
+  "desc_agent_low_confidence_threshold": "Las páginas con una confianza inferior a este valor pasan a la lista de revisión.",
+  "label_reasoning_effort": "Esfuerzo de razonamiento: traducción y corrección",
+  "label_review_reasoning_effort": "Esfuerzo de razonamiento: texto omitido y revisión del borrado",
+  "desc_agent_reasoning_effort": "Cuánto piensa el modelo en cada solicitud del agente de traducción y de la corrección del capítulo. Más alto suele ser más estable, pero más lento y gasta más cuota. \"Sin definir\" no envía valor y se usa el del modelo. Si la API rechaza el campo, las solicitudes se envían sin él.",
+  "desc_agent_review_reasoning_effort": "Cuánto piensa el modelo en cada solicitud de la búsqueda de texto omitido y de la revisión del borrado. Son tareas más simples; \"Sin definir\" suele bastar.",
+  "Agent Effort Default": "Sin definir (valor del modelo)",
+  "Agent Effort low": "Bajo (low)",
+  "Agent Effort medium": "Medio (medium)",
+  "Agent Effort high": "Alto (high)",
+  "Agent Effort xhigh": "Muy alto (xhigh)"
 }

@@ -1655,5 +1655,14 @@
   "desc_agent_inpaint_review_steps": "一页的修图审查最多调用模型几次。",
   "desc_agent_inpaint_attempts_per_region": "每个区域最多重修几次（第一次整页修图不算）。",
   "desc_agent_proofread_steps": "一话的校对最多调用模型几次。",
-  "desc_agent_low_confidence_threshold": "信心分数低于这个值的页面列入待确认。"
+  "desc_agent_low_confidence_threshold": "信心分数低于这个值的页面列入待确认。",
+  "label_reasoning_effort": "翻译与校对的思考强度",
+  "label_review_reasoning_effort": "补漏与修图审查的思考强度",
+  "desc_agent_reasoning_effort": "翻译 agent 和整话校对每次请求要模型想多久。越高通常越稳，但更慢、更耗额度。「不指定」不送这个参数，用模型自己的默认值。API 不接受这个参数时，程序会自动改成不送。",
+  "desc_agent_review_reasoning_effort": "补漏检查和修图审查每次请求要模型想多久。这两个工作比较单纯，一般维持「不指定」就够了。",
+  "Agent Effort Default": "不指定（模型默认）",
+  "Agent Effort low": "低 (low)",
+  "Agent Effort medium": "中 (medium)",
+  "Agent Effort high": "高 (high)",
+  "Agent Effort xhigh": "极高 (xhigh)"
 }

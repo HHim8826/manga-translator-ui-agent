@@ -60,3 +60,24 @@ def test_agent_labels_are_mapped_and_translated_in_every_locale():
         for key in keys:
             assert catalogs[locale][f"desc_agent_{key}"] != catalogs["zh_CN"][f"desc_agent_{key}"], (locale, key)
             assert catalogs[locale][f"desc_agent_{key}"] != catalogs["zh_TW"][f"desc_agent_{key}"], (locale, key)
+
+
+def test_reasoning_effort_settings_are_dropdowns_with_a_model_default():
+    from types import SimpleNamespace
+
+    from app_logic import MainAppLogic
+
+    tab = _agent_tab()["items"]
+    assert tab.index("agent.reasoning_effort") == tab.index("agent.model") + 1
+    assert tab.index("agent.review_reasoning_effort") == tab.index("agent.model") + 2
+    names = MainAppLogic._agent_effort_names(SimpleNamespace(_t=lambda key: key))
+    assert list(names) == ["", "low", "medium", "high", "xhigh"]
+    for key in ("reasoning_effort", "review_reasoning_effort"):
+        assert _setting_control_kind(f"agent.{key}", key, "", [], names) == "combo"
+    catalogs = {
+        locale: json.loads((LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")) for locale in LOCALES
+    }
+    for locale, catalog in catalogs.items():
+        shown = [catalog.get(text, "") for text in names.values()]
+        assert all(shown) and len(set(shown)) == len(shown), locale
+    assert catalogs["en_US"]["Agent Effort Default"] != catalogs["zh_TW"]["Agent Effort Default"]

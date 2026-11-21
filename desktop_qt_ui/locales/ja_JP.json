@@ -1645,5 +1645,14 @@
   "desc_agent_inpaint_review_steps": "1 ページの修復レビューで呼び出せるモデルの回数。",
   "desc_agent_inpaint_attempts_per_region": "領域ごとにレビューがやり直せる修復の回数（最初の修復は含みません）。",
   "desc_agent_proofread_steps": "1 話の校正で呼び出せるモデルの回数。",
-  "desc_agent_low_confidence_threshold": "信頼度がこの値より低いページは確認リストに入ります。"
+  "desc_agent_low_confidence_threshold": "信頼度がこの値より低いページは確認リストに入ります。",
+  "label_reasoning_effort": "翻訳と校正の思考レベル",
+  "label_review_reasoning_effort": "見落としチェックと修復レビューの思考レベル",
+  "desc_agent_reasoning_effort": "翻訳 agent と話全体の校正で、リクエストごとにモデルがどれだけ考えるか。高いほど安定しやすい一方、遅くなり利用枠も多く使います。「指定なし」は値を送らず、モデルの既定値を使います。API がこの項目を受け付けない場合は送らずに続けます。",
+  "desc_agent_review_reasoning_effort": "見落としチェックと修復レビューで、リクエストごとにモデルがどれだけ考えるか。比較的単純な作業なので、通常は「指定なし」で十分です。",
+  "Agent Effort Default": "指定なし（モデル既定）",
+  "Agent Effort low": "低 (low)",
+  "Agent Effort medium": "中 (medium)",
+  "Agent Effort high": "高 (high)",
+  "Agent Effort xhigh": "非常に高い (xhigh)"
 }

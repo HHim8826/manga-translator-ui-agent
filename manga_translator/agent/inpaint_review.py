@@ -519,7 +519,8 @@ class InpaintReviewer:
             if self.should_stop():
                 raise AgentStopped()
             session.steps = step + 1
-            reply = await self.client.complete(messages, registry.schemas(), "required")
+            reply = await self.client.complete(messages, registry.schemas(), "required",
+                                               effort=self.settings.review_reasoning_effort)
             for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
                 self.totals[key] += getattr(reply, key)
             self.totals["requests"] += 1

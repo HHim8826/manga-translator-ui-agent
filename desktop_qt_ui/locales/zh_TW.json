@@ -1654,5 +1654,14 @@
   "desc_agent_inpaint_review_steps": "一頁的修圖審查最多呼叫模型幾次。",
   "desc_agent_inpaint_attempts_per_region": "每個區域最多重修幾次（第一次整頁修圖不算）。",
   "desc_agent_proofread_steps": "一話的校對最多呼叫模型幾次。",
-  "desc_agent_low_confidence_threshold": "信心分數低於這個值的頁面列入待確認。"
+  "desc_agent_low_confidence_threshold": "信心分數低於這個值的頁面列入待確認。",
+  "label_reasoning_effort": "翻譯與校對的思考強度",
+  "label_review_reasoning_effort": "補漏與修圖審查的思考強度",
+  "desc_agent_reasoning_effort": "翻譯 agent 和整話校對每次請求要模型想多久。越高通常越穩，但更慢、更耗額度。「不指定」不送這個參數，用模型自己的預設值。API 不接受這個參數時，程式會自動改成不送。",
+  "desc_agent_review_reasoning_effort": "補漏檢查和修圖審查每次請求要模型想多久。這兩個工作比較單純，一般維持「不指定」就夠了。",
+  "Agent Effort Default": "不指定（模型預設）",
+  "Agent Effort low": "低 (low)",
+  "Agent Effort medium": "中 (medium)",
+  "Agent Effort high": "高 (high)",
+  "Agent Effort xhigh": "極高 (xhigh)"
 }

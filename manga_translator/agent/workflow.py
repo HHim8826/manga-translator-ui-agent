@@ -270,7 +270,9 @@ async def run_agent_workflow(
         if client is None:
             from .client import build_client
             client = build_client(config, settings)
-        log(f"[Agent] 2/4 Agent: {len(paths)} page(s), model {getattr(client, 'model_label', '')}")
+        log(f"[Agent] 2/4 Agent: {len(paths)} page(s), model {getattr(client, 'model_label', '')}, "
+            f"reasoning effort {settings.reasoning_effort or 'default'} "
+            f"(recall and inpaint review: {settings.review_reasoning_effort or 'default'})")
         work_prompt = None
         if settings.use_work_prompt:
             prompt_path = getattr(getattr(config, "translator", None), "high_quality_prompt_path", None) or ""

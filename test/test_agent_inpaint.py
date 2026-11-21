@@ -174,7 +174,7 @@ class ReviewClient:
         self.script = list(script)
         self.requests = []
 
-    async def complete(self, messages, tools, tool_choice):
+    async def complete(self, messages, tools, tool_choice, effort=""):
         assert tools[0]["function"]["name"] == "view_region"
         self.requests.append(messages)
         return self.script.pop(0)

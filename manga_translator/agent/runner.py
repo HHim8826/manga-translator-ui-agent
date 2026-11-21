@@ -64,7 +64,8 @@ class ChatReply:
 
 
 class ChatClient(Protocol):
-    async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str) -> ChatReply: ...
+    async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str,
+                       effort: str = "") -> ChatReply: ...
 
 
 RECALL_KINDS = ("dialogue", "narration", "handwritten", "sfx", "sign", "ui", "punctuation", "other")
@@ -253,7 +254,8 @@ class AgentRunner:
         self.session.last_prompt_tokens = 0
 
     async def _complete(self, page_index: int) -> ChatReply:
-        reply = await self.client.complete(self.request_messages(page_index), self.registry.schemas(), "required")
+        reply = await self.client.complete(self.request_messages(page_index), self.registry.schemas(), "required",
+                                           effort=self.settings.reasoning_effort)
         self.session.last_prompt_tokens = reply.prompt_tokens
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
             self.totals[key] += getattr(reply, key)
@@ -278,7 +280,8 @@ class AgentRunner:
                         {"type": "text", "text": f"This page is {page.width}x{page.height} pixels."},
                         {"type": "image_url", "image_url": {"url": images.data_url(marked),
                                                             "detail": self.settings.image_detail}}]}]
-        reply = await self.client.complete(messages, [RECALL_TOOL], "required")
+        reply = await self.client.complete(messages, [RECALL_TOOL], "required",
+                                           effort=self.settings.review_reasoning_effort)
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
             self.totals[key] += getattr(reply, key)
         self.totals["recall_requests"] += 1

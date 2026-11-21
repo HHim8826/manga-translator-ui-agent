@@ -1165,6 +1165,12 @@ class MainAppLogic(QObject):
     # endregion
 
     # region UI数据提供
+    def _agent_effort_names(self) -> Dict[str, str]:
+        """Reasoning effort choices of the agent settings; "" sends none (the model's default)."""
+        names = {"": self._t("Agent Effort Default")}
+        names.update({level: self._t(f"Agent Effort {level}") for level in ("low", "medium", "high", "xhigh")})
+        return names
+
     def get_display_mapping(self, key: str) -> Optional[Dict[str, str]]:
         # 每次都动态生成翻译映射，确保语言切换时能正确更新
         display_name_maps = {
@@ -1239,6 +1245,8 @@ class MainAppLogic(QObject):
                     "none": self._t("lang_filter_disabled"),
                     **self.translation_service.get_keep_languages(),
                 },
+                "reasoning_effort": self._agent_effort_names(),
+                "review_reasoning_effort": self._agent_effort_names(),
                 "ocr_vl_language_hint": {
                     "auto": self._t("ocr_lang_auto"),
                     "multilingual": self._t("ocr_lang_multilingual"),
@@ -1322,6 +1330,8 @@ class MainAppLogic(QObject):
                     "fix_missing_glyphs": self._t("label_fix_missing_glyphs"),
                     "choose_fonts": self._t("label_choose_fonts"),
                     "model": self._t("label_model"),
+                    "reasoning_effort": self._t("label_reasoning_effort"),
+                    "review_reasoning_effort": self._t("label_review_reasoning_effort"),
                     "extra_instructions": self._t("label_extra_instructions"),
                     "max_context_tokens": self._t("label_max_context_tokens"),
                     "compact_threshold_tokens": self._t("label_compact_threshold_tokens"),
