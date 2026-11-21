@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QImageReader, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, CaptionLabel, CheckBox, SegmentedWidget
+from qfluentwidgets import BodyLabel, CaptionLabel, CheckBox, FluentIcon, SegmentedWidget, TransparentToolButton
 
 ORIGINAL, INPAINTED, RESULT, COMPARE = "original", "inpainted", "result", "compare"
 STAGES = (ORIGINAL, INPAINTED, RESULT, COMPARE)
@@ -31,6 +31,15 @@ BOX_COLORS = {
     "skipped": QColor(130, 130, 130),
     "flagged": QColor(214, 140, 0),
 }
+BOX_MARKS = {"pending": "○", "done": "✓", "flagged": "!", "skipped": "–"}
+"""Before the box number, so the state reads without telling the colours apart."""
+BOX_LINES = {
+    "pending": (Qt.PenStyle.DotLine, 2),
+    "done": (Qt.PenStyle.SolidLine, 2),
+    "flagged": (Qt.PenStyle.SolidLine, 4),
+    "skipped": (Qt.PenStyle.DashLine, 2),
+}
+"""Line style and width of each state: different in grayscale too."""
 HIGHLIGHT = QColor(30, 120, 230)
 MAX_SIDE = 2000
 """Images are decoded at most this large; double-clicking opens the full file."""
@@ -38,6 +47,19 @@ MAX_ZOOM = 8.0
 """Zoom of the preview over the fitted page."""
 ZOOM_STEP = 1.25
 """Zoom factor of one wheel notch."""
+PAN_STEP = 48
+"""Pixels an arrow key moves a zoomed image."""
+
+
+def box_label(state: str, rid) -> str:
+    return f"{BOX_MARKS.get(state, BOX_MARKS['pending'])}{rid}"
+
+
+def box_pen(state: str) -> QPen:
+    style, width = BOX_LINES.get(state, BOX_LINES["pending"])
+    pen = QPen(BOX_COLORS.get(state, BOX_COLORS["pending"]), width)
+    pen.setStyle(style)
+    return pen
 
 
 class ImageCache:
@@ -84,7 +106,8 @@ class PreviewCanvas(QWidget):
     The wheel zooms in at the cursor (up to ``MAX_ZOOM`` times the fitted page); a zoomed image
     moves with a drag (with the right or middle button while comparing, where the left button moves
     the divider); a right click without moving fits the page again. The zoom is kept when the stage
-    changes, so the same spot can be compared, and reset for another page."""
+    changes, so the same spot can be compared, and reset for another page. With the keyboard focus
+    (Tab, or a click): + and - zoom at the middle, 0 fits the page, the arrow keys move."""
 
     double_clicked = pyqtSignal()
 
@@ -105,6 +128,7 @@ class PreviewCanvas(QWidget):
         self._pan_moved = False
         self.setMinimumSize(220, 260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def set_content(self, main: Optional[QPixmap], source: QSize = QSize(), before: Optional[QPixmap] = None,
                     boxes: Optional[List[list]] = None, highlight: Optional[int] = None, message: str = "") -> None:
@@ -160,6 +184,37 @@ class PreviewCanvas(QWidget):
         self._keep_center(self.image_rect())  # within the image's edges
         self.update()
 
+    def zoom_by(self, steps: float) -> None:
+        """Zoom at the middle of the widget (the buttons and the keys)."""
+        self.zoom_at(QPointF(self.width() / 2, self.height() / 2), steps)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt)
+        key = event.key()
+        moves = {Qt.Key.Key_Left: (PAN_STEP, 0), Qt.Key.Key_Right: (-PAN_STEP, 0),
+                 Qt.Key.Key_Up: (0, PAN_STEP), Qt.Key.Key_Down: (0, -PAN_STEP)}
+        if self.main is not None:
+            if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self.zoom_by(1)
+                return
+            if key in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
+                self.zoom_by(-1)
+                return
+            if key in (Qt.Key.Key_0, Qt.Key.Key_Home):
+                self.reset_zoom()
+                return
+            if key in moves and self.zoom > 1.0:
+                self.pan(*moves[key])
+                return
+        super().keyPressEvent(event)
+
+    def focusInEvent(self, event) -> None:  # noqa: N802 (Qt)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt)
+        super().focusOutEvent(event)
+        self.update()
+
     def pan(self, dx: float, dy: float) -> None:
         rect = self.image_rect()
         if rect.isEmpty() or self.zoom <= 1.0:
@@ -204,6 +259,10 @@ class PreviewCanvas(QWidget):
             self._draw(painter, self.main, rect, view)
         if self.source.width() > 0 and (self.boxes or self.highlight is not None):
             self._paint_boxes(painter, rect, rect.width() / self.source.width())
+        if self.hasFocus():  # where the keys go
+            painter.setPen(QPen(HIGHLIGHT, 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
 
     def _paint_boxes(self, painter: QPainter, rect: QRectF, scale: float) -> None:
         font = QFont(self.font())
@@ -215,17 +274,15 @@ class PreviewCanvas(QWidget):
                 continue
             color = BOX_COLORS.get(state, BOX_COLORS["pending"])
             area = QRectF(rect.left() + x1 * scale, rect.top() + y1 * scale, (x2 - x1) * scale, (y2 - y1) * scale)
-            pen = QPen(color, 2)
-            if state == "skipped":
-                pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
+            painter.setPen(box_pen(state))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(area)
-            self._paint_label(painter, area, f"{rid}", color)
+            self._paint_label(painter, area, box_label(state, rid), color)
         if self.highlight is not None:
             for box in self.boxes:
                 if box[0] == self.highlight:
                     rid, x1, y1, x2, y2 = box[:5]
+                    state = box[5] if len(box) > 5 else "pending"
                     area = QRectF(rect.left() + x1 * scale, rect.top() + y1 * scale,
                                   (x2 - x1) * scale, (y2 - y1) * scale).adjusted(-3, -3, 3, 3)
                     fill = QColor(HIGHLIGHT)
@@ -233,7 +290,7 @@ class PreviewCanvas(QWidget):
                     painter.setPen(QPen(HIGHLIGHT, 3))
                     painter.setBrush(QBrush(fill))
                     painter.drawRect(area)
-                    self._paint_label(painter, area, f"{rid}", HIGHLIGHT)
+                    self._paint_label(painter, area, box_label(state, rid), HIGHLIGHT)
 
     @staticmethod
     def _paint_label(painter: QPainter, area: QRectF, text: str, color: QColor) -> None:
@@ -337,6 +394,16 @@ class PagePreview(QWidget):
         root.addWidget(self.canvas, 1)
         foot = QHBoxLayout()
         foot.setSpacing(8)
+        # zoom without the wheel: buttons the Tab key reaches (the canvas takes + - 0 too)
+        self.zoom_out_button = TransparentToolButton(FluentIcon.ZOOM_OUT, self)
+        self.zoom_out_button.clicked.connect(lambda: self.canvas.zoom_by(-1))
+        self.zoom_in_button = TransparentToolButton(FluentIcon.ZOOM_IN, self)
+        self.zoom_in_button.clicked.connect(lambda: self.canvas.zoom_by(1))
+        self.zoom_fit_button = TransparentToolButton(FluentIcon.FIT_PAGE, self)
+        self.zoom_fit_button.clicked.connect(self.canvas.reset_zoom)
+        for button in (self.zoom_out_button, self.zoom_in_button, self.zoom_fit_button):
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            foot.addWidget(button)
         self.path_label = CaptionLabel(self)
         self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         foot.addWidget(self.path_label, 1)
@@ -350,6 +417,12 @@ class PagePreview(QWidget):
         self.boxes_box.setText(self._t("Agents Preview Boxes"))
         self.boxes_box.setToolTip(self._t("Agents Preview Boxes Tip"))
         self.canvas.setToolTip(self._t("Agents Preview Hint"))
+        self.canvas.setAccessibleName(self._t("Agents Preview"))
+        for button, key in ((self.zoom_out_button, "Agents Preview Zoom Out"),
+                            (self.zoom_in_button, "Agents Preview Zoom In"),
+                            (self.zoom_fit_button, "Agents Preview Zoom Fit")):
+            button.setToolTip(self._t(key))
+            button.setAccessibleName(self._t(key))
         self._render()
 
     # --- data -------------------------------------------------------------------
@@ -496,3 +569,9 @@ class PagePreview(QWidget):
             if original is not None:
                 size = original[1]
         self.canvas.set_content(pixmap, size, before=before, boxes=shown_boxes, highlight=self.highlight)
+        counts = {state: 0 for state in BOX_MARKS}
+        for box in shown_boxes or []:
+            state = box[5] if len(box) > 5 else "pending"
+            counts[state if state in counts else "pending"] += 1
+        # what a screen reader says for the boxes (the marks on them say it on screen)
+        self.canvas.setAccessibleDescription(self._t("Agents Preview Box Summary", **counts) if shown_boxes else "")

@@ -1612,10 +1612,10 @@
   "Agents Preview Compare": "Compare",
   "Agents Preview Follow": "Follow progress",
   "Agents Preview Boxes": "Region boxes",
-  "Agents Preview Boxes Tip": "Region boxes on the original: red = pending, green = translated, gray dashed = skipped, orange = flagged",
+  "Agents Preview Boxes Tip": "Region boxes on the original; the mark before the number and the line show the state: ○ dotted = pending, ✓ solid = translated, ! thick = flagged, – dashed = skipped (red, green, orange, gray)",
   "Agents Preview Empty": "The page being worked on appears here once a run starts",
   "Agents Preview Missing": "Image not found: {file}",
-  "Agents Preview Hint": "Wheel to zoom; drag to move a zoomed image (right-drag when comparing); right-click to fit the page; drag the divider to compare; double-click to open this image",
+  "Agents Preview Hint": "Wheel or +/- to zoom, 0 to fit the page; drag or use the arrow keys to move a zoomed image (right-drag when comparing); right-click to fit the page; drag the divider to compare; double-click to open this image",
   "Agents Render": "Render",
   "Agents Render Start": "Rendering {pages} page(s)",
   "Agents Render Detail": "Saved {file}",
@@ -1810,5 +1810,9 @@
   "Agents Stage Stopped": "Cancelled before the translation started",
   "Agents Stage Failed": "Failed before the translation started: {error}",
   "Agents Stage Ended": "The run ended before the translation started; see the log",
-  "Agents Stop Tip": "Stops the AI Agent run going on now: {chapters}"
+  "Agents Stop Tip": "Stops the AI Agent run going on now: {chapters}",
+  "Agents Preview Zoom In": "Zoom in (+)",
+  "Agents Preview Zoom Out": "Zoom out (-)",
+  "Agents Preview Zoom Fit": "Fit the page (0)",
+  "Agents Preview Box Summary": "Region boxes: {pending} pending, {done} translated, {flagged} flagged, {skipped} skipped"
 }

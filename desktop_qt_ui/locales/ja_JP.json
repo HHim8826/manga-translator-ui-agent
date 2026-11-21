@@ -1601,10 +1601,10 @@
   "Agents Preview Compare": "比較",
   "Agents Preview Follow": "進行に追従",
   "Agents Preview Boxes": "領域枠",
-  "Agents Preview Boxes Tip": "原画像の領域枠：赤＝未処理、緑＝翻訳済み、灰色の破線＝スキップ、橙＝要確認",
+  "Agents Preview Boxes Tip": "原画像上の領域枠。番号の前の記号と線で状態を表します：○ 点線＝未処理、✓ 実線＝翻訳済み、! 太線＝要確認、– 破線＝スキップ（色は順に赤、緑、橙、灰）",
   "Agents Preview Empty": "翻訳を始めると、処理中のページがここに表示されます",
   "Agents Preview Missing": "画像が見つかりません：{file}",
-  "Agents Preview Hint": "ホイールで拡大縮小、拡大中はドラッグで移動（比較中は右ドラッグ）、右クリックでページ全体に戻す。比較中は区切り線をドラッグ。ダブルクリックで既定のアプリで開く",
+  "Agents Preview Hint": "ホイールまたは +／- キーで拡大縮小、0 でページ全体；拡大中はドラッグまたは矢印キーで移動（比較中は右ドラッグ）；右クリックでページ全体；比較中は区切り線をドラッグ；ダブルクリックでこの画像を開く",
   "Agents Render": "レンダリング",
   "Agents Render Start": "{pages} ページをレンダリング",
   "Agents Render Detail": "{file} を保存",
@@ -1799,5 +1799,9 @@
   "Agents Stage Stopped": "キャンセルしました：翻訳はまだ始まっていません",
   "Agents Stage Failed": "翻訳開始前に失敗しました：{error}",
   "Agents Stage Ended": "翻訳開始前に終了しました。理由はログを確認してください",
-  "Agents Stop Tip": "実行中の AI Agent フローを停止：{chapters}"
+  "Agents Stop Tip": "実行中の AI Agent フローを停止：{chapters}",
+  "Agents Preview Zoom In": "拡大（+）",
+  "Agents Preview Zoom Out": "縮小（-）",
+  "Agents Preview Zoom Fit": "ページ全体（0）",
+  "Agents Preview Box Summary": "領域枠：未処理 {pending}、翻訳済み {done}、要確認 {flagged}、スキップ {skipped}"
 }

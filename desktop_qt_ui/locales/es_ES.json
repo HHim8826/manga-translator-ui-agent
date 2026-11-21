@@ -1601,10 +1601,10 @@
   "Agents Preview Compare": "Comparar",
   "Agents Preview Follow": "Seguir el progreso",
   "Agents Preview Boxes": "Cuadros",
-  "Agents Preview Boxes Tip": "Cuadros sobre el original: rojo = pendiente, verde = traducido, gris discontinuo = omitido, naranja = marcado",
+  "Agents Preview Boxes Tip": "Cuadros de región sobre el original; la marca antes del número y la línea indican el estado: ○ punteado = pendiente, ✓ continuo = traducido, ! grueso = por revisar, – discontinuo = omitido (rojo, verde, naranja, gris)",
   "Agents Preview Empty": "La página en curso aparece aquí cuando empieza la traducción",
   "Agents Preview Missing": "No se encuentra la imagen: {file}",
-  "Agents Preview Hint": "Rueda para ampliar; arrastra para mover la imagen ampliada (clic derecho y arrastrar al comparar); clic derecho para ver la página entera; arrastra el divisor para comparar; doble clic para abrir la imagen",
+  "Agents Preview Hint": "Rueda o +/- para ampliar, 0 para ajustar la página; arrastra o usa las flechas para mover la imagen ampliada (arrastre derecho al comparar); clic derecho para ajustar la página; arrastra el divisor para comparar; doble clic para abrir esta imagen",
   "Agents Render": "Renderizado",
   "Agents Render Start": "Renderizando {pages} página(s)",
   "Agents Render Detail": "Guardado {file}",
@@ -1799,5 +1799,9 @@
   "Agents Stage Stopped": "Cancelado antes de empezar la traducción",
   "Agents Stage Failed": "Falló antes de empezar la traducción: {error}",
   "Agents Stage Ended": "La ejecución terminó antes de empezar la traducción; consulta el registro",
-  "Agents Stop Tip": "Detiene la ejecución de AI Agent en curso: {chapters}"
+  "Agents Stop Tip": "Detiene la ejecución de AI Agent en curso: {chapters}",
+  "Agents Preview Zoom In": "Ampliar (+)",
+  "Agents Preview Zoom Out": "Reducir (-)",
+  "Agents Preview Zoom Fit": "Ajustar la página (0)",
+  "Agents Preview Box Summary": "Cuadros: {pending} pendientes, {done} traducidos, {flagged} por revisar, {skipped} omitidos"
 }

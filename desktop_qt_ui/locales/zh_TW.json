@@ -1610,10 +1610,10 @@
   "Agents Preview Compare": "對比",
   "Agents Preview Follow": "跟隨進度",
   "Agents Preview Boxes": "區域框",
-  "Agents Preview Boxes Tip": "原圖上的區域框：紅＝待處理，綠＝已翻譯，灰色虛線＝略過，橙＝待確認",
+  "Agents Preview Boxes Tip": "原圖上的區域框，框號前的符號和線條表示狀態：○ 點線＝待處理，✓ 實線＝已翻譯，! 粗線＝待確認，– 虛線＝略過（顏色依序是紅、綠、橙、灰）",
   "Agents Preview Empty": "開始翻譯後，這裡會顯示正在處理的頁面",
   "Agents Preview Missing": "找不到圖片：{file}",
-  "Agents Preview Hint": "滾輪縮放；放大後拖曳移動（對比時用右鍵拖曳）；右鍵點一下恢復整頁；對比時拖曳分隔線；按兩下用預設程式開啟這張圖",
+  "Agents Preview Hint": "滾輪或 +／- 鍵縮放，0 恢復整頁；放大後拖曳或用方向鍵移動（對比時用右鍵拖曳）；右鍵點一下恢復整頁；對比時拖曳分隔線；按兩下用預設程式開啟這張圖",
   "Agents Render": "渲染",
   "Agents Render Start": "渲染 {pages} 頁",
   "Agents Render Detail": "已存檔 {file}",
@@ -1808,5 +1808,9 @@
   "Agents Stage Stopped": "已取消：還沒開始翻譯",
   "Agents Stage Failed": "開始翻譯前失敗：{error}",
   "Agents Stage Ended": "流程在開始翻譯前結束，原因請看日誌",
-  "Agents Stop Tip": "停止目前執行中的 AI Agent 流程：{chapters}"
+  "Agents Stop Tip": "停止目前執行中的 AI Agent 流程：{chapters}",
+  "Agents Preview Zoom In": "放大（+）",
+  "Agents Preview Zoom Out": "縮小（-）",
+  "Agents Preview Zoom Fit": "整頁（0）",
+  "Agents Preview Box Summary": "區域框：{pending} 個待處理、{done} 個已翻譯、{flagged} 個待確認、{skipped} 個略過"
 }
