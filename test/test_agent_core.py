@@ -183,7 +183,8 @@ def test_mark_page_done_requires_every_region(tmp_path):
 
 def test_memory_tools_use_page_name(tmp_path):
     session, tools = _session(tmp_path)
-    tools.execute("glossary_upsert", json.dumps({"source": "ギルド", "target": "公會", "reason": "term"}))
+    tools.execute("glossary_upsert", json.dumps({"source": "ギルド", "target": "公會", "category": "Org",
+                                                 "reason": "term"}))
     assert session.memory.glossary[0]["page"] == "001"
     session.past.append({"page": "000", "id": 1, "source": "ギルドへ", "translation": "去公會", "category": "dialogue"})
     assert "去公會" in tools.execute("search_past_translations", json.dumps({"query": "公會"})).text

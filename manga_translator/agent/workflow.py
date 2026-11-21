@@ -29,10 +29,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .events import EventLog, new_run_id
 from .inpaint_review import InpaintReviewer
-from .proofread import Proofreader
+from .proofread import ProofPage, Proofreader
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
+from .work_glossary import update_work_glossary
 from .work_prompt import load_work_prompt
 
 logger = logging.getLogger("manga_translator.agent")
@@ -127,6 +128,28 @@ async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLo
     log(f"[Agent] Proofread: {result.get('revised', 0)} revised, {result.get('flagged', 0)} flagged, "
         f"{totals['requests']} requests, {totals['prompt_tokens']} prompt tokens ({totals['cached_tokens']} cached)")
     return result
+
+
+def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events: EventLog, log) -> bool:
+    """Add the chapter's new names and terms to the work's prompt file; True when it changed.
+    A failure is logged and the chapter goes on."""
+    chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
+    try:
+        # the saved translations, after the proofreading (what the editor and the renderer use)
+        translations = [ProofPage.translation(r) for p in pages for r in ProofPage(p).regions.values()]
+        result = update_work_glossary(path, memory, translations, chapter)
+    except Exception as exc:
+        logger.exception("saving new terms to the work prompt file failed")
+        events.emit("error", agent="memory", error=f"new terms not saved to {os.path.basename(path)}: "
+                                                   f"{type(exc).__name__}: {str(exc)[:300]}")
+        log(f"[Agent] Work prompt: new terms not saved ({type(exc).__name__}: {exc})")
+        return False
+    skipped = {reason: len(names) for reason, names in result["skipped"].items()}
+    events.emit("work_glossary", agent="memory", file=result["file"], added=result["added"], skipped=skipped)
+    added = ", ".join(f"{t['source']} → {t['target']}" for t in result["added"])
+    log(f"[Agent] Work prompt: {len(result['added'])} new term(s) saved to {result['file']}"
+        + (f": {added}" if added else "") + (f" (left out: {skipped})" if skipped else ""))
+    return bool(result["added"])
 
 
 async def _check_fonts(service, pages: List[str], store: AgentStore, events: EventLog, settings: AgentSettings,
@@ -333,6 +356,12 @@ async def run_agent_workflow(
                         if font_service is not None and finished:
                             # after the proofreading: it may change the text
                             await _check_fonts(font_service, finished, store, events, settings, log)
+                        if settings.update_work_glossary and work_prompt is not None and work_prompt.path \
+                                and finished and _save_work_terms(work_prompt.path, runner.memory, finished,
+                                                                  work_dir, events, log):
+                            # the next chapter reads the file again, with the new terms
+                            work_prompt = load_work_prompt(work_prompt.path, language_name(target_lang)) \
+                                or work_prompt
                     except BaseException:
                         for task in (review_task, proof_task):
                             if task is not None and not task.done():

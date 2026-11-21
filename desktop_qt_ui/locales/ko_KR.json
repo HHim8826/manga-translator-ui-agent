@@ -1654,5 +1654,10 @@
   "Agent Effort low": "낮음 (low)",
   "Agent Effort medium": "보통 (medium)",
   "Agent Effort high": "높음 (high)",
-  "Agent Effort xhigh": "매우 높음 (xhigh)"
+  "Agent Effort xhigh": "매우 높음 (xhigh)",
+  "label_update_work_glossary": "새 용어를 작품 프롬프트에 추가",
+  "desc_agent_update_work_glossary": "각 화 번역 후(교정 후) agent가 새로 기록하고 최종 번역문에 쓴 인명과 용어를 작품 프롬프트 파일에 추가합니다. 이후 화와 다른 번역기에서도 사용됩니다. 기존 항목은 바꾸지 않고 YAML 주석과 서식도 유지합니다. 쓰기 전 파일은 .bak으로 남깁니다. 소리나 한 번만 쓰는 말은 그 화의 기록에만 남습니다.",
+  "Agents Work Glossary": "작품 프롬프트",
+  "Agents Work Glossary Detail": "{file}에 {added}개 용어 추가",
+  "Agents Work Glossary Skipped": "추가 안 함: 이미 있음 {known}, 용어 아님 {other}, 번역문에 없음 {unused}"
 }

@@ -2,7 +2,8 @@
 ``dict/<work>.yaml``) for the agent: its free-text ``system_prompt`` and its glossary go into
 the agent's system prompt, and the glossary terms feed the program checks.
 
-The file is only read, never written: new terms the agent finds go to its own memory.
+New terms the agent finds go to its own memory first; after a chapter, ``work_glossary`` adds the
+new names and terms to this file (setting ``update_work_glossary``), never changing its entries.
 """
 from __future__ import annotations
 
@@ -29,6 +30,8 @@ class WorkPrompt:
     text: str = ""
     """What goes into the agent's system prompt."""
     terms: List[WorkTerm] = field(default_factory=list)
+    path: str = ""
+    """Where the file was found."""
 
 
 def resolve_path(path: str) -> Optional[str]:
@@ -132,4 +135,5 @@ def load_work_prompt(path: str, target_lang: str = "") -> Optional[WorkPrompt]:
     if not isinstance(data, dict):
         return None
     prompt = parse(data, os.path.basename(resolved), target_lang)
+    prompt.path = resolved
     return prompt if prompt.text else None

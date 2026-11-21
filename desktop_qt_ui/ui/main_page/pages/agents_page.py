@@ -317,6 +317,19 @@ class AgentsPage(QWidget):
                                 "; ".join(reasons), problem=unfixed > 0)
             if unfixed:
                 self._paint(row, WARN)
+        elif kind == "work_glossary":
+            added = event.get("added") or []
+            skipped = event.get("skipped") or {}
+            reason = "; ".join(f"{t.get('source')} → {t.get('target')} ({t.get('category')})" for t in added)
+            if skipped:
+                left = self._t("Agents Work Glossary Skipped", known=skipped.get("known", 0),
+                               other=skipped.get("other", 0), unused=skipped.get("unused", 0))
+                reason = f"{reason}; {left}" if reason else left
+            row = self._add_row(event, self._t("Agents Work Glossary"),
+                                self._t("Agents Work Glossary Detail", added=len(added), file=event.get("file", "")),
+                                reason)
+            if not added:
+                self._paint(row, MUTED)
         elif kind == "render_start":
             run = str(event.get("run") or "")
             self._rendering[run] = int(event.get("pages") or 0)

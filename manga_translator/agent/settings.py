@@ -70,6 +70,10 @@ class AgentSettings(BaseModel):
     use_work_prompt: bool = True
     """Use the translator's prompt file for the work (``translator.high_quality_prompt_path``, for
     example ``dict/<work>.yaml``): its instructions and glossary go into the agent's system prompt,
-    and the program checks the glossary translations. The file is only read."""
+    and the program checks the glossary translations."""
+    update_work_glossary: bool = True
+    """After each chapter, add the new names and terms the agent recorded (and used in the final
+    translations) to that prompt file, so later chapters and the other translators use them. Existing
+    entries are never changed; YAML comments and layout stay; the old file is kept as ``.bak``."""
     extra_instructions: str = ""
     """Extra instructions appended to the agent's system prompt."""

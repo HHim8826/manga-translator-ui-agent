@@ -166,6 +166,7 @@
         "agent.fill_flat_areas",
         "agent.recall_pass",
         "agent.use_work_prompt",
+        "agent.update_work_glossary",
         "agent.proofread",
         "agent.fix_missing_glyphs",
         "agent.choose_fonts",

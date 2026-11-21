@@ -1654,5 +1654,10 @@
   "Agent Effort low": "Bajo (low)",
   "Agent Effort medium": "Medio (medium)",
   "Agent Effort high": "Alto (high)",
-  "Agent Effort xhigh": "Muy alto (xhigh)"
+  "Agent Effort xhigh": "Muy alto (xhigh)",
+  "label_update_work_glossary": "Guardar términos nuevos en el prompt de la obra",
+  "desc_agent_update_work_glossary": "Tras cada capítulo (después de la corrección), añade al archivo de prompt de la obra los nombres y términos que el agente registró y usó en las traducciones finales, para los capítulos siguientes y los demás traductores. Las entradas existentes no se cambian; se conservan los comentarios y el formato del YAML; el archivo anterior queda como .bak. Los sonidos y las palabras de un solo uso quedan solo en el registro del capítulo.",
+  "Agents Work Glossary": "Prompt de la obra",
+  "Agents Work Glossary Detail": "{added} término(s) nuevo(s) en {file}",
+  "Agents Work Glossary Skipped": "no añadidos: {known} ya estaban, {other} no son términos, {unused} sin usar"
 }

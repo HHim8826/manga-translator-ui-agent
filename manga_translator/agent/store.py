@@ -111,16 +111,23 @@ class AgentMemory:
                 or q in normalize(e.get("note", ""))]
         return hits[:limit]
 
-    def glossary_upsert(self, source: str, target: str, note: str = "", page: str = "") -> str:
-        source, target = source.strip(), target.strip()
+    def glossary_upsert(self, source: str, target: str, note: str = "", page: str = "", category: str = "") -> str:
+        """``category`` is the section of the work's prompt file the term belongs in (``Person``,
+        ``Item``, ...); empty for words that are not names or terms of the work."""
+        source, target, category = source.strip(), target.strip(), (category or "").strip()
         if not source or not target:
             raise ValueError("source and target are required")
         for entry in self.glossary:
             if normalize(entry.get("source", "")) == normalize(source):
                 entry.update({"target": target, "note": note or entry.get("note", ""), "updated_page": page})
+                if category:
+                    entry["category"] = category
                 write_json_atomic(self._glossary_path, self.glossary)
                 return "updated"
-        self.glossary.append({"source": source, "target": target, "note": note, "page": page})
+        entry = {"source": source, "target": target, "note": note, "page": page}
+        if category:
+            entry["category"] = category
+        self.glossary.append(entry)
         write_json_atomic(self._glossary_path, self.glossary)
         return "added"
 

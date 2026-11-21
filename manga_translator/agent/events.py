@@ -2,8 +2,8 @@
 
 Event types (design doc, "事件紀錄"): ``run_start``, ``page_start``, ``tool_call``,
 ``tool_result``, ``flag``, ``usage``, ``compact``, ``recall``, ``error``, ``page_done``, ``run_end``,
-``inpaint_start``/``inpaint_done``, ``proofread_start``/``proofread_done``, ``fonts`` and
-``render_start``/``render_done`` (the image paths and region boxes the preview uses: "即時預覽").
+``inpaint_start``/``inpaint_done``, ``proofread_start``/``proofread_done``, ``fonts``,
+``work_glossary`` (new terms saved to the work's prompt file) and ``render_start``/``render_done`` (the image paths and region boxes the preview uses: "即時預覽").
 Listeners (the Agents page) are called on the agent's thread and must not block.
 """
 from __future__ import annotations

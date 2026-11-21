@@ -1663,5 +1663,10 @@
   "Agent Effort low": "低 (low)",
   "Agent Effort medium": "中 (medium)",
   "Agent Effort high": "高 (high)",
-  "Agent Effort xhigh": "極高 (xhigh)"
+  "Agent Effort xhigh": "極高 (xhigh)",
+  "label_update_work_glossary": "新詞寫回作品提示詞",
+  "desc_agent_update_work_glossary": "每話翻完（校對後），把 agent 新記下、而且最終譯文有用到的人名和術語加進作品提示詞檔，之後的每一話和其他翻譯器都會用到。原有的詞條一律不改；YAML 的註解和排版保留；寫入前的檔案留作 .bak。聲音、一次性用語等不算術語的詞只留在該話的紀錄裡。",
+  "Agents Work Glossary": "寫回作品提示詞",
+  "Agents Work Glossary Detail": "新增 {added} 個詞到 {file}",
+  "Agents Work Glossary Skipped": "沒加入：已有 {known} 個、不是術語 {other} 個、譯文沒用到 {unused} 個"
 }

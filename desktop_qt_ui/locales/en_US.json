@@ -1665,5 +1665,10 @@
   "Agent Effort low": "Low",
   "Agent Effort medium": "Medium",
   "Agent Effort high": "High",
-  "Agent Effort xhigh": "Extra high"
+  "Agent Effort xhigh": "Extra high",
+  "label_update_work_glossary": "Save new terms to the work's prompt file",
+  "desc_agent_update_work_glossary": "After each chapter (after proofreading), add the names and terms the agent newly recorded and used in the final translations to the work's prompt file, so later chapters and the other translators use them. Existing entries are never changed; YAML comments and layout stay; the file as it was is kept as .bak. Sounds and one-off words stay in the chapter's own record.",
+  "Agents Work Glossary": "Work prompt file",
+  "Agents Work Glossary Detail": "{added} new term(s) added to {file}",
+  "Agents Work Glossary Skipped": "left out: {known} already there, {other} not a term, {unused} not in the translations"
 }

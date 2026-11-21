@@ -1326,6 +1326,7 @@ class MainAppLogic(QObject):
                     "fill_flat_areas": self._t("label_fill_flat_areas"),
                     "recall_pass": self._t("label_recall_pass"),
                     "use_work_prompt": self._t("label_use_work_prompt"),
+                    "update_work_glossary": self._t("label_update_work_glossary"),
                     "proofread": self._t("label_proofread"),
                     "fix_missing_glyphs": self._t("label_fix_missing_glyphs"),
                     "choose_fonts": self._t("label_choose_fonts"),

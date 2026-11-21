@@ -27,6 +27,7 @@ from .page import CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
+from .work_glossary import WORK_CATEGORIES
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -363,7 +364,8 @@ def glossary_search(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 
 def glossary_upsert(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
-    status = s.memory.glossary_upsert(a["source"], a["target"], a.get("note", ""), s.page_name)
+    category = a.get("category", "") if a.get("category") in WORK_CATEGORIES else ""
+    status = s.memory.glossary_upsert(a["source"], a["target"], a.get("note", ""), s.page_name, category)
     return ToolResult(text=f"Glossary entry {status}.", summary=f"{a['source']} → {a['target']} ({status})")
 
 
@@ -375,6 +377,8 @@ def character_get(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 def character_upsert(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     fields = {k: a.get(k) for k in ("target_name", "reading", "gender", "speech_style", "notes")}
+    if a.get("category") in ("Person", "Creature"):
+        fields["category"] = a["category"]
     status = s.memory.character_upsert(a["name"], fields, s.page_name)
     return ToolResult(text=f"Character {status}.", summary=f"{a['name']} ({status})")
 
@@ -519,13 +523,21 @@ TOOLS: List[Tool] = [
          _obj({"query": {"type": "string"}}, ["query"]), glossary_search),
     Tool("glossary_upsert", "Add or change a glossary term so later pages use the same translation.",
          _obj({"source": {"type": "string"}, "target": {"type": "string"}, "note": {"type": "string"},
-               "reason": REASON}, ["source", "target", "reason"]), glossary_upsert, writes=True),
+               "category": {"type": "string", "enum": [*WORK_CATEGORIES, "Other"],
+                            "description": "What the term is: a place, group, object, ability or creature name of "
+                                           "this work (Location, Org, Item, Skill, Creature, Person), or Other for "
+                                           "anything else (a sound, a one-off word). Names and terms may be added to "
+                                           "the work's prompt file for later chapters; Other stays in this chapter."},
+               "reason": REASON}, ["source", "target", "category", "reason"]), glossary_upsert, writes=True),
     Tool("character_get", "Look up characters (empty name lists all).",
          _obj({"name": {"type": "string"}}, []), character_get),
     Tool("character_upsert", "Add or update a character: translated name, reading, gender, how they speak.",
          _obj({"name": {"type": "string", "description": "Name as written in the source"},
                "target_name": {"type": "string"}, "reading": {"type": "string"}, "gender": {"type": "string"},
-               "speech_style": {"type": "string"}, "notes": {"type": "string"}, "reason": REASON},
+               "speech_style": {"type": "string"}, "notes": {"type": "string"},
+               "category": {"type": "string", "enum": ["Person", "Creature"],
+                            "description": "Creature for an animal or monster character (default Person)"},
+               "reason": REASON},
               ["name", "reason"]), character_upsert, writes=True),
     Tool("story_summary_get", "The running story summary.", _obj({}, []), story_summary_get),
     Tool("story_summary_update", "Replace the running story summary (keep it under ~300 words).",
