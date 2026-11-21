@@ -215,7 +215,7 @@ def _seed_memory(folder: str, prompt_name: str, store: AgentStore, log) -> Optio
         earlier = bootstrap(folder, store.work_dir, prompt_name)
         if earlier:
             log(f"[Agent] Work memory put together from {len(earlier)} earlier chapter(s): {', '.join(earlier)}")
-        seeded = seed_chapter(store.memory(), folder)
+        seeded = seed_chapter(store.memory(), folder, chapter, os.path.dirname(os.path.abspath(store.work_dir)))
     except Exception as exc:
         logger.exception("reading the work's memory failed")
         log(f"[Agent] {chapter}: the work's memory was not read ({type(exc).__name__}: {exc})")
@@ -231,7 +231,7 @@ def _save_memory(folder: str, memory, work_dir: str, events: EventLog, log) -> N
     """Merge the chapter's memory into the work's; a failure is logged and the chapter goes on."""
     chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
     try:
-        changes = save_chapter(memory, folder, chapter)
+        changes = save_chapter(memory, folder, chapter, os.path.dirname(os.path.abspath(work_dir)))
     except Exception as exc:
         logger.exception("saving the work's memory failed")
         events.emit("error", agent="memory", error=f"the work's memory was not saved: {type(exc).__name__}: "

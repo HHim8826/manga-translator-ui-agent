@@ -120,3 +120,83 @@ def test_chapters_keep_their_own_memory_when_sharing_is_off(tmp_path):
     client, _ = _run(tmp_path, str(prompt_path), _learn() + _finish_page() + _finish_page(), share_memory=False)
     assert "ドン → 譯2" not in _first_request(client, 3)
     assert not (tmp_path / "agent" / "work.memory").exists()
+
+
+# --- review 09: an earlier chapter run again -----------------------------------------------------
+def _run_chapter(tmp_path, work, name, edit):
+    """One run of a chapter as the workflow does it: seeded on its first run, changed, saved."""
+    memory = AgentMemory(str(tmp_path / name))
+    seed_chapter(memory, work, name)
+    memory = AgentMemory(str(tmp_path / name))  # as the runner reads it
+    edit(memory)
+    save_chapter(memory, work, name)
+    return memory
+
+
+def test_rerunning_an_earlier_chapter_keeps_what_the_later_one_changed(tmp_path):
+    work = str(tmp_path / "work.memory")
+
+    def first(memory):
+        memory.glossary_upsert("魔剣", "魔劍", "", "003", "Item")
+        memory.glossary_upsert("王都", "王都", "", "004", "Place")
+        memory.character_upsert("りょうた", {"target_name": "良太", "speech": "粗魯"}, "002")
+        memory.story_update("第1話的劇情")
+
+    def second(memory):
+        memory.glossary_upsert("魔剣", "魔劍・改", "", "005", "Item")  # chapter 2 settled on another name
+        memory.character_upsert("りょうた", {"speech": "變得溫和"}, "006")
+        memory.story_update("第2話的劇情")
+
+    def rerun_first(memory):
+        memory.glossary_upsert("王都", "皇都", "", "004", "Place")  # a fix only chapter 1 makes
+        memory.character_upsert("りょうた", {"target_name": "亮太"}, "002")
+        memory.story_update("第1話的劇情（重跑）")
+
+    _run_chapter(tmp_path, work, "第1話", first)
+    _run_chapter(tmp_path, work, "第2話", second)
+    _run_chapter(tmp_path, work, "第1話", rerun_first)
+    third = _run_chapter(tmp_path, work, "第3話", lambda memory: None)
+
+    terms = {e["source"]: e["target"] for e in third.glossary}
+    assert terms == {"魔剣": "魔劍・改", "王都": "皇都"}  # chapter 2's change stays, chapter 1's fix comes in
+    assert third.characters["りょうた"]["target_name"] == "亮太" and third.characters["りょうた"]["speech"] == "變得溫和"
+    assert third.story == "第2話的劇情"  # the latest chapter before it, not the one run last
+    merged = AgentMemory(work)
+    assert {e["source"]: e["target"] for e in merged.glossary} == terms and merged.story == "第2話的劇情"
+    meta = json.loads((tmp_path / "work.memory" / "chapters.json").read_text(encoding="utf-8"))
+    assert meta["story_from"] == "第2話"
+    # chapter 2 run again: it still starts from what it knew, and keeps its own changes
+    assert seed_chapter(AgentMemory(str(tmp_path / "第2話")), work, "第2話") == {}
+
+
+def test_a_chapter_before_the_others_gets_only_what_came_before_it(tmp_path):
+    work = str(tmp_path / "work.memory")
+    _run_chapter(tmp_path, work, "第1話", lambda m: (m.glossary_upsert("魔剣", "魔劍1", ""), m.story_update("一")))
+    _run_chapter(tmp_path, work, "第5話", lambda m: (m.glossary_upsert("魔剣", "魔劍5", ""), m.story_update("五")))
+    memory = AgentMemory(str(tmp_path / "第3話"))
+    assert seed_chapter(memory, work, "第3話") == {"glossary": 1, "characters": 0, "story": 1}
+    memory = AgentMemory(str(tmp_path / "第3話"))
+    assert memory.glossary[0]["target"] == "魔劍1" and memory.story == "一"
+
+
+def test_a_work_memory_from_before_the_chapters_were_kept_apart(tmp_path):
+    work = tmp_path / "work.memory"
+    old = AgentMemory(str(work))  # as the older version left it: one merged memory
+    old.replace(glossary=[{"source": "魔剣", "target": "魔劍2", "note": "", "page": "005", "chapter": "第2話"},
+                          {"source": "王都", "target": "王都", "note": "", "page": "004", "chapter": "第1話"}],
+                characters={}, story="第2話的劇情")
+    (work / "chapters.json").write_text(json.dumps({"chapters": {"第1話": "x", "第2話": "y"}}), encoding="utf-8")
+    ch1 = AgentMemory(str(tmp_path / "第1話"))  # chapter 1's own memory, shared back then
+    ch1.replace(glossary=[{"source": "魔剣", "target": "魔劍1", "note": "", "page": "003"},
+                          {"source": "王都", "target": "王都", "note": "", "page": "004"}],
+                characters={}, story="第1話的劇情")
+
+    def rerun(memory):
+        memory.glossary_upsert("王都", "皇都", "", "004")
+
+    _run_chapter(tmp_path, str(work), "第1話", rerun)
+    merged = AgentMemory(str(work))
+    # only what the rerun changed goes on top of the old memory: chapter 2's name is not set back
+    assert {e["source"]: e["target"] for e in merged.glossary} == {"魔剣": "魔劍2", "王都": "皇都"}
+    assert merged.story == "第2話的劇情"
+    assert (work / "base.json").exists()
