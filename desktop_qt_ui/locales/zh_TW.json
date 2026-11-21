@@ -1741,7 +1741,7 @@
   "Agent Rerun All": "全部重跑（{count} 頁）",
   "Agents Stopped Status": "已停止：完成 {done}/{pages} 頁，{flagged} 個待確認，共 {requests} 次請求",
   "Agents Finished Failed": "，連續三頁失敗而提前結束",
-  "Agents Stop": "停止",
+  "Agents Stop": "停止 AI Agent",
   "Agents Open In Editor": "在編輯器開啟",
   "Agents Open In Editor Tip": "在編輯器開啟左側選取的頁（沒有選取時用預覽中的頁）",
   "Agents Open Output Folder": "開啟輸出資料夾",
@@ -1795,5 +1795,18 @@
   "Agent Error Preprocess": "前處理失敗，這頁維持執行前的樣子：{reason}",
   "Agent Flag conflict": "你在編輯器存過",
   "Agent Page Edited": "你改過",
-  "Agents Inpaint Skipped Edited": "你在編輯器存了這頁，跳過修復審查"
+  "Agents Inpaint Skipped Edited": "你在編輯器存了這頁，跳過修復審查",
+  "Agents Render Skipped Existing": "已有輸出檔，沒有覆寫：{file}",
+  "Agents Render Skipped Other": "沒有渲染：{reason}",
+  "Agents Render Failed": "渲染失敗：{error}",
+  "Agents Render Stopped": "已停止，這頁沒有存檔",
+  "Agents Finished Render Skipped": "，{count} 頁已有輸出檔沒有覆寫",
+  "Agents Finished Render Failed": "，{count} 頁渲染失敗",
+  "Agents Stage Start": "準備中：{pages} 頁",
+  "Agents Stage API Check": "檢查 API · 模型 {model}",
+  "Agents Stage Preprocess": "前處理中：{pages} 頁（文字檢測、本地 OCR、遮罩）",
+  "Agents Stage Stopped": "已取消：還沒開始翻譯",
+  "Agents Stage Failed": "開始翻譯前失敗：{error}",
+  "Agents Stage Ended": "流程在開始翻譯前結束，原因請看日誌",
+  "Agents Stop Tip": "停止目前執行中的 AI Agent 流程：{chapters}"
 }

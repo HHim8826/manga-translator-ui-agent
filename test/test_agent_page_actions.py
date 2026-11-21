@@ -31,6 +31,7 @@ def test_the_stop_button_follows_the_task(app):  # noqa: F811
     page.stop_requested.connect(lambda: asked.append(True))
     assert not page.stop_button.isEnabled()
     page.set_task_running(True)
+    page._handle_live({"type": "workflow_stage", "stage": "start", "pages": 2})  # an AI Agent run
     assert page.stop_button.isEnabled() and page.stop_button.text() == "Agents Stop"
     page.stop_button.click()
     assert asked == [True] and not page.stop_button.isEnabled() and page.stop_button.text() == "Stopping..."

@@ -36,6 +36,21 @@ def remove_listener(listener: Listener) -> None:
             _listeners.remove(listener)
 
 
+def broadcast(type: str, **fields: Any) -> Dict[str, Any]:
+    """An event for the listeners only (the AI Agent page), not written to a run log: the steps of a
+    run before its chapters have logs (``workflow_stage``)."""
+    event = {"ts": _dt.datetime.now().astimezone().isoformat(timespec="seconds"), "run": "", "agent": "workflow",
+             "page": None, "type": type, **fields}
+    with _lock:
+        listeners = list(_listeners)
+    for listener in listeners:
+        try:
+            listener(event)
+        except Exception:
+            pass
+    return event
+
+
 def new_run_id(now: Optional[_dt.datetime] = None) -> str:
     return (now or _dt.datetime.now()).strftime("r%Y%m%d-%H%M%S")
 

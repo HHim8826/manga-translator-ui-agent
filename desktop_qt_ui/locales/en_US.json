@@ -1743,7 +1743,7 @@
   "Agent Rerun All": "Redo all {count} page(s)",
   "Agents Stopped Status": "Stopped: {done}/{pages} pages done, {flagged} flagged, {requests} requests",
   "Agents Finished Failed": ", ended early after three failed pages in a row",
-  "Agents Stop": "Stop",
+  "Agents Stop": "Stop AI Agent",
   "Agents Open In Editor": "Open in editor",
   "Agents Open In Editor Tip": "Open the page picked on the left (or the one in the preview) in the editor",
   "Agents Open Output Folder": "Open output folder",
@@ -1797,5 +1797,18 @@
   "Agent Error Preprocess": "Preprocess failed; the page stays as it was before the run: {reason}",
   "Agent Flag conflict": "saved in the editor",
   "Agent Page Edited": "Edited by you",
-  "Agents Inpaint Skipped Edited": "You saved this page in the editor: the inpaint review leaves it alone"
+  "Agents Inpaint Skipped Edited": "You saved this page in the editor: the inpaint review leaves it alone",
+  "Agents Render Skipped Existing": "Output already there, not overwritten: {file}",
+  "Agents Render Skipped Other": "Not rendered: {reason}",
+  "Agents Render Failed": "Render failed: {error}",
+  "Agents Render Stopped": "Stopped before this page was saved",
+  "Agents Finished Render Skipped": ", {count} page(s) kept their existing output",
+  "Agents Finished Render Failed": ", {count} page(s) failed to render",
+  "Agents Stage Start": "Starting: {pages} page(s)",
+  "Agents Stage API Check": "Checking the API · model {model}",
+  "Agents Stage Preprocess": "Preprocessing {pages} page(s): detection, local OCR, masks",
+  "Agents Stage Stopped": "Cancelled before the translation started",
+  "Agents Stage Failed": "Failed before the translation started: {error}",
+  "Agents Stage Ended": "The run ended before the translation started; see the log",
+  "Agents Stop Tip": "Stops the AI Agent run going on now: {chapters}"
 }

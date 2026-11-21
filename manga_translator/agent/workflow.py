@@ -27,7 +27,7 @@ import os
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from .events import EventLog, new_run_id
+from .events import EventLog, broadcast, new_run_id
 from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
@@ -314,6 +314,8 @@ class _RenderEvents:
     def __init__(self, chapters: Dict[str, Tuple[str, str]]):
         self.chapters = chapters  # work dir -> (run log path, run id)
         self.logs: Dict[str, EventLog] = {}
+        self.pending: Dict[str, str] = {}
+        """Pages being typeset that have no ``render_done`` yet (key -> image path)."""
 
     def _log(self, image_path: str) -> Optional[EventLog]:
         from ..utils.path_manager import get_work_dir
@@ -331,6 +333,7 @@ class _RenderEvents:
         ``not_reached`` ...), listed in their chapter's ``render_start``."""
         left_out = left_out or {}
         rendered = {_key(p) for p in paths}
+        self.pending = {_key(p): p for p in paths}
         for work_dir, pages in group_by_chapter(list(paths) + list(left_out)):
             log = self._log(pages[0])
             if log is not None:
@@ -345,12 +348,40 @@ class _RenderEvents:
         image = _image_path(getattr(ctx, "image_name", "") or "")
         if not image:
             return
+        self.pending.pop(_key(image), None)
         log = self._log(image)
         if log is not None:
             log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
-                     image=image, output=getattr(ctx, "output_path", None), inpainted=find_inpainted_path(image))
+                     image=image, output=getattr(ctx, "output_path", None), inpainted=find_inpainted_path(image),
+                     result="saved")
+
+    def _end(self, image: str, result: str, **fields) -> None:
+        self.pending.pop(_key(image), None)
+        log = self._log(image)
+        if log is not None:
+            log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
+                     image=image, result=result, **fields)
+
+    def finish(self, results: Sequence) -> None:
+        """The pages typeset without a saved result: skipped (an output file is already there and
+        overwriting is off ...) or failed (the render or the save went wrong)."""
+        by_key = {}
+        for ctx in results:
+            name = getattr(ctx, "image_name", None)
+            if isinstance(name, str) and name:
+                by_key[_key(_image_path(name))] = ctx
+        for key, image in list(self.pending.items()):
+            ctx = by_key.get(key)
+            if ctx is not None and getattr(ctx, "skipped", False):
+                self._end(image, "skipped", reason=str(getattr(ctx, "skip_reason", "") or ""),
+                          message=str(getattr(ctx, "skip_message", "") or ""), output=getattr(ctx, "output_path", None))
+            else:
+                error = getattr(ctx, "translation_error", None) if ctx is not None else None
+                self._end(image, "failed", error=str(error or "the result was not saved"))
 
     def stopped(self) -> None:
+        for image in list(self.pending.values()):
+            self._end(image, "stopped")
         for log in self.logs.values():
             log.emit("stopped", agent="workflow", stage="render")
 
@@ -454,6 +485,8 @@ async def run_agent_workflow(
     guard: Optional[RunGuard] = None
     """Copies of the pages from before the run: the pages it does not finish get them back."""
     preprocess_failed: Dict[str, str] = {}
+    chapter_logs: Dict[str, Tuple[str, str]] = {}
+    """Work dir -> (run log path, run id) of the chapters started so far."""
     # progress(stage, done, total): ``preprocess`` and ``render`` count the translator's pages,
     # ``translate`` the pages the agent finished, ``proofread`` starts a chapter's proofreading
     batch_progress = _BatchProgress(progress, len(paths))
@@ -461,12 +494,15 @@ async def run_agent_workflow(
     if progress is not None and isinstance(hooks, list):
         hooks.append(batch_progress)
     try:
+        # until a chapter's run_start the AI Agent page hears of the run only from these
+        broadcast("workflow_stage", stage="start", pages=len(paths))
         if fonts is None:  # scanning the installed fonts takes seconds: do it while the pages are preprocessed
             font_task = asyncio.ensure_future(_font_service(translator, config, settings, target_lang, log))
         if client is None:  # before the preprocess: a wrong API setting should not wait for it
             from .client import build_client, check_api
             client = build_client(config, settings)
             log(f"[Agent] API check: model {getattr(client, 'model_label', '')}")
+            broadcast("workflow_stage", stage="api_check", model=getattr(client, "model_label", ""))
             await check_api(client)
         if preprocess:
             # the preprocess writes every page's JSON again: copies first, and the pages the run does
@@ -480,6 +516,7 @@ async def run_agent_workflow(
             _set_mode(translator, template=True, save_text=True)
             batch_progress.stage = "preprocess"
             _report(progress, "preprocess", 0, len(paths))
+            broadcast("workflow_stage", stage="preprocess", pages=len(paths))
             preprocessed = await translator.translate_batch(images_with_configs, save_info=save_info)
             batch_progress.stage = None
             preprocess_failed = guard.preprocess_failures(preprocessed)
@@ -511,7 +548,6 @@ async def run_agent_workflow(
         translated = [0]
         _report(progress, "translate", 0, len(paths))
         reviewed: set = set()
-        chapter_logs: Dict[str, Tuple[str, str]] = {}
         batch_id = f"b{uuid.uuid4().hex[:12]}"  # the chapters of this run, for the AI Agent page
         for work_dir, pages in group_by_chapter(paths):
             store = AgentStore(work_dir, settings.memory_dir)
@@ -671,6 +707,7 @@ async def run_agent_workflow(
                               ignore_existing_inpainted=not reuse, keep_empty_translations=True)
                     results.extend(await translator.translate_batch(batch, save_info=save_info))
                     batch_progress.offset += len(batch)
+            render_events.finish(results)
         except asyncio.CancelledError:
             render_events.stopped()
             raise
@@ -682,6 +719,14 @@ async def run_agent_workflow(
             record_saved(paths)
         return results + [_left_out_context(path, status, errors.get(_key(path), ""))
                           for path, status in left_out.items()]
+    except asyncio.CancelledError:
+        if not chapter_logs:  # stopped before a chapter started: the page would wait for it
+            broadcast("workflow_stage", stage="stopped")
+        raise
+    except Exception as exc:
+        if not chapter_logs:  # the API check or the preprocess failed
+            broadcast("workflow_stage", stage="failed", error=f"{type(exc).__name__}: {str(exc)[:300]}")
+        raise
     finally:
         users = json_guard.users_files()
         if users:

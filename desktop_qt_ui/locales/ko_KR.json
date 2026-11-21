@@ -1732,7 +1732,7 @@
   "Agent Rerun All": "모두 다시 실행({count}페이지)",
   "Agents Stopped Status": "중지됨: {done}/{pages} 페이지 완료, 검토 필요 {flagged}개, 요청 {requests}회",
   "Agents Finished Failed": ", 3페이지 연속 실패로 조기 종료",
-  "Agents Stop": "중지",
+  "Agents Stop": "AI Agent 중지",
   "Agents Open In Editor": "편집기에서 열기",
   "Agents Open In Editor Tip": "왼쪽에서 고른 페이지(없으면 미리 보기의 페이지)를 편집기에서 엽니다",
   "Agents Open Output Folder": "출력 폴더 열기",
@@ -1786,5 +1786,18 @@
   "Agent Error Preprocess": "전처리에 실패해 이 페이지는 실행 전 상태로 둡니다: {reason}",
   "Agent Flag conflict": "편집기에서 저장함",
   "Agent Page Edited": "직접 수정함",
-  "Agents Inpaint Skipped Edited": "편집기에서 저장한 페이지라 복원 검토를 건너뜀"
+  "Agents Inpaint Skipped Edited": "편집기에서 저장한 페이지라 복원 검토를 건너뜀",
+  "Agents Render Skipped Existing": "출력 파일이 이미 있어 덮어쓰지 않음: {file}",
+  "Agents Render Skipped Other": "렌더링하지 않음: {reason}",
+  "Agents Render Failed": "렌더링 실패: {error}",
+  "Agents Render Stopped": "중지됨, 이 페이지는 저장되지 않음",
+  "Agents Finished Render Skipped": ", {count}페이지는 기존 출력을 덮어쓰지 않음",
+  "Agents Finished Render Failed": ", {count}페이지 렌더링 실패",
+  "Agents Stage Start": "준비 중: {pages}페이지",
+  "Agents Stage API Check": "API 확인 중 · 모델 {model}",
+  "Agents Stage Preprocess": "전처리 중: {pages}페이지 (검출, 로컬 OCR, 마스크)",
+  "Agents Stage Stopped": "취소됨: 아직 번역을 시작하지 않음",
+  "Agents Stage Failed": "번역 시작 전에 실패: {error}",
+  "Agents Stage Ended": "번역 시작 전에 종료됨, 로그를 확인하세요",
+  "Agents Stop Tip": "실행 중인 AI Agent 흐름 중지: {chapters}"
 }

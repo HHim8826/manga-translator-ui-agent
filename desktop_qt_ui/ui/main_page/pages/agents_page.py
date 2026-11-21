@@ -142,6 +142,9 @@ class AgentsPage(QWidget):
         self._rendering: Dict[str, int] = {}
         self._unrendered = 0
         """Pages of the run the render left out: they have no agent translation."""
+        self._render_skipped = 0
+        """Pages the render did not save: an output file was there and overwriting is off ..."""
+        self._render_failed = 0
         self._batch: Optional[str] = None
         self._chapters: Dict[str, str] = {}
         """Run id -> chapter folder name, in the order the chapters started."""
@@ -151,6 +154,10 @@ class AgentsPage(QWidget):
         self._stopped = False
         self._failed = False
         self._task_running = False
+        self._agent_task = False
+        """The task running is an AI Agent run (it said so live): only that one stops from here."""
+        self._stage = ""
+        """What the run does before its first chapter starts (``workflow_stage``), for the status."""
         self._stopping = False
         self._viewing_log = ""
         """The run log the user opened; live events are kept meanwhile and not shown."""
@@ -271,13 +278,31 @@ class AgentsPage(QWidget):
 
     # --- actions --------------------------------------------------------------
     def set_task_running(self, running: bool) -> None:
-        """The app started or ended a task: the stop button follows it."""
+        """The app started or ended a task. The stop button stops an AI Agent run only, and only on
+        the live view: a normal translation, or a run log opened meanwhile, has nothing to stop here."""
         self._task_running = bool(running)
         self._stopping = False
+        self._agent_task = False  # the AI Agent workflow says so live once it starts
+        if not self._task_running:
+            if self._stage:  # ended before a chapter started, without saying why
+                self._stage = ""
+                if not self._viewing_log:
+                    self.status_label.setText(self._t("Agents Stage Ended"))
         self.stop_button.setText(self._t("Agents Stop"))
-        self.stop_button.setEnabled(self._task_running)
+        self._update_stop()
+
+    def _can_stop(self) -> bool:
+        return self._task_running and self._agent_task and not self._viewing_log and not self._stopping
+
+    def _update_stop(self) -> None:
+        self.stop_button.setEnabled(self._can_stop())
+        chapters = self._t("Agent Result Separator").join(c for c in self._chapters.values() if c)
+        self.stop_button.setToolTip(self._t("Agents Stop Tip", chapters=chapters or "-") if self._agent_task else "")
 
     def _on_stop_clicked(self) -> None:
+        if not self._can_stop():  # an old run log, or not an AI Agent task
+            self._update_stop()
+            return
         self._stopping = True
         self.stop_button.setEnabled(False)
         self.stop_button.setText(self._t("Stopping..."))
@@ -306,7 +331,8 @@ class AgentsPage(QWidget):
     def _update_actions(self) -> None:
         self.editor_button.setEnabled(bool(self.preview.pages.get(self._current_page(), {}).get("image")))
         self.output_button.setEnabled(bool(self._output_folder()))
-        self.live_button.setVisible(bool(self._viewing_log and self._live_events))
+        self.live_button.setVisible(bool(self._viewing_log and (self._live_events or self._agent_task)))
+        self._update_stop()
 
     def _log_folder(self) -> str:
         """Where the run log dialog opens: the last log's folder, else the runs of the chapter shown."""
@@ -327,6 +353,13 @@ class AgentsPage(QWidget):
 
     def _handle_live(self, event: dict) -> None:
         """A live event: kept for "back to the current run", shown unless an old run log is open."""
+        if event.get("type") == "workflow_stage":
+            self._on_stage(event)
+            self._update_actions()
+            return
+        if event.get("type") == "run_start":
+            self._agent_task = True
+            self._stage = ""
         new_run = event.get("type") == "run_start" and (not event.get("batch") or event.get("batch") != self._live_batch)
         if new_run:
             self._live_events = []
@@ -340,10 +373,39 @@ class AgentsPage(QWidget):
             self.handle_event(event)
         self._update_actions()
 
+    def _on_stage(self, event: dict) -> None:
+        """What a run does before its first chapter has a run log: starting, checking the API, the
+        preprocess; and how it ended when it ended there (stopped, failed)."""
+        stage = str(event.get("stage") or "")
+        self._agent_task = stage in ("start", "api_check", "preprocess")
+        if stage == "start":  # a new run: the last run's summary goes
+            self._live_events = []
+            self._live_batch = None
+            if self._viewing_log:  # like a new run_start, it takes the page back from an old log
+                self._viewing_log = ""
+                self._show_subtitle()
+            self._batch = None
+            self._reset()
+        texts = {"start": ("Agents Stage Start", {"pages": event.get("pages", 0)}),
+                 "api_check": ("Agents Stage API Check", {"model": event.get("model") or "-"}),
+                 "preprocess": ("Agents Stage Preprocess", {"pages": event.get("pages", 0)}),
+                 "stopped": ("Agents Stage Stopped", {}),
+                 "failed": ("Agents Stage Failed", {"error": event.get("error") or ""})}
+        if stage not in texts:
+            return
+        key, fields = texts[stage]
+        text = self._t(key, **fields)
+        self._stage = "" if stage in ("stopped", "failed") else text
+        if not self._viewing_log:
+            self.status_label.setText(text)
+
     def _back_to_live(self) -> None:
         self._viewing_log = ""
         self._batch = None
         self._show_subtitle()
+        if self._stage and not self._live_events:  # no chapter has started yet
+            self._reset()
+            self.status_label.setText(self._stage)
         self.replay(list(self._live_events))
         self._update_actions()
 
@@ -521,13 +583,33 @@ class AgentsPage(QWidget):
             elif self._finished is not None:
                 self.status_label.setText(self._finished_status())
         elif kind == "render_done":
-            self.preview.follow(page)
+            result = str(event.get("result") or "saved")  # logs from before the result: saved
             output = event.get("output") or ""
-            self._last_output = output or self._last_output
-            row = self._add_row(event, self._t("Agents Render"),
-                                self._t("Agents Render Detail", file=os.path.basename(output)), "")
-            row.setToolTip(3, output)
-            self._paint(row, MUTED)
+            if result == "saved":
+                self.preview.follow(page)
+                self._last_output = output or self._last_output
+                row = self._add_row(event, self._t("Agents Render"),
+                                    self._t("Agents Render Detail", file=os.path.basename(output)), "")
+                row.setToolTip(3, output)
+                self._paint(row, MUTED)
+            else:
+                if result == "skipped":
+                    self._render_skipped += 1
+                    reason = str(event.get("reason") or "")
+                    text = self._t("Agents Render Skipped Existing", file=os.path.basename(output)) \
+                        if reason.startswith("existing_output") else \
+                        self._t("Agents Render Skipped Other", reason=event.get("message") or reason or "-")
+                    color = WARN
+                elif result == "failed":
+                    self._render_failed += 1
+                    text, color = self._t("Agents Render Failed", error=event.get("error") or "-"), ERROR
+                else:
+                    text, color = self._t("Agents Render Stopped"), MUTED
+                row = self._add_row(event, self._t("Agents Render"), text, event.get("message") or "",
+                                    problem=result in ("skipped", "failed"))
+                if output:
+                    row.setToolTip(3, output)
+                self._paint(row, color)
             left = self._rendering.get(run, 0) - 1
             if left > 0:
                 self._rendering[run] = left
@@ -599,6 +681,10 @@ class AgentsPage(QWidget):
             text += self._t("Agents Finished Failed")
         if self._unrendered:
             text += self._t("Agents Finished Unrendered", count=self._unrendered)
+        if self._render_skipped:
+            text += self._t("Agents Finished Render Skipped", count=self._render_skipped)
+        if self._render_failed:
+            text += self._t("Agents Finished Render Failed", count=self._render_failed)
         return text
 
     def _mark_stopped(self, run: str) -> None:
@@ -671,6 +757,7 @@ class AgentsPage(QWidget):
         self._finished = None
         self._requests = 0
         self._unrendered = 0
+        self._render_skipped = self._render_failed = 0
         self._stopped = self._failed = False
         self._page_filter = ALL_PAGES
         self._rendering.clear()

@@ -52,6 +52,7 @@ def test_runner_events_carry_the_image_and_changed_boxes(tmp_path):
 
 class RenderingTranslator(FakeTranslator):
     """Saves a result per page in the render call and reports it like MangaTranslator does."""
+    reports_saved = False  # it reports them itself, with the output file
 
     def __init__(self, tmp_path):
         super().__init__(tmp_path)

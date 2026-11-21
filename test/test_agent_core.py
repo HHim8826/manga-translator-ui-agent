@@ -513,6 +513,12 @@ class FakeTranslator:
         if self.template:
             for path, _ in images_with_configs:
                 make_page(self.tmp_path, os.path.splitext(os.path.basename(path))[0])
+        elif getattr(self, "on_result_saved", None) is not None and getattr(self, "reports_saved", True):
+            # the render saved each page
+            from types import SimpleNamespace
+
+            for path, _ in images_with_configs:
+                self.on_result_saved(SimpleNamespace(image_name=path, output_path=None))
         return [f"ctx:{os.path.basename(p)}" for p, _ in images_with_configs]
 
     def _delete_original_txt_after_json_translation(self, path):

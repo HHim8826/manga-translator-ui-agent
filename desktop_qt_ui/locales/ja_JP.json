@@ -1732,7 +1732,7 @@
   "Agent Rerun All": "すべて再実行（{count} ページ）",
   "Agents Stopped Status": "停止：{done}/{pages} ページ完了、要確認 {flagged} 件、リクエスト {requests} 回",
   "Agents Finished Failed": "、3 ページ続けて失敗したため途中で終了",
-  "Agents Stop": "停止",
+  "Agents Stop": "AI Agent を停止",
   "Agents Open In Editor": "エディターで開く",
   "Agents Open In Editor Tip": "左で選んだページ（選んでいないときはプレビューのページ）をエディターで開きます",
   "Agents Open Output Folder": "出力フォルダーを開く",
@@ -1786,5 +1786,18 @@
   "Agent Error Preprocess": "前処理に失敗したため、このページは実行前のままです：{reason}",
   "Agent Flag conflict": "エディターで保存済み",
   "Agent Page Edited": "あなたが編集",
-  "Agents Inpaint Skipped Edited": "エディターで保存されたページのため修復レビューをスキップ"
+  "Agents Inpaint Skipped Edited": "エディターで保存されたページのため修復レビューをスキップ",
+  "Agents Render Skipped Existing": "出力ファイルが既にあるため上書きしませんでした：{file}",
+  "Agents Render Skipped Other": "レンダリングしませんでした：{reason}",
+  "Agents Render Failed": "レンダリング失敗：{error}",
+  "Agents Render Stopped": "停止しました。このページは保存されていません",
+  "Agents Finished Render Skipped": "、{count} ページは既存の出力を上書きしませんでした",
+  "Agents Finished Render Failed": "、{count} ページのレンダリングに失敗",
+  "Agents Stage Start": "準備中：{pages} ページ",
+  "Agents Stage API Check": "API を確認中 · モデル {model}",
+  "Agents Stage Preprocess": "前処理中：{pages} ページ（検出、ローカル OCR、マスク）",
+  "Agents Stage Stopped": "キャンセルしました：翻訳はまだ始まっていません",
+  "Agents Stage Failed": "翻訳開始前に失敗しました：{error}",
+  "Agents Stage Ended": "翻訳開始前に終了しました。理由はログを確認してください",
+  "Agents Stop Tip": "実行中の AI Agent フローを停止：{chapters}"
 }

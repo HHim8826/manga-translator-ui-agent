@@ -1732,7 +1732,7 @@
   "Agent Rerun All": "Rehacer las {count} páginas",
   "Agents Stopped Status": "Detenido: {done}/{pages} páginas terminadas, {flagged} marcados, {requests} solicitudes",
   "Agents Finished Failed": ", terminó antes tras tres páginas fallidas seguidas",
-  "Agents Stop": "Detener",
+  "Agents Stop": "Detener AI Agent",
   "Agents Open In Editor": "Abrir en el editor",
   "Agents Open In Editor Tip": "Abre en el editor la página elegida a la izquierda (o la de la vista previa)",
   "Agents Open Output Folder": "Abrir carpeta de salida",
@@ -1786,5 +1786,18 @@
   "Agent Error Preprocess": "El preprocesamiento falló; la página queda como estaba antes: {reason}",
   "Agent Flag conflict": "guardada en el editor",
   "Agent Page Edited": "Editada por ti",
-  "Agents Inpaint Skipped Edited": "Guardaste esta página en el editor: la revisión de la restauración no la toca"
+  "Agents Inpaint Skipped Edited": "Guardaste esta página en el editor: la revisión de la restauración no la toca",
+  "Agents Render Skipped Existing": "Ya existe la salida, no se sobrescribió: {file}",
+  "Agents Render Skipped Other": "No renderizada: {reason}",
+  "Agents Render Failed": "Error al renderizar: {error}",
+  "Agents Render Stopped": "Detenido antes de guardar esta página",
+  "Agents Finished Render Skipped": ", {count} página(s) conservaron su salida existente",
+  "Agents Finished Render Failed": ", {count} página(s) no se pudieron renderizar",
+  "Agents Stage Start": "Preparando: {pages} página(s)",
+  "Agents Stage API Check": "Comprobando la API · modelo {model}",
+  "Agents Stage Preprocess": "Preprocesando {pages} página(s): detección, OCR local, máscaras",
+  "Agents Stage Stopped": "Cancelado antes de empezar la traducción",
+  "Agents Stage Failed": "Falló antes de empezar la traducción: {error}",
+  "Agents Stage Ended": "La ejecución terminó antes de empezar la traducción; consulta el registro",
+  "Agents Stop Tip": "Detiene la ejecución de AI Agent en curso: {chapters}"
 }
