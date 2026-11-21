@@ -94,7 +94,7 @@ def test_proofreading_failure_does_not_stop_the_chapter(tmp_path):
     paths, Cfg, folder = _chapter(tmp_path)
 
     class Failing(ScriptedClient):
-        async def complete(self, messages, tools, tool_choice, effort=""):
+        async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
             if tools and tools[0]["function"]["name"] == "view_page":
                 raise RuntimeError("proxy down")
             return await super().complete(messages, tools, tool_choice, effort)

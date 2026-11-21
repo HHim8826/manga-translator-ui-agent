@@ -22,6 +22,8 @@ class OpenAIChatClient:
         self._clients: Dict[str, object] = {}
         self._no_effort: Set[str] = set()
         """Endpoints that rejected ``reasoning_effort``: they get requests without it."""
+        self._no_cache_key: Set[str] = set()
+        """Endpoints that rejected ``prompt_cache_key``: they get requests without it."""
         self.session_id: Optional[str] = None
         """Sent as the ``session_id`` header, so a proxy that groups requests (for example an
         API proxy) shows one chapter run, with its recall and review calls, as one session."""
@@ -45,34 +47,47 @@ class OpenAIChatClient:
         return self._clients[key]
 
     async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str,
-                       effort: str = "") -> ChatReply:
-        """One chat completion. ``effort`` is sent as ``reasoning_effort`` unless empty."""
+                       effort: str = "", cache_key: str = "") -> ChatReply:
+        """One chat completion. ``effort`` is sent as ``reasoning_effort`` unless empty. ``cache_key``
+        names the conversation (translator, recall, inpaint-003, proofread); with the run's session id
+        it is sent as ``prompt_cache_key``, so the API keeps each conversation on the machines that
+        hold its cached prefix instead of spreading every request of the chapter alike (ch36: 5 of 54
+        translator requests found only an older part of their prefix cached or none, about 100k tokens)."""
         from openai import BadRequestError
 
         from ..api_key_rotation import run_with_api_candidates
 
         headers = {"session_id": self.session_id} if self.session_id else None
         effort = (effort or "").strip().lower()
+        prompt_key = ":".join(p for p in (self.session_id, cache_key) if p) if cache_key else ""
 
         async def operation(endpoint) -> ChatReply:
-            def create(**extra):
-                return self._client(endpoint).chat.completions.create(
-                    model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
-                    tool_choice=tool_choice, extra_headers=headers, **extra)
-
             key = self._key(endpoint)
+            extra: Dict[str, object] = {}
             if effort and key not in self._no_effort:
+                extra["reasoning_effort"] = effort
+            if prompt_key and key not in self._no_cache_key:
+                extra["extra_body"] = {"prompt_cache_key": prompt_key}
+            while True:
                 try:
-                    response = await create(reasoning_effort=effort)
+                    response = await self._client(endpoint).chat.completions.create(
+                        model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
+                        tool_choice=tool_choice, extra_headers=headers, **extra)
+                    break
                 except BadRequestError as err:
-                    if "reasoning" not in str(err).lower():
+                    text = str(err).lower()
+                    if "extra_body" in extra and "prompt_cache_key" in text:
+                        self._no_cache_key.add(key)
+                        extra.pop("extra_body")
+                        logger.warning("The API at %s rejected prompt_cache_key; its requests go without it: %s",
+                                       endpoint.base_url, err)
+                    elif "reasoning_effort" in extra and "reasoning" in text:
+                        self._no_effort.add(key)
+                        extra.pop("reasoning_effort")
+                        logger.warning("The API at %s rejected reasoning_effort=%s; its requests go without it: %s",
+                                       endpoint.base_url, effort, err)
+                    else:
                         raise
-                    self._no_effort.add(key)
-                    logger.warning("The API at %s rejected reasoning_effort=%s; its requests go without it: %s",
-                                   endpoint.base_url, effort, err)
-                    response = await create()
-            else:
-                response = await create()
             if not response.choices:
                 raise RuntimeError("the API returned no choices")
             message = response.choices[0].message

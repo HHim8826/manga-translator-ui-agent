@@ -67,7 +67,7 @@ class ChatReply:
 
 class ChatClient(Protocol):
     async def complete(self, messages: List[dict], tools: List[dict], tool_choice: str,
-                       effort: str = "") -> ChatReply: ...
+                       effort: str = "", cache_key: str = "") -> ChatReply: ...
 
 
 RECALL_KINDS = ("dialogue", "narration", "handwritten", "sfx", "sign", "ui", "punctuation", "other")
@@ -317,7 +317,7 @@ class AgentRunner:
 
     async def _complete(self, page_index: int) -> ChatReply:
         reply = await self.client.complete(self.request_messages(page_index), self.registry.schemas(), "required",
-                                           effort=self.settings.reasoning_effort)
+                                           effort=self.settings.reasoning_effort, cache_key="translator")
         self.session.last_prompt_tokens = reply.prompt_tokens
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
             self.totals[key] += getattr(reply, key)
@@ -343,7 +343,7 @@ class AgentRunner:
                         {"type": "image_url", "image_url": {"url": images.data_url(marked),
                                                             "detail": self.settings.image_detail}}]}]
         reply = await self.client.complete(messages, [RECALL_TOOL], "required",
-                                           effort=self.settings.review_reasoning_effort)
+                                           effort=self.settings.review_reasoning_effort, cache_key="recall")
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
             self.totals[key] += getattr(reply, key)
         self.totals["recall_requests"] += 1

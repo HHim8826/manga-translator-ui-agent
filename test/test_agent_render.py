@@ -111,7 +111,7 @@ class ProbeClient:
         self.reply, self.error = reply, error
         self.requests = []
 
-    async def complete(self, messages, tools, tool_choice, effort=""):
+    async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
         self.requests.append((messages, tools, tool_choice))
         if self.error is not None:
             raise self.error

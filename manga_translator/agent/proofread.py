@@ -335,7 +335,8 @@ class Proofreader:
             session.steps = steps
             if self.should_stop():
                 raise AgentStopped()
-            reply = await self.client.complete(messages, TOOLS, "required", effort=self.settings.reasoning_effort)
+            reply = await self.client.complete(messages, TOOLS, "required", effort=self.settings.reasoning_effort,
+                                               cache_key="proofread")
             for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
                 self.totals[key] += getattr(reply, key)
             self.totals["requests"] += 1

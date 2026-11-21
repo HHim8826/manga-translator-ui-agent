@@ -39,7 +39,7 @@ class EditingClient(ScriptedClient):
         super().__init__(script)
         self.target, self.at, self.saved = target, at, None
 
-    async def complete(self, messages, tools, tool_choice, effort=""):
+    async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
         reply = await super().complete(messages, tools, tool_choice, effort)
         if len(self.requests) == self.at and self.saved is None:
             self.saved = _save_in_editor(self.target)

@@ -220,9 +220,11 @@ class ScriptedClient:
         self.review_requests = []
         self.proof_requests = []
         self.efforts = []
+        self.cache_keys = []
 
-    async def complete(self, messages, tools, tool_choice, effort=""):
+    async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
         self.efforts.append((tools[0]["function"]["name"] if tools else "", effort))
+        self.cache_keys.append((tools[0]["function"]["name"] if tools else "", cache_key))
         if tools and tools[0]["function"]["name"] == "view_region":  # inpaint review: accept as it is
             self.review_requests.append(messages)
             return _calls(("finish_review", {}))
@@ -669,7 +671,7 @@ def test_recall_failure_does_not_stop_the_page(tmp_path):
     pages = [make_page(tmp_path, "001")]
 
     class FailingRecall(ScriptedClient):
-        async def complete(self, messages, tools, tool_choice, effort=""):
+        async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
             if tools and tools[0]["function"]["name"] == "report_unboxed_text":
                 raise RuntimeError("recall down")
             return await super().complete(messages, tools, tool_choice, effort)
@@ -825,7 +827,7 @@ def _review_workflow(tmp_path, **settings):
     class NetworkClient(ScriptedClient):  # a real request waits on the network and lets other tasks run
         session_id = None
 
-        async def complete(self, messages, tools, tool_choice, effort=""):
+        async def complete(self, messages, tools, tool_choice, effort="", cache_key=""):
             self.sessions = getattr(self, "sessions", set()) | {self.session_id}
             await asyncio.sleep(0.01)
             return await super().complete(messages, tools, tool_choice, effort)
