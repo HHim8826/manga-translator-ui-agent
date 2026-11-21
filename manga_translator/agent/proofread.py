@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import checks, images
 from .events import EventLog
-from .page import Region
+from .page import BREAK, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
 from .store import AgentMemory, AgentStore, normalize, write_json_atomic
 
@@ -31,7 +31,10 @@ Check each region for:
 - language: natural {target} manga dialogue that fits the character; typos; wrong characters for {target} (for example simplified or Japanese forms such as 値 for 值 in Traditional Chinese); punctuation that matches the rest of the chapter;
 - length: a translation much longer than its box holds.
 
-Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. Use view_page when you need the picture (who is speaking, what is shown). Put all your revise_text calls in as few responses as you can, use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them."""
+Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. [BR] in a translation is a line break the renderer follows: keep the breaks when you revise a line, at natural boundaries of the new text. Use view_page when you need the picture (who is speaking, what is shown). Put all your revise_text calls in as few responses as you can, use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them.{extra}"""
+PROOF_BREAKS = """
+
+Line breaks: the user's render setting breaks lines only at [BR] (AI line breaks). The listing gives each region's number of source lines. A revised translation of a source with two or more lines needs at least one [BR], about one line per source line where natural boundaries allow it; a one-line source gets none. Never break inside a word or name, and never write a newline instead of [BR]."""
 
 
 def _obj(properties: Dict[str, Any], required: List[str]) -> Dict[str, Any]:
@@ -96,15 +99,17 @@ class ProofPage:
     def translation(region: Region) -> str:
         return str(region.data.get("translation") or "")
 
-    def listing(self) -> List[str]:
+    def listing(self, line_counts: bool = False) -> List[str]:
+        """One line per translated region; the translation keeps its [BR] line breaks."""
         lines = []
         for rid, region in self.regions.items():
             translation = self.translation(region)
             if not translation:
                 continue
             category = self.categories.get(rid, "")
-            lines.append(f"#{rid} [{category + ', ' if category else ''}~{checks._capacity(region)} chars] "
-                         f"「{_one_line(self.source(region))}」 → 「{_one_line(translation)}」")
+            count = f", {region.line_count} line(s)" if line_counts else ""
+            lines.append(f"#{rid} [{category + ', ' if category else ''}~{checks._capacity(region)} chars{count}] "
+                         f"「{_one_line(self.source(region))}」 → 「{with_breaks(translation)}」")
         return lines
 
     def write(self, rid: int, translation: str) -> None:
@@ -123,15 +128,18 @@ class ProofPage:
 
 
 def _one_line(text: str) -> str:
-    return " ".join(str(text).replace("[BR]", " ").split())
+    return " ".join(str(text).replace(BREAK, " ").split())
 
 
 class ProofSession:
-    def __init__(self, pages: Dict[str, ProofPage], work_terms, memory: AgentMemory, target_lang: str):
+    def __init__(self, pages: Dict[str, ProofPage], work_terms, memory: AgentMemory, target_lang: str,
+                 line_breaks: bool = False):
         self.pages = pages
         self.work_terms = work_terms
         self.memory = memory
         self.target_lang = target_lang
+        self.line_breaks = line_breaks
+        """AI line breaks: a revision of a multi-line source must keep [BR] line breaks."""
         self.revisions: List[Dict[str, Any]] = []
         self.flags: List[Dict[str, Any]] = []
         self.note = ""
@@ -165,12 +173,16 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
     if name == "revise_text":
         page = s.page(args.get("page"))
         region = s.region(page, args.get("id"))
-        new = str(args.get("translation") or "").strip("\n")
+        new = with_breaks(args.get("translation"))
         reason = str(args.get("reason") or "").strip()
         if not new.strip():
             raise ProofError("translation is empty")
         if not reason:
             raise ProofError("reason is required")
+        if s.line_breaks and needs_break(region.line_count, new):
+            raise ProofError(f"{page.stem} #{region.id}: the source has {region.line_count} lines, so the new "
+                             f"translation needs [BR] line breaks at natural boundaries; without them it is "
+                             f"typeset as one line. Send it again with [BR].")
         old = page.translation(region)
         if normalize(new) == normalize(old):
             return f"{page.stem} #{region.id}: unchanged (same text).", "unchanged", []
@@ -182,7 +194,7 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
         if s.target_lang != "JPN" and checks.KANA.search(new):
             warnings.append(f"#{region.id}: kana left in the translation")
         capacity = checks._capacity(region)
-        if sum(1 for ch in new if ch.isalnum()) > checks.OVERFLOW_RATIO * capacity:
+        if text_length(new) > checks.OVERFLOW_RATIO * capacity:
             warnings.append(f"#{region.id}: longer than the box holds (about {capacity} characters)")
         text = f"{page.stem} #{region.id} revised."
         if warnings:
@@ -206,13 +218,14 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
 
 
 def _short(text: str, limit: int = 24) -> str:
-    text = _one_line(text)
+    text = _one_line(str(text).replace(BREAK, " / "))
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 class Proofreader:
     def __init__(self, settings: AgentSettings, client, store: AgentStore, events: EventLog, target_lang: str,
-                 memory: AgentMemory, work_prompt=None, should_stop: Callable[[], bool] = lambda: False):
+                 memory: AgentMemory, work_prompt=None, should_stop: Callable[[], bool] = lambda: False,
+                 line_breaks: bool = False):
         self.settings = settings
         self.client = client
         self.store = store
@@ -221,12 +234,15 @@ class Proofreader:
         self.memory = memory
         self.work_prompt = work_prompt
         self.should_stop = should_stop
+        self.line_breaks = line_breaks
+        """AI line breaks (render setting disable_auto_wrap): revisions keep [BR] line breaks."""
         self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0}
 
     def system_prompt(self) -> str:
         from .runner import language_name
         target = language_name(self.target_lang)
-        return PROOF_PROMPT.format(target=target, reason_lang=target)
+        return PROOF_PROMPT.format(target=target, reason_lang=target,
+                                   extra=PROOF_BREAKS if self.line_breaks else "")
 
     def first_message(self, pages: Dict[str, ProofPage]) -> str:
         parts = []
@@ -237,7 +253,7 @@ class Proofreader:
         listed = []
         count = 0
         for stem, page in pages.items():
-            lines = page.listing()
+            lines = page.listing(self.line_breaks)
             count += len(lines)
             listed.append(f"Page {stem} ({len(lines)} region(s)):\n" + ("\n".join(lines) if lines else "(no text)"))
         parts.append(f"The chapter: {len(pages)} page(s), {count} translated region(s).\n\n" + "\n\n".join(listed))
@@ -259,7 +275,7 @@ class Proofreader:
         if not regions:
             return {"status": "skipped", "revised": 0, "flagged": 0}
         session = ProofSession(pages, getattr(self.work_prompt, "terms", []) if self.work_prompt else [],
-                               self.memory, self.target_lang)
+                               self.memory, self.target_lang, self.line_breaks)
         self.events.emit("proofread_start", agent="proofread", pages=len(pages), regions=regions)
         messages: List[dict] = [{"role": "system", "content": self.system_prompt()},
                                 {"role": "user", "content": self.first_message(pages)}]

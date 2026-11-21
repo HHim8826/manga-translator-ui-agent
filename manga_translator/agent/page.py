@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import copy
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -32,6 +33,83 @@ from .store import write_json_atomic
 CATEGORIES = ("dialogue", "narration", "sfx", "sign", "handwritten", "note", "other")
 FLAG_TYPES = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "missing_text",
               "low_confidence", "step_limit", "error", "other")
+BREAK = "[BR]"
+"""The app's line break marker in translations (the editor writes it too); the renderer breaks there."""
+_BREAK_MARKS = re.compile(r"\s*(?:\[BR\]|【BR】|<br\s*/?>|\r?\n)\s*", re.IGNORECASE)
+MIN_BREAK_CHARS = 4
+"""Translations shorter than this (letters and digits) need no line break even for a multi-line source."""
+
+
+def with_breaks(text: str) -> str:
+    """``text`` with every line break written as ``[BR]``: newlines and the other spellings become
+    ``[BR]``, doubled markers one, and none is left at the start or the end."""
+    parts = _BREAK_MARKS.split(str(text or ""))
+    return BREAK.join(part for part in parts if part.strip())
+
+
+def break_count(text: str) -> int:
+    return str(text or "").count(BREAK)
+
+
+def text_length(text: str) -> int:
+    """Letters and digits only: punctuation squeezes in (「不行。」 is 2)."""
+    return sum(1 for ch in str(text or "").replace(BREAK, "") if ch.isalnum())
+
+
+def needs_break(line_count: int, translation: str) -> bool:
+    """A multi-line source whose translation would be typeset as one line (AI line breaks)."""
+    return line_count >= 2 and text_length(translation) >= MIN_BREAK_CHARS and not break_count(translation)
+
+
+PARAGRAPH_GAP = 0.5
+"""A blank space between two regions at least this many line widths wide separates paragraphs.
+Measured on chapter 34: lines of one paragraph are 2-9 px apart at 30-40 px wide; paragraphs side by
+side are 32-51 px apart, and the two blocks of a stepped narration box 45-65 px."""
+
+
+def paragraph_break(regions: List["Region"]) -> Optional[tuple]:
+    """Two of the regions that a blank space between paragraphs separates, or None when the regions
+    form one block. Regions join when their outlines are closer than a paragraph gap both across the
+    lines (side by side columns of vertical text, rows of horizontal text) and along them (a block
+    below another one, as in a stepped narration box); the regions must all join up."""
+    vertical = sum(1 for r in regions if r.direction.startswith("v")) * 2 >= len(regions)
+    across = (0, 2) if vertical else (1, 3)  # the axis the lines follow each other on
+    along = (1, 3) if vertical else (0, 2)
+    blocks, widths, inner = [], [], []
+    for region in regions:
+        boxes = [(p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max()) for p in region.polygons]
+        if not boxes:
+            continue
+        widths += [b[across[1]] - b[across[0]] for b in boxes]
+        boxes.sort(key=lambda b: b[across[0]])
+        inner += [b[across[0]] - a[across[1]] for a, b in zip(boxes, boxes[1:]) if b[across[0]] > a[across[1]]]
+        blocks.append((region, tuple(f(b[k] for b in boxes) for k, f in ((0, min), (1, min), (2, max), (3, max)))))
+    if len(blocks) < 2:
+        return None
+    width = float(np.median(widths))
+    limit_across = max(PARAGRAPH_GAP * width, 3 * float(np.median(inner)) if inner else 0.0)
+    limit_along = PARAGRAPH_GAP * width
+
+    def gap(a, b, axis) -> float:
+        return max(a[axis[0]], b[axis[0]]) - min(a[axis[1]], b[axis[1]])
+
+    def apart(a, b) -> bool:
+        return gap(a, b, across) >= limit_across or gap(a, b, along) >= limit_along
+
+    joined = {0}
+    grown = True
+    while grown:
+        grown = False
+        for j in range(len(blocks)):
+            if j not in joined and any(not apart(blocks[i][1], blocks[j][1]) for i in joined):
+                joined.add(j)
+                grown = True
+    if len(joined) == len(blocks):
+        return None
+    i, j = min(((i, j) for i in joined for j in range(len(blocks)) if j not in joined),
+               key=lambda p: max(gap(blocks[p[0]][1], blocks[p[1]][1], across),
+                                 gap(blocks[p[0]][1], blocks[p[1]][1], along)))
+    return blocks[i][0], blocks[j][0]
 
 
 @dataclass
@@ -72,6 +150,11 @@ class Region:
     def center(self) -> List[float]:
         x1, y1, x2, y2 = self.bbox
         return [round((x1 + x2) / 2, 1), round((y1 + y2) / 2, 1)]
+
+    @property
+    def line_count(self) -> int:
+        """Lines (columns for vertical text) of the source text; merged regions have the union."""
+        return len(self.data.get("lines") or [])
 
     @property
     def direction(self) -> str:
@@ -206,7 +289,7 @@ class PageDoc:
     def set_text(self, rid, source_text: str, translation: str, category: str = "dialogue",
                  confidence: Optional[float] = None, ruby: str = "", reason: str = "") -> Region:
         region = self.get(rid)
-        translation = (translation or "").strip("\n")
+        translation = with_breaks(translation)
         if not translation.strip():
             raise RegionError(f"#{region.id}: translation is empty; use skip_region for text that stays as it is")
         if category and category not in CATEGORIES:
@@ -242,6 +325,13 @@ class PageDoc:
         if not reason:
             raise RegionError("reason is required")
         ordered = [self.regions[i] for i in self.order if i in unique]
+        split = paragraph_break(ordered)
+        if split is not None:
+            raise RegionError(
+                f"#{split[0].id} and #{split[1].id} are separate blocks of text (a blank space lies between them, "
+                "beside or below), so they stay two regions even in one bubble or narration box: translate each "
+                "where it is, and use link_regions if one sentence runs across them. Merge only boxes that cut "
+                "one paragraph apart.")
         self._checkpoint("merge " + "+".join(f"#{r.id}" for r in ordered))
         keep = ordered[0]
         lines, texts, local = [], [], []
@@ -288,10 +378,11 @@ class PageDoc:
         region = self.get(rid)
         if not region.translation:
             raise RegionError(f"#{region.id} has no translation yet; call set_text first")
-        if "".join(text.split()) != "".join(region.translation.split()):
+        text = with_breaks(text)
+        if "".join(text.replace(BREAK, "").split()) != "".join(region.translation.replace(BREAK, "").split()):
             raise RegionError(f"#{region.id}: the text must be the current translation with line breaks only")
         self._checkpoint(f"line_breaks #{region.id}")
-        region.translation = text.strip("\n")
+        region.translation = text
         if reason:
             region.reasons.append(reason)
         return region

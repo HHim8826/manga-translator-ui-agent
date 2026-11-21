@@ -67,7 +67,8 @@ def make_page(tmp_path, stem="001", boxes=((20, 20, 60, 120), (100, 20, 140, 120
 
 # --- page document ----------------------------------------------------------------
 def test_page_doc_edits_and_save(tmp_path):
-    image_path, json_path = make_page(tmp_path)
+    # regions 1 and 2 are two columns of one paragraph (a paragraph gap would refuse the merge)
+    image_path, json_path = make_page(tmp_path, boxes=((20, 20, 60, 120), (64, 20, 104, 120), (200, 150, 280, 180)))
     doc = PageDoc.load(image_path, json_path)
     assert [r.id for r in doc.active_regions()] == [1, 2, 3]
     assert doc.missing() == [1, 2, 3]
@@ -91,7 +92,7 @@ def test_page_doc_edits_and_save(tmp_path):
     assert len(region["lines"]) == 2 and "render_box_rect_local" not in region
     mask = _decode(page["mask_raw"])
     assert mask[160, 240] == 0, "skipped sign must leave the mask"
-    assert mask[60, 40] == 255 and mask[60, 120] == 255, "kept text stays in the mask"
+    assert mask[60, 40] == 255 and mask[60, 84] == 255, "kept text stays in the mask"
 
 
 def test_page_doc_keeps_unfinished_regions_and_undo(tmp_path):
@@ -530,7 +531,9 @@ def test_snap_text_tightens_a_loose_box_and_ignores_outline_and_tone():
 
 
 def test_add_region_tool_snaps_saves_and_undoes(tmp_path):
-    image_path, json_path = make_page(tmp_path, unboxed=True)
+    # region 2 ends right before the unboxed column, so the two can be merged
+    image_path, json_path = make_page(tmp_path, boxes=((20, 20, 60, 120), (128, 20, 158, 120), (200, 150, 280, 180)),
+                                      unboxed=True)
     session = AgentSession(AgentSettings(), AgentMemory(str(tmp_path / "mem")), [image_path])
     session.start_page(0, PageDoc.load(image_path, json_path))
     registry = ToolRegistry(session)

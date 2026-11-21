@@ -171,6 +171,25 @@ async def _check_fonts(service, pages: List[str], store: AgentStore, events: Eve
     log(f"[Agent] Fonts: {changed} region(s) changed, {unfixed} left with characters their font lacks")
 
 
+def line_break_rules(config) -> str:
+    """The AI line break rules (dict/system_prompt_line_break.yaml, the classic translators' rules)
+    when the render setting disable_auto_wrap ("AI line breaks") is on; empty when it is off."""
+    if not getattr(getattr(config, "render", None), "disable_auto_wrap", False):
+        return ""
+    from .runner import LINE_BREAK_RULES
+
+    try:
+        from ..translators.prompt_loader import load_line_break_prompt
+        from ..utils.generic import BASE_PATH
+
+        data = load_line_break_prompt(os.path.join(BASE_PATH, "dict")) or {}
+        rules = str(data.get("line_break_prompt") or "").strip()
+    except Exception:
+        logger.warning("agent: could not read the line break rules", exc_info=True)
+        rules = ""
+    return rules or LINE_BREAK_RULES
+
+
 async def _font_service(translator, config, settings: AgentSettings, target_lang: str, log):
     """Installed fonts and the renderer for the layout check; None when the pipeline has no renderer
     (or the fonts cannot be read), and the agents go on without the font features."""
@@ -342,6 +361,9 @@ async def run_agent_workflow(
             if work_prompt is not None:
                 log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
         font_service = fonts if font_task is None else await font_task
+        breaks = line_break_rules(config)
+        if breaks:
+            log("[Agent] AI line breaks: on (translations get [BR] line breaks by the source line count)")
         outcomes: List[dict] = []
         translated = [0]
         _report(progress, "translate", 0, len(paths))
@@ -375,7 +397,7 @@ async def run_agent_workflow(
 
                 runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
                                      on_page_done=page_done, work_prompt=work_prompt,
-                                     fonts=font_service if settings.choose_fonts else None)
+                                     fonts=font_service if settings.choose_fonts else None, line_breaks=breaks)
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -387,7 +409,7 @@ async def run_agent_workflow(
                             log(f"[Agent] Proofread: {len(finished)} page(s)")
                             _report(progress, "proofread", translated[0], len(paths))
                             proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
-                                                      work_prompt, should_stop)
+                                                      work_prompt, should_stop, line_breaks=bool(breaks))
                             proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
                         if review_task is not None:
                             queue.put_nowait(None)

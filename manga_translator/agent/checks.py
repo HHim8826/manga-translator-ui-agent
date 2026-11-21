@@ -12,6 +12,8 @@ can do reliably:
 * ``overflow``           - far more characters than the box holds at the original size
 * ``needs_second_read``  - small, handwritten or added text, or text the local
   OCR read differently, that was never zoomed
+* ``missing_line_break`` - AI line breaks are on and a source of two or more
+  lines has a translation without [BR], so it would be typeset as one line
 
 The first ``mark_page_done`` returns these issues to the model so it can fix
 them. What is left when the page is finished lowers the score, and the
@@ -24,6 +26,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from .page import BREAK, needs_break, text_length
 from .store import normalize
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -41,6 +44,7 @@ WEIGHTS = {
     "empty_source": 0.3,
     "overflow": 0.15,
     "needs_second_read": 0.15,
+    "missing_line_break": 0.1,
 }
 SERIOUS = {"untranslated_kana": "uncertain_translation", "glossary_mismatch": "uncertain_translation",
            "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr"}
@@ -75,6 +79,8 @@ AGENT_TEXT = {
                 "original size; shorten it if you can.",
     "needs_second_read": "#{region}: {why}, and it was not zoomed. Zoom for a second read and fix set_text if "
                          "the reading changes.",
+    "missing_line_break": "#{region}: the source has {lines} lines but the translation has no [BR], so it would "
+                          "be typeset as one line. Add [BR] at natural breaks with set_line_breaks.",
 }
 WHY = {
     "small": "small text",
@@ -92,11 +98,12 @@ HUMAN_TEXT = {
         "empty_source": "沒有記錄原文",
         "overflow": "譯文 {length} 字，框內以原字級約容納 {capacity} 字",
         "needs_second_read": "沒有放大確認",
+        "missing_line_break": "原文 {lines} 行，譯文沒有換行",
         "page": "程式檢查的信心分數 {score:.2f}：{summary}",
         "count": "{count} 個框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "沒用術語表譯法",
                   "character_mismatch": "沒用角色譯名", "empty_source": "沒有原文", "overflow": "譯文過長",
-                  "needs_second_read": "沒有放大確認"},
+                  "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行"},
         "none": "沒有發現問題",
     },
     "CHS": {
@@ -106,11 +113,12 @@ HUMAN_TEXT = {
         "empty_source": "没有记录原文",
         "overflow": "译文 {length} 字，框内以原字号约容纳 {capacity} 字",
         "needs_second_read": "没有放大确认",
+        "missing_line_break": "原文 {lines} 行，译文没有换行",
         "page": "程序检查的置信分数 {score:.2f}：{summary}",
         "count": "{count} 个框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "没用术语表译法",
                   "character_mismatch": "没用角色译名", "empty_source": "没有原文", "overflow": "译文过长",
-                  "needs_second_read": "没有放大确认"},
+                  "needs_second_read": "没有放大确认", "missing_line_break": "没有换行"},
         "none": "没有发现问题",
     },
     "ENG": {
@@ -120,11 +128,13 @@ HUMAN_TEXT = {
         "empty_source": "no source text was saved",
         "overflow": "{length} characters for room of about {capacity} at the original size",
         "needs_second_read": "not zoomed for a second read",
+        "missing_line_break": "the source has {lines} lines, the translation has no line break",
         "page": "program check score {score:.2f}: {summary}",
         "count": "{count} region(s): {label}",
         "short": {"untranslated_kana": "kana left", "glossary_mismatch": "glossary not used",
                   "character_mismatch": "character name not used", "empty_source": "no source text",
-                  "overflow": "translation too long", "needs_second_read": "not zoomed"},
+                  "overflow": "translation too long", "needs_second_read": "not zoomed",
+                  "missing_line_break": "no line break"},
         "none": "no issues found",
     },
 }
@@ -171,7 +181,7 @@ def term_issues(region_id: int, source: str, translation: str, work_terms, memor
     """Glossary and character names: a term in the source whose translation is not used. The work's
     prompt file comes first; the agent's own glossary does not repeat a term it already checked."""
     issues: List[Issue] = []
-    src_norm, tr_norm = normalize(source), normalize(translation)
+    src_norm, tr_norm = normalize(source), normalize(str(translation or "").replace(BREAK, ""))
     if not src_norm:
         return issues
     checked = set()
@@ -228,10 +238,14 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
     else:
         issues.append(Issue("empty_source", region.id, {}, WEIGHTS["empty_source"]))
 
-    length = sum(1 for ch in translation if ch.isalnum())   # punctuation squeezes in; 「不行。」 is 2
+    length = text_length(translation)
     capacity = _capacity(region)
     if length > OVERFLOW_RATIO * capacity:
         issues.append(Issue("overflow", region.id, {"length": length, "capacity": capacity}, WEIGHTS["overflow"]))
+
+    if getattr(session, "line_breaks", False) and needs_break(region.line_count, translation):
+        issues.append(Issue("missing_line_break", region.id, {"lines": region.line_count},
+                            WEIGHTS["missing_line_break"]))
 
     mode = session.settings.double_read
     if mode != "none" and not session.was_zoomed(region):

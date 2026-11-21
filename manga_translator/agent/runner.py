@@ -103,7 +103,7 @@ Each page arrives as an image with numbered boxes plus a candidate list. A progr
 
 For every page:
 1. Look at the numbered image. Use get_neighbors when a spread or a line of dialogue may continue across pages.
-2. Fix the structure: merge_regions for one text block split over several boxes; skip_region for text that stays as drawn (background signs, credits) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
+2. Fix the structure: merge_regions only for one paragraph cut into several boxes (lines that follow each other with no blank space between them). Separate paragraphs stay separate regions even inside one bubble or narration box, so the typeset page keeps them apart: translate each where it is, and use link_regions if one sentence runs across them. skip_region for text that stays as drawn (background signs, credits) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
    Sound effects drawn on the art (onomatopoeia such as impacts, footsteps, breathing outside a bubble) are never translated: skip_region with category sfx, even when they are large or easy to read. Text inside a speech bubble is dialogue and gets translated, even when it is a sound.
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
@@ -120,6 +120,13 @@ Do not invent text that is not on the page. Keep translations short enough for t
 FONT_PROMPT = """
 
 Fonts: every region is typeset in the user's font ({default}) unless you give set_text a font. The font sheet in the first message shows the other installed fonts that have every {target} character, numbered. Give font only when a region's original lettering is clearly a different style from the normal dialogue around it (a narration box in a serif face, handwriting, cute or pop lettering, brush writing, a sign, title or screen), and pick the listed font that looks most like that lettering. Use the same font for the same kind of text all through the chapter, and leave font out for normal dialogue. The program keeps a font only if the text still fits the same place."""
+
+LINE_BREAK_PROMPT = """
+
+Line breaks: the user's render setting breaks lines only where a translation has [BR] (AI line breaks), so write the line breaks into every translation. The candidate list gives each region's number of source lines; that is the original_region_count of the rules below. Write the marker [BR] in set_text, never a newline.
+{rules}"""
+LINE_BREAK_RULES = """Insert [BR] only at natural boundaries (after a sentence or clause, between phrases), never inside a word, name or number. A one-line source gets no [BR]; a source of two or more lines gets at least one, and about one line per source line when natural boundaries allow it. Never put [BR] at the start or the end, or two in a row."""
+"""Used when dict/system_prompt_line_break.yaml cannot be read."""
 
 BATCHED_SAVES = ("set_text", "skip_region")
 BATCH_HINT = (" {left} region(s) are left: save them all in your next response (several set_text / skip_region "
@@ -148,12 +155,14 @@ class AgentRunner:
                  pages: List[str], target_lang: str,
                  should_stop: Callable[[], bool] = lambda: False,
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
-                 work_prompt: Optional[WorkPrompt] = None, fonts=None):
+                 work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = ""):
         self.settings = settings
         self.work_prompt = work_prompt
+        """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
         """``fonts.FontService`` with a font sheet for set_text font, or None."""
-        """The work's prompt file (instructions + glossary), shared with the classic translators."""
+        self.line_breaks = line_breaks
+        """The AI line break rules when the render setting disable_auto_wrap is on, else empty."""
         self.client = client
         self.store = store
         self.events = events
@@ -166,6 +175,7 @@ class AgentRunner:
         self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
         self.session.work_terms = list(work_prompt.terms) if work_prompt else []
         self.session.font_choices = [face.value for face in self.fonts.choices] if self.fonts else []
+        self.session.line_breaks = bool(line_breaks)
         self.registry = ToolRegistry(self.session)
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
@@ -183,6 +193,8 @@ class AgentRunner:
         if self.work_prompt is not None:
             extra += (f"\n\nNotes for this work from the user's prompt file {self.work_prompt.name}. Follow them, and "
                       f"use its glossary over your own choices and over the glossary tools:\n{self.work_prompt.text}")
+        if self.line_breaks:
+            extra += LINE_BREAK_PROMPT.format(rules=self.line_breaks.strip())
         if self.fonts is not None:
             extra += FONT_PROMPT.format(default=self.fonts.default_font, target=target)
         if self.settings.extra_instructions.strip():

@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from . import checks, images
-from .page import CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError
+from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, needs_break
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
@@ -65,6 +65,9 @@ class AgentSession:
         """Glossary terms of the work's prompt file (``work_prompt.WorkTerm``), for the checks."""
         self.font_choices: List[str] = []
         """Fonts on the font sheet (font_family values); set_text font n picks font_choices[n - 1]."""
+        self.line_breaks = False
+        """AI line breaks (render setting disable_auto_wrap): the renderer breaks lines only at [BR], so
+        translations of multi-line sources need them."""
         self._reset_page_state()
 
     def _reset_page_state(self) -> None:
@@ -120,8 +123,9 @@ class AgentSession:
                 source = "added by you with add_region"
             else:
                 source = f"local OCR (weak hint): 「{local}」"
+            count = f"{region.line_count} source line(s), " if self.line_breaks else ""
             lines.append(f"#{region.id}: {region.direction}, {x2 - x1}x{y2 - y1}px, font≈{region.font_size}px, "
-                         f"{source}, {region.status()}")
+                         f"{count}{source}, {region.status()}")
         return "\n".join(lines) if lines else "(no candidate regions on this page)"
 
 
@@ -149,7 +153,7 @@ BOX = {"type": "array", "items": {"type": "number"},
 
 
 def _short(text: str, limit: int = 40) -> str:
-    text = (text or "").replace("\n", " ")
+    text = (text or "").replace(BREAK, " / ").replace("\n", " ")
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -343,8 +347,11 @@ def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     summary = f"#{region.id}: {_short(region.source_text, 24)} → {_short(region.translation, 30)}"
     if region.font:
         summary += f" [{region.font}]"
-    return ToolResult(text=f"#{region.id} saved. {remaining} region(s) on this page still need a result.",
-                      summary=summary)
+    text = f"#{region.id} saved. {remaining} region(s) on this page still need a result."
+    if s.line_breaks and needs_break(region.line_count, region.translation):
+        text += (f" Its source has {region.line_count} lines but the translation has no {BREAK}, so it would be "
+                 f"typeset as one line: add {BREAK} at natural breaks with set_line_breaks.")
+    return ToolResult(text=text, summary=summary)
 
 
 def set_line_breaks(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -509,7 +516,8 @@ TOOLS: List[Tool] = [
          _obj({"id": ID,
                "source_text": {"type": "string", "description": "Exact transcription of the original text, without ruby"},
                "ruby": {"type": "string", "description": "Furigana / side readings, if any, as 'base(reading)' pairs"},
-               "translation": {"type": "string", "description": "The translation that will be typeset"},
+               "translation": {"type": "string", "description": "The translation that will be typeset; "
+                               "[BR] marks a line break"},
                "category": {"type": "string", "enum": list(CATEGORIES)},
                "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
                "font": {"type": "integer", "description": "Only when the original lettering is clearly not "
@@ -517,8 +525,9 @@ TOOLS: List[Tool] = [
                         "Leave out to keep the font as it is."},
                "reason": REASON},
               ["id", "source_text", "translation", "category", "confidence"]), set_text, writes=True),
-    Tool("set_line_breaks", "Put explicit line breaks (\\n) into a region's current translation.",
-         _obj({"id": ID, "text": {"type": "string"}, "reason": REASON}, ["id", "text"]), set_line_breaks, writes=True),
+    Tool("set_line_breaks", "Put line breaks ([BR]) into a region's current translation without changing its words.",
+         _obj({"id": ID, "text": {"type": "string", "description": "The current translation with [BR] where the "
+                                  "lines break"}, "reason": REASON}, ["id", "text"]), set_line_breaks, writes=True),
     Tool("glossary_search", "Search the glossary (source or target).",
          _obj({"query": {"type": "string"}}, ["query"]), glossary_search),
     Tool("glossary_upsert", "Add or change a glossary term so later pages use the same translation.",
