@@ -1550,6 +1550,7 @@
   "Agent Tool local_ocr": "로컬 OCR 확인",
   "Agent Tool measure_bubble": "말풍선 측정",
   "Agent Tool merge_regions": "영역 병합",
+  "Agent Tool split_region": "영역 분할",
   "Agent Tool skip_region": "영역 건너뛰기",
   "Agent Tool set_reading_order": "읽는 순서 설정",
   "Agent Tool link_regions": "한 문장으로 연결",

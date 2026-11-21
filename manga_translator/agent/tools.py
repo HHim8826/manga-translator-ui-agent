@@ -1,7 +1,7 @@
 """Tools the agent calls (design doc, "工具規格"), M2 subset.
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
-Structure: add_region, merge_regions, skip_region, set_reading_order, link_regions
+Structure: add_region, merge_regions, split_region, skip_region, set_reading_order, link_regions
 Text: set_text, set_line_breaks, set_font_style
 Memory: glossary_search, glossary_upsert, character_get, character_upsert,
         story_summary_get, story_summary_update, search_past_translations
@@ -300,6 +300,22 @@ def merge_regions(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
                       summary="+".join(f"#{i}" for i in a["ids"]) + f" → #{kept.id}")
 
 
+def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    if a.get("cells"):
+        box = _cells_box(s, a["cells"])
+    elif a.get("box") is not None:
+        box = _page_box(s, a["box"])
+    else:
+        raise RegionError("give box ([x1, y1, x2, y2] page pixels) or cells (grid of your last zoom) around the "
+                          "lines of the new region")
+    new = s.doc.split(a["id"], box, a.get("reason", ""))
+    old = s.doc.get(a["id"])
+    return ToolResult(
+        text=(f"#{old.id} keeps {old.line_count} line(s) at {old.bbox}; its other {new.line_count} line(s) are now "
+              f"#{new.id} at {new.bbox}. Both need set_text or skip_region (any text #{old.id} had was cleared)."),
+        summary=f"#{old.id} → #{old.id} + #{new.id}")
+
+
 def skip_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     category = a.get("category") or "other"
     if category not in SKIP_CATEGORIES:
@@ -554,6 +570,13 @@ TOOLS: List[Tool] = [
                "reason": REASON}, ["direction", "reason"]), add_region, writes=True),
     Tool("merge_regions", "Merge regions that are one text block (for example one bubble split in two).",
          _obj({"ids": IDS, "reason": REASON}, ["ids", "reason"]), merge_regions, writes=True),
+    Tool("split_region", "Split a region whose box holds two separate texts: a small aside or inner thought "
+         "written beside the main text, a caption beside a title, a subtitle printed in a logo. Give a box in page "
+         "pixels, or grid cells of your last zoom, around the lines that go to the new region: whole lines move, "
+         "the rest stays. Then set_text or skip_region both parts.",
+         _obj({"id": ID, "box": BOX,
+               "cells": {"type": "string", "description": "Grid cells of the last zoom, like C4 or B3:D5"},
+               "reason": REASON}, ["id", "reason"]), split_region, writes=True),
     Tool("skip_region", "Leave a region as it is in the original: not erased, not translated. Categories: "
          + ", ".join(SKIP_CATEGORIES) + ". Use not_text for detections that contain no text.",
          _obj({"id": ID, "category": {"type": "string", "enum": list(SKIP_CATEGORIES)}, "reason": REASON},

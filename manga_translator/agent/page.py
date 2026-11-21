@@ -357,6 +357,59 @@ class PageDoc:
             region.merged_into = keep.id
         return keep
 
+    def split(self, rid, box, reason: str) -> Region:
+        """Move the lines of ``rid`` whose middle lies inside ``box`` (page pixels) to a new region, for
+        one detected box that holds two separate texts (a small aside beside the main text, a subtitle
+        printed in a logo above a chapter title). Both parts are then translated or skipped on their own;
+        the new region comes right after the old one in reading order."""
+        region = self.get(rid)
+        if not reason:
+            raise RegionError("reason is required")
+        x1, y1, x2, y2 = box
+        polys = region.polygons
+        inside = [i for i, p in enumerate(polys)
+                  if x1 <= p[:, 0].mean() <= x2 and y1 <= p[:, 1].mean() <= y2]
+        if not inside or len(inside) == len(polys):
+            listed = "; ".join(
+                f"line {i + 1} [{int(p[:, 0].min())}, {int(p[:, 1].min())}, {int(p[:, 0].max())}, {int(p[:, 1].max())}]"
+                for i, p in enumerate(polys))
+            if len(polys) < 2:
+                raise RegionError(f"#{region.id} is one detected line, and split_region moves whole lines: translate "
+                                  "it as one region, and flag_for_review if its two texts need to be apart")
+            raise RegionError(f"the box holds {'none' if not inside else 'all'} of the lines of #{region.id}; "
+                              f"whole lines move and both parts keep at least one. #{region.id} has {len(polys)} "
+                              f"lines: {listed}. Give a box around the middle of the lines for the new region.")
+        self._checkpoint(f"split #{region.id}")
+        vertical = region.direction.startswith("v")
+
+        def thickness(quads) -> float:
+            sizes = [np.ptp(np.asarray(q, dtype=np.float64).reshape(-1, 2)[:, 0 if vertical else 1]) for q in quads]
+            return float(np.median(sizes)) if sizes else 0.0
+
+        lines = region.data.get("lines", [])
+        moved = [lines[i] for i in inside]
+        rest = [line for i, line in enumerate(lines) if i not in set(inside)]
+        whole = thickness(lines) or 1.0
+        data = copy.deepcopy(region.data)
+        for part, quads in ((data, moved), (region.data, rest)):
+            part["lines"] = quads
+            if region.font_size:  # a small aside gets a smaller size than the text beside it
+                part["font_size"] = max(6, int(round(region.font_size * min(1.0, thickness(quads) / whole))))
+            part.pop("render_box_rect_local", None)
+        data["texts"], data["text"] = [], ""
+        new_id = max(self.regions) + 1
+        new = Region(id=new_id, data=data, origin=region.origin, origin_kind=region.origin_kind,
+                     erase=region.erase, reasons=[reason])
+        data["center"] = new.center
+        region.data["center"] = region.center
+        region.source_text = region.translation = None
+        region.skipped = False
+        region.skip_category = ""
+        region.reasons.append(reason)
+        self.regions[new_id] = new
+        self.order.insert(self.order.index(region.id) + 1, new_id)
+        return new
+
     def set_order(self, ids) -> List[int]:
         wanted = [self.get(i).id for i in ids]
         if len(set(wanted)) != len(wanted):

@@ -1550,6 +1550,7 @@
   "Agent Tool local_ocr": "ローカル OCR を確認",
   "Agent Tool measure_bubble": "吹き出しを計測",
   "Agent Tool merge_regions": "領域を結合",
+  "Agent Tool split_region": "領域を分割",
   "Agent Tool skip_region": "領域をスキップ",
   "Agent Tool set_reading_order": "読み順を設定",
   "Agent Tool link_regions": "同じ文としてリンク",

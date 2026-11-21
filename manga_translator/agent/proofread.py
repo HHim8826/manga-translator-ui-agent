@@ -31,6 +31,8 @@ Check each region for:
 - language: natural {target} manga dialogue that fits the character; typos; wrong characters for {target} (for example simplified or Japanese forms such as 値 for 值 in Traditional Chinese); punctuation that matches the rest of the chapter;
 - length: a translation much longer than its box holds.
 
+{invented_script} The translator gives such regions the meaning only on purpose: do not add the readings back.
+
 Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. [BR] in a translation is a line break the renderer follows: keep the breaks when you revise a line, at natural boundaries of the new text. Use view_page when you need the picture (who is speaking, what is shown). Put all your revise_text calls in as few responses as you can, use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them.{extra}"""
 PROOF_BREAKS = """
 
@@ -263,9 +265,9 @@ class Proofreader:
         self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0}
 
     def system_prompt(self) -> str:
-        from .runner import language_name
+        from .runner import INVENTED_SCRIPT, language_name
         target = language_name(self.target_lang)
-        return PROOF_PROMPT.format(target=target, reason_lang=target,
+        return PROOF_PROMPT.format(target=target, reason_lang=target, invented_script=INVENTED_SCRIPT,
                                    extra=PROOF_BREAKS if self.line_breaks else "")
 
     def first_message(self, pages: Dict[str, ProofPage]) -> str:

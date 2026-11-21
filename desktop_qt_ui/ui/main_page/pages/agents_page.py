@@ -49,6 +49,7 @@ TOOL_KEYS = {
     "measure_bubble": "Agent Tool measure_bubble",
     "add_region": "Agent Tool add_region",
     "merge_regions": "Agent Tool merge_regions",
+    "split_region": "Agent Tool split_region",
     "skip_region": "Agent Tool skip_region",
     "set_reading_order": "Agent Tool set_reading_order",
     "link_regions": "Agent Tool link_regions",

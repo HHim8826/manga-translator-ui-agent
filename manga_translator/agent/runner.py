@@ -106,17 +106,29 @@ Each page arrives as an image with numbered boxes plus a candidate list. A progr
 For every page:
 1. Look at the numbered image. Use get_neighbors when a spread or a line of dialogue may continue across pages.
 2. Fix the structure: merge_regions only for one paragraph cut into several boxes (lines that follow each other with no blank space between them). Separate paragraphs stay separate regions even inside one bubble or narration box, so the typeset page keeps them apart: translate each where it is, and use link_regions if one sentence runs across them. skip_region for text that stays as drawn (background signs, credits) and for boxes without text (not_text); set_reading_order if the order is wrong; link_regions for one sentence spread over several bubbles.
+   One box can also hold two separate texts: a small aside or inner thought written beside the main text in smaller or handwritten letters, a caption beside a title, a subtitle printed in a logo. split_region them apart before saving: translate each part where it is (an aside keeps its own small lettering, so give it a style when it looks different from the text beside it), and skip_region a part that stays as drawn, such as lettering that belongs to a title logo.
    Sound effects drawn on the art (onomatopoeia such as impacts, footsteps, breathing outside a bubble) are never translated: skip_region with category sfx, even when they are large or easy to read. Text inside a speech bubble is dialogue and gets translated, even when it is a sound.
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
 4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear.
+   {invented_script}
 5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Save the whole page in one response: every set_text and skip_region call (plus set_reading_order and glossary or character updates) together.
 6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
 7. Finish with mark_page_done and your confidence for the page; it can go in the same response as the saves. It fails while any region has neither a translation nor a skip.
 
-Each response takes several seconds, so call independent tools together in one response: all the zooms you need at once, then all the saves at once. Wait for a result only when your next call depends on it (add_region, merge_regions, a zoom you have to see first).
+Each response takes several seconds, so call independent tools together in one response: all the zooms you need at once, then all the saves at once. Wait for a result only when your next call depends on it (add_region, merge_regions, split_region, a zoom you have to see first).
 Write every reason, note and review flag in {reason_lang}; a human reads them.
 Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. Update the story summary every few pages with story_summary_update.{extra}"""
+
+
+INVENTED_SCRIPT = ("Invented script: a made-up language may be drawn as invented glyphs with a kana reading beside "
+                   "them and its meaning in Japanese (in 「」 or under a bracket). The reading is only how the words "
+                   "sound, not what they say: translate the meaning, and do not write the reading or a "
+                   "transliteration of it into the translation. Keep the sound only where the scene turns on it "
+                   "(a character repeats or mishears the word). With no meaning on the page, use the one from "
+                   "earlier pages or the glossary; when it is unknown, the glyphs stay as drawn (skip_region) "
+                   "and get a review flag.")
+"""Shared by the translation agent and the proofreader, so a revision does not put the readings back."""
 
 
 FONT_PROMPT = """
@@ -214,7 +226,8 @@ class AgentRunner:
         if self.settings.extra_instructions.strip():
             extra += f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}"
         return SYSTEM_PROMPT.format(double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
-                                    target=target, reason_lang=target, extra=extra)
+                                    target=target, reason_lang=target, extra=extra,
+                                    invented_script=INVENTED_SCRIPT)
 
     def _build_preamble(self, recap: str = "") -> None:
         intro = (f"This run covers {len(self.pages)} page(s): "

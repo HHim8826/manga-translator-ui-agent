@@ -24,7 +24,7 @@ EDITOR_ORDER = ("proofread", "fonts", "editor")
 editor's AI Agent tab. The translator's own numbers (#4) are the preview's boxes."""
 
 # the first word of a translator undo label (page.py _checkpoint) → the tool it undid
-_UNDO_TOOLS = {"set_text": "set_text", "skip": "skip_region", "merge": "merge_regions",
+_UNDO_TOOLS = {"set_text": "set_text", "skip": "skip_region", "merge": "merge_regions", "split": "split_region",
                "set_reading_order": "set_reading_order", "link": "link_regions", "line_breaks": "set_line_breaks",
                "flag": "flag_for_review", "add_region": "add_region"}
 

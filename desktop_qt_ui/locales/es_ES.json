@@ -1550,6 +1550,7 @@
   "Agent Tool local_ocr": "Consultar OCR local",
   "Agent Tool measure_bubble": "Medir globo",
   "Agent Tool merge_regions": "Unir regiones",
+  "Agent Tool split_region": "Dividir región",
   "Agent Tool skip_region": "Omitir región",
   "Agent Tool set_reading_order": "Fijar orden de lectura",
   "Agent Tool link_regions": "Enlazar como una frase",

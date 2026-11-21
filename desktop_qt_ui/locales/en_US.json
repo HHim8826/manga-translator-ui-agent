@@ -1561,6 +1561,7 @@
   "Agent Tool local_ocr": "Check local OCR",
   "Agent Tool measure_bubble": "Measure bubble",
   "Agent Tool merge_regions": "Merge regions",
+  "Agent Tool split_region": "Split region",
   "Agent Tool skip_region": "Skip region",
   "Agent Tool set_reading_order": "Set reading order",
   "Agent Tool link_regions": "Link as one sentence",

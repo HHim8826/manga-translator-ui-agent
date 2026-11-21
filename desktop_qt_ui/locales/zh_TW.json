@@ -1559,6 +1559,7 @@
   "Agent Tool local_ocr": "查本地 OCR",
   "Agent Tool measure_bubble": "量泡泡大小",
   "Agent Tool merge_regions": "合併區域",
+  "Agent Tool split_region": "拆分區域",
   "Agent Tool skip_region": "略過區域",
   "Agent Tool set_reading_order": "調整閱讀順序",
   "Agent Tool link_regions": "連結成同一句",
