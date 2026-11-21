@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from . import checks, images
-from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, needs_break
+from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
@@ -128,8 +128,28 @@ class AgentSession:
                 source = f"local OCR (weak hint): 「{local}」"
             count = f"{region.line_count} source line(s), " if self.line_breaks else ""
             lines.append(f"#{region.id}: {region.direction}, {x2 - x1}x{y2 - y1}px, font≈{region.font_size}px, "
-                         f"{count}{source}, {region.status()}")
+                         f"{count}{source}, {region.status()}{_apart(region)}")
         return "\n".join(lines) if lines else "(no candidate regions on this page)"
+
+
+def _apart(region: Region) -> str:
+    """For a pending region whose lines stand in groups apart from each other: the groups, so the
+    model can split two bubbles (or an aside beside the main text) that were boxed as one text."""
+    if region.skipped or region.translation:
+        return ""
+    groups = line_groups(region)
+    if len(groups) < 2:
+        return ""
+    polys = region.polygons
+    parts = []
+    for group in groups:
+        points = np.concatenate([polys[i] for i in group])
+        box = ", ".join(str(int(v)) for v in (points[:, 0].min(), points[:, 1].min(),
+                                                 points[:, 0].max(), points[:, 1].max()))
+        parts.append(f"[{box}] ({len(group)} line{'s' if len(group) > 1 else ''})")
+    return (f"; its lines stand apart in {len(groups)} groups: {', '.join(parts)}. Two bubbles, the two parts "
+            "of a joined bubble, or an aside beside the main text: split_region them (box = a group above) and "
+            "translate each part in its place; one block of text, such as a stepped narration box, stays one region")
 
 
 Handler = Callable[[AgentSession, Dict[str, Any]], ToolResult]

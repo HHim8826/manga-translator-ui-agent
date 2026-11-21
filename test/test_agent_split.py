@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from manga_translator.agent.page import PageDoc
+from manga_translator.agent.page import PageDoc, line_groups
 from manga_translator.agent.proofread import Proofreader
 from manga_translator.agent.runner import INVENTED_SCRIPT
 from manga_translator.agent.settings import AgentSettings
@@ -121,11 +121,39 @@ def test_split_undoes_and_takes_cells_of_a_zoom(tmp_path):
     assert doc.get(2).line_count == 1
 
 
+# ch36 p7: a joined bubble, one line in each part, boxed as one text; 46 px apart at 32 px wide
+JOINED_BUBBLE = [(200, 20, 232, 200), (122, 30, 154, 220)]
+
+
+def test_the_candidate_list_names_lines_that_stand_apart(tmp_path):
+    session, tools, _ = _page(tmp_path, JOINED_BUBBLE, "v")
+    listing = session.candidate_lines()
+    assert "its lines stand apart in 2 groups: [200, 20, 232, 200] (1 line), [122, 30, 154, 220] (1 line)" in listing
+    assert "split_region them" in listing
+    # the group's box is a box split_region takes
+    assert tools.execute("split_region", {"id": 1, "box": [122, 30, 154, 220], "reason": "相連泡泡的另一半"}).ok
+    assert "stand apart" not in session.candidate_lines()
+
+
+def test_lines_of_one_paragraph_stay_one_group(tmp_path):
+    session, tools, _ = _page(tmp_path, ASIDE_PAGE, "v")
+    assert line_groups(session.doc.get(1)) == [[0, 1, 2], [3]]  # 10 px apart at 30 px wide; the aside 22 px
+    assert "stand apart in 2 groups: [140, 20, 250, 200] (3 lines), [100, 60, 118, 180] (1 line)" in session.candidate_lines()
+    tools.execute("set_text", {"id": 1, "source_text": "main", "translation": "本文", "category": "narration",
+                               "confidence": 0.9})
+    assert "stand apart" not in session.candidate_lines()  # decided: kept as one region
+    session, _, _ = _page(tmp_path / "b", [(220, 20, 250, 200), (180, 20, 210, 200), (140, 20, 170, 160)], "v")
+    assert line_groups(session.doc.get(1)) == [[0, 1, 2]] and "stand apart" not in session.candidate_lines()
+    session, _, _ = _page(tmp_path / "c", [(40, 30, 280, 70)], "h")
+    assert line_groups(session.doc.get(1)) == [[0]]
+
+
 def test_the_prompts_teach_split_and_the_invented_script_rule(tmp_path):
     runner, client, store, events = _runner(tmp_path, [make_page(tmp_path, "001")], [])
     events.close()
     prompt = runner.system_prompt()
     assert "split_region them apart before saving" in prompt and INVENTED_SCRIPT in prompt
+    assert "the two parts of one joined bubble" in prompt and "Never drop a part" in prompt
     assert "split_region" in [t["function"]["name"] for t in runner.registry.schemas()]
     proof = Proofreader.system_prompt(SimpleNamespace(target_lang="CHT", line_breaks=""))
     assert INVENTED_SCRIPT in proof and "do not add the readings back" in proof

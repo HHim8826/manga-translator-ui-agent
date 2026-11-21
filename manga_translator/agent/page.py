@@ -112,6 +112,40 @@ def paragraph_break(regions: List["Region"]) -> Optional[tuple]:
     return blocks[i][0], blocks[j][0]
 
 
+def line_groups(region: "Region") -> List[List[int]]:
+    """The region's lines (indexes into its polygons) in groups that a blank space between paragraphs
+    separates, in line order: two bubbles, or the two parts of one joined bubble, that the detector
+    boxed as one text. One group when the lines form one block. Ch36 p7: the two lines of a joined
+    bubble stood 46 px apart at 32 px wide, where lines of one paragraph are 2-9 px apart."""
+    polys = region.polygons
+    if len(polys) < 2:
+        return [list(range(len(polys)))]
+    vertical = region.direction.startswith("v")
+    across = (0, 2) if vertical else (1, 3)
+    along = (1, 3) if vertical else (0, 2)
+    boxes = [(p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max()) for p in polys]
+    limit = PARAGRAPH_GAP * float(np.median([b[across[1]] - b[across[0]] for b in boxes]))
+
+    def gap(a, b, axis) -> float:
+        return max(a[axis[0]], b[axis[0]]) - min(a[axis[1]], b[axis[1]])
+
+    group = list(range(len(boxes)))
+
+    def root(i: int) -> int:
+        while group[i] != i:
+            i = group[i]
+        return i
+
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            if gap(boxes[i], boxes[j], across) < limit and gap(boxes[i], boxes[j], along) < limit:
+                group[root(j)] = root(i)
+    groups: Dict[int, List[int]] = {}
+    for i in range(len(boxes)):
+        groups.setdefault(root(i), []).append(i)
+    return sorted(groups.values(), key=lambda g: g[0])
+
+
 @dataclass
 class Region:
     id: int
