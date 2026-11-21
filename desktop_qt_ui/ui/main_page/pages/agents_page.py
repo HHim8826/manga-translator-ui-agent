@@ -28,6 +28,7 @@ from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
     CheckBox,
+    FlowLayout,
     ListWidget,
     ProgressBar,
     PushButton,
@@ -192,6 +193,8 @@ class AgentsPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         self.status_label = BodyLabel(header)
+        self.status_label.setWordWrap(True)  # a long status wraps instead of widening the page
+        self.status_label.setMinimumWidth(120)
         self.context_label = CaptionLabel(header)
         self.context_bar = ProgressBar(header)
         self.context_bar.setRange(0, 1000)
@@ -202,8 +205,11 @@ class AgentsPage(QWidget):
         row.addWidget(self.context_bar)
         head.addLayout(row)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
+        actions_box = QWidget(header)
+        actions = FlowLayout(actions_box, isTight=True)  # the buttons wrap on a narrow page
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setHorizontalSpacing(8)
+        actions.setVerticalSpacing(6)
         self.stop_button = PushButton(header)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._on_stop_clicked)
@@ -219,35 +225,86 @@ class AgentsPage(QWidget):
         self.problems_only = CheckBox(header)
         self.problems_only.stateChanged.connect(lambda *_: self._apply_filter())
         for button in (self.stop_button, self.editor_button, self.output_button, self.open_log_button,
-                       self.live_button):
+                       self.live_button, self.problems_only):
             actions.addWidget(button)
-        actions.addStretch(1)
-        actions.addWidget(self.problems_only)
-        head.addLayout(actions)
+        head.addWidget(actions_box)
         root.addWidget(header)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        self.page_list = ListWidget(splitter)
-        self.page_list.setMinimumWidth(200)
+        # page list | (timeline over the picked row's full text) | preview; on a narrow page the
+        # preview goes under the timeline, so the action and the result stay readable (_fit_width)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.page_list = ListWidget(self.splitter)
+        self.page_list.setMinimumWidth(140)
         self.page_list.currentItemChanged.connect(self._on_page_selected)
-        self.timeline = TreeWidget(splitter)
+        self.work_splitter = QSplitter(Qt.Orientation.Horizontal, self.splitter)
+        timeline_box = QWidget(self.work_splitter)
+        timeline_layout = QVBoxLayout(timeline_box)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setSpacing(6)
+        self.timeline = TreeWidget(timeline_box)
         self.timeline.setColumnCount(5)
         self.timeline.setRootIsDecorated(False)
         self.timeline.setUniformRowHeights(True)
         self.timeline.setWordWrap(False)
-        for column, width in enumerate((96, 56, 150, 280)):
-            self.timeline.setColumnWidth(column, width)
         self.timeline.currentItemChanged.connect(self._on_row_selected)
-        self.preview = PagePreview(self._t, splitter)
-        splitter.addWidget(self.page_list)
-        splitter.addWidget(self.timeline)
-        splitter.addWidget(self.preview)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([250, 560, 420])
-        root.addWidget(splitter, 1)
+        self.row_detail = CaptionLabel(timeline_box)
+        """The picked row in full: its action and result, and the agent's reason, wrapped."""
+        self.row_detail.setWordWrap(True)
+        self.row_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.row_detail.hide()
+        timeline_layout.addWidget(self.timeline, 1)
+        timeline_layout.addWidget(self.row_detail)
+        self.preview = PagePreview(self._t, self.work_splitter)
+        self.preview.setMinimumWidth(220)  # not the width of its stage buttons: the splitter may slim it
+        self.work_splitter.addWidget(timeline_box)
+        self.work_splitter.addWidget(self.preview)
+        self.work_splitter.setStretchFactor(0, 1)
+        self.splitter.addWidget(self.page_list)
+        self.splitter.addWidget(self.work_splitter)
+        self.splitter.setStretchFactor(1, 1)
+        self._mode = ""
+        self._fit_width(1280)
+        root.addWidget(self.splitter, 1)
 
         self.memory_label = CaptionLabel(self)
         root.addWidget(self.memory_label)
+
+    NARROW = 1100
+    """Below this page width the page list and the preview get slimmer and the timeline the rest."""
+    STACKED = 760
+    """Below this the preview goes under the timeline."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt)
+        super().resizeEvent(event)
+        self._fit_width(self.width())
+
+    def _fit_width(self, width: int) -> None:
+        """Wide: page list, timeline and preview side by side. Narrow: the preview under the
+        timeline and a slimmer page list, so a row's action and result fit without scrolling."""
+        mode = "stacked" if width < self.STACKED else "narrow" if width < self.NARROW else "wide"
+        narrow = mode != "wide"
+        self.context_bar.setFixedWidth(110 if narrow else 180)
+        clock = self.timeline.fontMetrics().horizontalAdvance("00:00:00") + 18
+        page = self.timeline.fontMetrics().horizontalAdvance("0000") + 22
+        for column, size in enumerate((clock, page, 130 if narrow else 150, 240 if narrow else 280)):
+            self.timeline.setColumnWidth(column, size)
+        self.timeline.setColumnHidden(0, narrow)  # the time: in the page's tooltip and the picked row's text
+        if mode == self._mode:
+            return
+        self._mode = mode
+        unlimited = 16777215
+        self.page_list.setMaximumWidth(unlimited if mode == "wide" else 150)
+        # a manga page is tall: a slim preview beside the timeline still shows it whole
+        self.preview.setMaximumWidth(260 if mode == "narrow" else unlimited)
+        self.preview.canvas.setMinimumHeight(140 if mode == "stacked" else 260)
+        self.work_splitter.setOrientation(Qt.Orientation.Vertical if mode == "stacked" else Qt.Orientation.Horizontal)
+        if mode == "wide":
+            self.splitter.setSizes([230, max(600, width - 230)])
+            self.work_splitter.setSizes([580, 420])
+        else:
+            rest = max(300, width - 150)
+            self.splitter.setSizes([150, rest])
+            self.work_splitter.setSizes([3, 2] if mode == "stacked" else [rest - 260, 260])
 
     def refresh_texts(self) -> None:
         self.title_label.setText(self._t("Agents"))
@@ -747,6 +804,7 @@ class AgentsPage(QWidget):
 
     def _reset(self) -> None:
         self.timeline.clear()
+        self.row_detail.hide()
         self._pending_rows.clear()
         self._pages = {}
         self._order = []
@@ -790,7 +848,7 @@ class AgentsPage(QWidget):
         clock = ts[11:19] if len(ts) >= 19 else ts
         key = self._key(event)
         row = QTreeWidgetItem([clock, event.get("page") or "", action, detail, reason or ""])
-        row.setToolTip(1, self._label(key) if key else "")
+        row.setToolTip(1, " · ".join(t for t in (clock, self._label(key) if key else "") if t))
         row.setToolTip(3, detail)
         row.setToolTip(4, reason or "")
         row.setData(0, Qt.ItemDataRole.UserRole, key)
@@ -924,9 +982,14 @@ class AgentsPage(QWidget):
         self._update_actions()
 
     def _on_row_selected(self, current, _previous) -> None:
-        """A timeline row: show its page, and its region when it has one."""
+        """A timeline row: its full text under the timeline; its page, and its region when it has one."""
         if current is None:
+            self.row_detail.hide()
             return
+        head = " · ".join(t for t in (current.text(0), current.text(1), current.text(2), current.text(3)) if t)
+        reason = current.text(4)
+        self.row_detail.setText(head + (f"\n{reason}" if reason else ""))
+        self.row_detail.show()
         page = current.data(0, Qt.ItemDataRole.UserRole) or ""
         if page and page in self.preview.pages:
             self.preview.show_page(page, highlight=current.data(0, Qt.ItemDataRole.UserRole + 2))
