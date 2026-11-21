@@ -433,22 +433,30 @@ class ConfigService(QObject):
                             # 尝试用新值创建配置对象来验证
                             try:
                                 AppSettings.model_validate(new_config_dict)
-                            except Exception as validate_err:
-                                # 验证失败，恢复默认值
+                            except Exception:
+                                # 验证失败，先恢复默认值；等其他键都合并后再试一次
+                                # (a value checked against another key, like agent.max_context_tokens
+                                # against compact_threshold_tokens, can be fine once that key is in)
                                 target[key] = old_value
-                                error_keys.append(
-                                    (current_path, value, str(validate_err))
-                                )
-                                self.logger.warning(
-                                    f"Invalid value for configuration key '{current_path}': {value}; using default: {old_value}"
-                                )
+                                retry.append((target, key, value, old_value, current_path))
                     except Exception as e:
                         error_keys.append((current_path, value, str(e)))
                         self.logger.warning(
                             f"Failed to load configuration key '{current_path}': {e}; keeping default value"
                         )
 
+            retry = []
             safe_deep_update(new_config_dict, loaded_data)
+            for target, key, value, old_value, current_path in retry:
+                target[key] = value
+                try:
+                    AppSettings.model_validate(new_config_dict)
+                except Exception as validate_err:
+                    target[key] = old_value
+                    error_keys.append((current_path, value, str(validate_err)))
+                    self.logger.warning(
+                        f"Invalid value for configuration key '{current_path}': {value}; using default: {old_value}"
+                    )
 
             # 最终验证并创建配置对象
             try:

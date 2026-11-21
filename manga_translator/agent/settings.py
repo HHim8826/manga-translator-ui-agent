@@ -1,7 +1,12 @@
 """The ``agent`` config section (design doc, "設定項")."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic_core import PydanticCustomError
+
+MIN_CONTEXT_TOKENS = 32_000
+"""The smallest ``max_context_tokens``: a page's first request (system prompt, tools, glossary,
+memory and the page image) took about 16k tokens in real runs, and working a page adds about 11k."""
 
 
 class AgentSettings(BaseModel):
@@ -13,10 +18,11 @@ class AgentSettings(BaseModel):
     model's own default applies. An endpoint that rejects the field gets requests without it."""
     review_reasoning_effort: str = ""
     """The same for the recall check and the inpaint review."""
-    max_context_tokens: int = 400_000
+    max_context_tokens: int = Field(default=400_000, ge=MIN_CONTEXT_TOKENS)
     """Hard limit of one conversation."""
-    compact_threshold_tokens: int = 300_000
-    """Compact the conversation at the next page boundary once a request is this large."""
+    compact_threshold_tokens: int = Field(default=300_000, ge=1, validate_default=True)
+    """Compact the conversation at the next page boundary once a request is this large. Must be
+    below ``max_context_tokens``, or the conversation would hit the limit before it is compacted."""
     keep_images_last_n_pages: int = Field(default=5, ge=1)
     """Older pages keep their text in the conversation but their images are dropped."""
     max_steps_per_page: int = Field(default=40, ge=1)
@@ -58,9 +64,9 @@ class AgentSettings(BaseModel):
     """After the agents, a region whose font has no glyph for one of its characters gets the most
     similar installed font that has them all. Every font change is checked by rendering the region
     with both fonts; a change that would move or resize the text is not made."""
-    low_confidence_threshold: float = 0.7
+    low_confidence_threshold: float = Field(default=0.7, ge=0, le=1)
     """Pages marked done below this confidence go to the review list."""
-    request_timeout: int = 300
+    request_timeout: int = Field(default=300, ge=1)
     """Seconds per API request."""
     retry_attempts: int = Field(default=3, ge=1)
     """Attempts per API candidate before moving to the next candidate."""
@@ -86,3 +92,12 @@ class AgentSettings(BaseModel):
     ``.bak``, and the last versions in ``agent/backups/``."""
     extra_instructions: str = ""
     """Extra instructions appended to the agent's system prompt."""
+
+    @field_validator("compact_threshold_tokens")
+    @classmethod
+    def _compact_below_limit(cls, value: int, info: ValidationInfo) -> int:
+        limit = info.data.get("max_context_tokens")  # validated before, unless it was invalid
+        if limit is not None and value >= limit:
+            raise PydanticCustomError("compact_not_below_limit",
+                                      "must be below max_context_tokens ({limit})", {"limit": limit})
+        return value

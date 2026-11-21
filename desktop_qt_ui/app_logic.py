@@ -1557,6 +1557,14 @@ class MainAppLogic(QObject):
                 self._t("Error occurred while exporting config:\n{error}", error=str(e))
             )
     
+    def _setting_problem_hints(self, config_dict: dict) -> list:
+        """One hint per value the settings model rejects in ``config_dict`` (core/setting_checks.py)."""
+        from core.setting_checks import describe, problems
+
+        labels = self.get_display_mapping("labels") or {}
+        return [describe(self._t, problem, labels.get(problem.key) or problem.path)
+                for problem in problems(config_dict)]
+
     @pyqtSlot()
     def import_config(self):
         """导入配置（保留现有的敏感信息）"""
@@ -1600,7 +1608,19 @@ class MainAppLogic(QObject):
             
             # 恢复 app 配置
             current_dict['app'] = preserved_app
-            
+
+            # the same check as a number typed on the settings page: nothing is imported from a file
+            # with values the workflow cannot use, and the user sees which and why
+            hints = self._setting_problem_hints(current_dict)
+            if hints:
+                self.logger.warning('Config import refused, invalid values: {hints}'.format(hints="; ".join(hints)))
+                QMessageBox.warning(
+                    None,
+                    self._t("Import Failed"),
+                    self._t("Setting Import Problems", path=file_path) + "\n\n" + "\n".join(f"• {h}" for h in hints)
+                )
+                return
+
             # 更新配置
             from core.config_models import AppSettings
             new_config = AppSettings.model_validate(current_dict)

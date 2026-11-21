@@ -627,6 +627,7 @@ def _sync_setting_widget_values(self, config: dict) -> bool:
                         widget.setCurrentText(str(target or ""))
                 elif hasattr(widget, "setText"):
                     widget.setText("" if value is None else str(value))
+                    _clear_setting_hint(widget)  # it shows the stored value again
             finally:
                 del blocker
 
@@ -1015,18 +1016,70 @@ def _on_upscale_ratio_changed(self, text, full_key):
             except ValueError:
                 self.setting_changed.emit(full_key, None)
 
-def _on_numeric_input_changed(self, text, full_key, value_type):
-    """统一处理数值类型输入框的变化（支持 int 和 float）"""
-    if not text or not text.strip():
-        # 空值 = 使用默认值 (None)
-        self.setting_changed.emit(full_key, None)
-    else:
+def _on_numeric_input_changed(self, text, full_key, value_type, widget=None):
+    """统一处理数值类型输入框的变化（支持 int 和 float）。
+
+    The value is checked against the settings model first (core/setting_checks.py, the same check
+    as a config import): a value it rejects is not saved; the field turns red and says why. An
+    empty field means the default."""
+    from core.setting_checks import check_change, describe
+
+    text = (text or "").strip()
+    value = None
+    if text:
         try:
             value = value_type(text)
-            self.setting_changed.emit(full_key, value)
         except ValueError:
-            # 无效输入 = 使用默认值
-            self.setting_changed.emit(full_key, None)
+            value = text  # the model says what is wrong with it
+    try:
+        config = self.config_service.get_config()
+        problem, value = check_change(config, full_key, value)
+    except Exception:  # never block an edit because the check itself failed
+        problem, config = None, None
+    if problem is not None:
+        hint = describe(self._t, problem, _problem_label(self, full_key, problem))
+        current = _current_value(config, full_key)
+        _show_setting_hint(widget, hint + "\n" + self._t("Setting Hint Kept", value="" if current is None else current))
+        return
+    _clear_setting_hint(widget)
+    if widget is not None and value is not None and text != str(value):
+        widget.setText(str(value))  # an empty field shows the default it stands for
+    self.setting_changed.emit(full_key, value)
+
+
+def _problem_label(self, full_key, problem):
+    path = problem.path if problem.path.count(".") == full_key.count(".") else full_key
+    label = getattr(self, "_translated_setting_label", None)
+    return label(path) if callable(label) else path.rsplit(".", 1)[-1]
+
+
+def _current_value(config, full_key):
+    node = config
+    for part in full_key.split("."):
+        node = getattr(node, part, None)
+    return node
+
+
+def _show_setting_hint(widget, hint):
+    """The field says itself what is wrong: red, the hint as its tooltip, shown right away."""
+    if widget is None:
+        return
+    if hasattr(widget, "setError"):
+        widget.setError(True)
+    widget.setToolTip(hint)
+    widget.setProperty("settingHint", hint)
+    if widget.isVisible():
+        from PyQt6.QtWidgets import QToolTip
+        QToolTip.showText(widget.mapToGlobal(widget.rect().bottomLeft()), hint, widget)
+
+
+def _clear_setting_hint(widget):
+    if widget is None or not widget.property("settingHint"):
+        return
+    if hasattr(widget, "setError"):
+        widget.setError(False)
+    widget.setToolTip("")
+    widget.setProperty("settingHint", None)
 
 def _update_upscale_ratio_options(self, upscaler):
     """当 upscaler 变化时，更新 upscale_ratio 下拉框的选项"""
@@ -1268,7 +1321,7 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
         
         elif isinstance(value, (int, float)):
             widget = QLineEdit(str(value))
-            widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float if isinstance(value, float) else int))
+            widget.editingFinished.connect(lambda k=full_key, w=widget, vt=(float if isinstance(value, float) else int): self._on_numeric_input_changed(w.text(), k, vt, w))
 
         elif value is None and key in _OPTIONAL_INPUT_KEYS:
             # 处理值为 None 的可选参数（数值/字符串）
@@ -1276,16 +1329,16 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
             # 根据参数名设置提示文本
             if key == 'tile_size':
                 widget.setPlaceholderText(self._t("Default: 400"))
-                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, int))
+                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, int, w))
             elif key == 'line_spacing':
                 widget.setPlaceholderText(self._t("Default: 1.0 (multiplier for base spacing)"))
-                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float))
+                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float, w))
             elif key == 'letter_spacing':
                 widget.setPlaceholderText(self._t("Default: 1.0 (multiplier for base spacing)"))
-                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float))
+                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float, w))
             elif key == 'font_size':
                 widget.setPlaceholderText(self._t("Auto"))
-                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, int))
+                widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, int, w))
             elif key == 'ocr_vl_custom_prompt':
                 widget.setMinimumWidth(320)
                 widget.setPlaceholderText("OCR: Extract all Arabic text.")
