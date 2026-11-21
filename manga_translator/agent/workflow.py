@@ -32,6 +32,7 @@ from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
 from .resume import RunGuard, record_saved
+from . import json_guard
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
@@ -45,7 +46,8 @@ MODE_FLAGS = ("template", "save_text", "load_text", "translate_json_only", "gene
               "colorize_only", "upscale_only", "inpaint_only", "replace_translation", "export_from_local_json",
               "skip_txt_import", "ignore_existing_inpainted", "keep_empty_translations")
 RENDERED = ("done", "incomplete")
-"""Page statuses that are typeset; the other pages have no agent translation."""
+"""Page statuses that are typeset; the other pages have no agent translation, or the user saved
+them in the editor during the run (``edited``: theirs, exported from the editor)."""
 
 
 def _image_path(image: Any) -> str:
@@ -115,8 +117,12 @@ class PipelineInpaintBackend:
         from ..inpainting.quality_checks import detect_text_map
         return await detect_text_map(image, self.config.detector, self.translator.device)
 
-    def save(self, image_path: str, image) -> None:
-        self.translator._save_inpainted_image(image_path, image)
+    def save(self, image_path: str, image) -> str:
+        """Writes the reviewed image; raises when it was not written (the translator returns None)."""
+        saved = self.translator._save_inpainted_image(image_path, image)
+        if not saved:
+            raise OSError(f"the inpainted image of {os.path.basename(image_path)} was not saved")
+        return saved
 
 
 async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLog, log) -> dict:
@@ -477,6 +483,10 @@ async def run_agent_workflow(
             preprocessed = await translator.translate_batch(images_with_configs, save_info=save_info)
             batch_progress.stage = None
             preprocess_failed = guard.preprocess_failures(preprocessed)
+            from ..utils.path_manager import find_json_path as _find_json
+
+            for path in paths:  # from here on, a save in the editor makes the page the user's
+                json_guard.note(_find_json(path))
             if preprocess_failed:
                 log("[Agent] Preprocess failed, the agent leaves these pages as they were: " + "; ".join(
                     f"{os.path.basename(p)} ({why})" for p, why in preprocess_failed.items()))
@@ -631,6 +641,8 @@ async def run_agent_workflow(
         for image, cfg in images_with_configs:
             path = _image_path(image)
             status = statuses.get(_key(path)) or "not_reached"
+            if status in RENDERED and json_guard.taken(find_json_path(path)):
+                status = "edited"  # saved in the editor after the agent: the user's
             if status in RENDERED and find_json_path(path):
                 render_items.append((image, cfg))
             else:
@@ -645,6 +657,9 @@ async def run_agent_workflow(
         _report(progress, "render", 0, len(render_items))
         saved_hook = getattr(translator, "on_result_saved", None)
         translator.on_result_saved = render_events.saved
+        guard_hook = getattr(translator, "json_save_guard", None)
+        # a page saved in the editor while it is typeset keeps the user's JSON
+        translator.json_save_guard = lambda image: not json_guard.taken(find_json_path(image))
         try:
             render_events.start([_image_path(image) for image, _ in render_items], left_out)
             # Reviewed pages reuse the inpainted image the review saved; the others
@@ -661,12 +676,17 @@ async def run_agent_workflow(
             raise
         finally:
             translator.on_result_saved = saved_hook
+            translator.json_save_guard = guard_hook
             render_events.close()
         if guard is None:  # what the run leaves, so the next run sees changes made in the editor
             record_saved(paths)
         return results + [_left_out_context(path, status, errors.get(_key(path), ""))
                           for path, status in left_out.items()]
     finally:
+        users = json_guard.users_files()
+        if users:
+            log(f"[Agent] {len(users)} page(s) saved in the editor during the run were left as you saved them: "
+                + ", ".join(sorted(os.path.basename(p) for p in users)))
         if guard is not None:  # also when stopped or failed: unfinished pages get their copies back
             try:
                 restored = guard.finish(getattr(translator, "_delete_original_txt_after_json_translation", None))
@@ -676,6 +696,7 @@ async def run_agent_workflow(
                 if restored:
                     log(f"[Agent] {len(restored)} page(s) not finished: their translations from before the run "
                         f"are back: {', '.join(os.path.basename(p) for p in restored)}")
+        json_guard.reset()
         if isinstance(hooks, list) and batch_progress in hooks:
             hooks.remove(batch_progress)
         if font_task is not None and not font_task.done():  # stopped during the preprocess

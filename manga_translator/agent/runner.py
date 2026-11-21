@@ -27,6 +27,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
+from . import json_guard
 from .events import EventLog
 from .font_styles import styles_text
 from .page import PageDoc
@@ -466,6 +467,15 @@ class AgentRunner:
             self.events.emit("flag", page=page, region=None, flag="step_limit", reason=reason)
         return self._finish_page(doc)
 
+    def _hand_over(self, doc: PageDoc, kind: str, **fields: Any) -> None:
+        """The user saved the page in the editor during the run: their version stays (status
+        ``edited``) and the review list says so."""
+        doc.status = "edited"
+        reason = json_guard.reason(self.target_lang, kind, **fields)
+        # not one of the model's flag types (page.FLAG_TYPES): only the program sets it
+        doc.flags.append({"region": None, "type": "conflict", "reason": reason, "agent": "translator"})
+        self.events.emit("flag", page=doc.stem, region=None, flag="conflict", reason=reason)
+
     def _finish_page(self, doc: PageDoc) -> Dict[str, Any]:
         missing = doc.missing()
         if doc.status == "done" and missing:  # a done page has nothing left without a translation
@@ -474,7 +484,12 @@ class AgentRunner:
                       "(kept as in the original: their text is not erased)")
             doc.flag(None, "other", reason)
             self.events.emit("flag", page=doc.stem, region=None, flag="other", reason=reason)
-        doc.save()
+        if json_guard.taken(doc.json_path):  # saved in the editor while the agent worked on it
+            copy = json_guard.keep_agent_version(doc.json_path, doc.json_data(), self.store.agent_dir)
+            self._hand_over(doc, "during", file=copy)
+        else:
+            doc.save()
+            json_guard.note(doc.json_path)
         self.store.save_sidecar(doc.stem, doc.sidecar())
         self.session.finish_page()
         self.done_pages.append(doc.stem)
@@ -513,6 +528,17 @@ class AgentRunner:
                     self.events.emit("error", page=stem, error=f"cannot open page data: {exc}")
                     outcomes.append({"page": stem, "image": path, "status": "error", "error": str(exc)})
                     continue
+                if json_guard.taken(doc.json_path):  # saved in the editor before the agent got to it
+                    self._hand_over(doc, "later")
+                    outcome = {"page": stem, "image": path, "status": "edited", "confidence": None,
+                               "flags": len(doc.flags), "missing": []}
+                    self.events.emit("page_done", page=stem, status="edited", flags=len(doc.flags), missing=[],
+                                     image=path, boxes=doc.boxes())
+                    outcomes.append(outcome)
+                    if self.on_page_done is not None:
+                        self.on_page_done(outcome)
+                    continue
+                json_guard.note(doc.json_path)
                 try:
                     outcome = await self.run_page(index, doc)
                     outcomes.append(outcome)

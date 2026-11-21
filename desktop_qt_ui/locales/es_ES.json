@@ -1783,5 +1783,8 @@
   "Agent Rerun Translated": "{count} página(s) tienen traducciones que no hizo el AI Agent (otro modo de traducción, o escritas en el editor): {pages}. Volver a ejecutar las reemplaza por las del AI Agent, tras copiar su JSON en manga_translator_work/agent/backups; procesar solo las páginas sin terminar no las toca.",
   "Agent Rerun Stop Note": "Si la ejecución se detiene o falla, las páginas que no terminó vuelven a como estaban antes.",
   "Agent Result Not Run": "No se ejecutó: la página ya estaba terminada",
-  "Agent Error Preprocess": "El preprocesamiento falló; la página queda como estaba antes: {reason}"
+  "Agent Error Preprocess": "El preprocesamiento falló; la página queda como estaba antes: {reason}",
+  "Agent Flag conflict": "guardada en el editor",
+  "Agent Page Edited": "Editada por ti",
+  "Agents Inpaint Skipped Edited": "Guardaste esta página en el editor: la revisión de la restauración no la toca"
 }

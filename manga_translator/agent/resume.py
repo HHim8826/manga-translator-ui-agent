@@ -223,13 +223,24 @@ def _set_prints(store: AgentStore, prints_by_stem: Dict[str, Optional[str]]) -> 
         logger.warning(f"agent: could not save {target}", exc_info=True)
 
 
-def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str]) -> List[str]:
+def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
+           keep_current: bool = False) -> List[str]:
     """Put back the pages of a journal that were not finished, drop the agent's own copies and the
-    journal; returns the restored pages."""
+    journal; returns the restored pages. A page the user saved in the editor during the run stays as
+    they saved it; ``keep_current`` (a run that was killed: nobody knows who wrote what) keeps a copy
+    of each JSON it replaces."""
+    from . import json_guard
+
     restored, prints = [], {}
     for stem, entry in entries.items():
-        if stem in finished:
+        if stem in finished or json_guard.taken(entry.get("json")):
             continue
+        if keep_current and entry.get("json_copy") and os.path.exists(entry.get("json") or ""):
+            try:
+                _copy_to(os.path.join(store.agent_dir, "backups"), entry["json"],
+                         os.path.basename(entry["json"]), time.strftime("%Y%m%d-%H%M%S") + ".interrupted")
+            except OSError:
+                logger.warning(f"agent: could not copy {entry['json']}", exc_info=True)
         try:
             if _restore(entry):
                 restored.append(entry["image"])
@@ -261,7 +272,7 @@ def recover(paths: Sequence[str]) -> List[str]:
         if not isinstance(journal, dict):
             continue
         entries = {stem: e for stem, e in (journal.get("pages") or {}).items() if isinstance(e, dict)}
-        pages = _close(store, entries, ())
+        pages = _close(store, entries, (), keep_current=True)
         if pages:
             logger.warning(f"agent: an earlier run ended without finishing {len(pages)} page(s); "
                            f"their translations from before it are back: {', '.join(map(os.path.basename, pages))}")

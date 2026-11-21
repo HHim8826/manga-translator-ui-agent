@@ -1783,5 +1783,8 @@
   "Agent Rerun Translated": "{count} ページには AI Agent 以外の訳文があります（通常の翻訳、またはエディターで書いたもの）：{pages}。再実行すると AI Agent の翻訳に置き換わります。その前に JSON を manga_translator_work/agent/backups に保存します。未完了のページだけ処理する場合は変更しません。",
   "Agent Rerun Stop Note": "途中で停止または失敗した場合、終わっていないページは実行前の状態に戻ります。",
   "Agent Result Not Run": "実行せず：このページは完了済み",
-  "Agent Error Preprocess": "前処理に失敗したため、このページは実行前のままです：{reason}"
+  "Agent Error Preprocess": "前処理に失敗したため、このページは実行前のままです：{reason}",
+  "Agent Flag conflict": "エディターで保存済み",
+  "Agent Page Edited": "あなたが編集",
+  "Agents Inpaint Skipped Edited": "エディターで保存されたページのため修復レビューをスキップ"
 }

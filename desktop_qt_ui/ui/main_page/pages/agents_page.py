@@ -86,6 +86,7 @@ PAGE_STATE_KEYS = {
     "error": "Agent Page Error",
     "stopped": "Agent Page Stopped",
     "not_reached": "Agent Page Not Reached",
+    "edited": "Agent Page Edited",
 }
 WARN = QColor(214, 140, 0)
 ERROR = QColor(210, 50, 50)
@@ -436,6 +437,8 @@ class AgentsPage(QWidget):
             counts = {"units": event.get("units", 0), "retried": event.get("retried", 0), "flagged": flagged}
             detail = self._t("Agents Inpaint Detail Filled", filled=filled, **counts) if filled else \
                 self._t("Agents Inpaint Detail", **counts)
+            if event.get("skipped") == "edited":  # the user saved the page in the editor meanwhile
+                detail = self._t("Agents Inpaint Skipped Edited")
             row = self._add_row(event, self._t("Agents Inpaint"), detail, "", problem=flagged > 0)
             if flagged:
                 self._paint(row, WARN)

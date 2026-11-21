@@ -539,13 +539,17 @@ class PageDoc:
         ok, png = cv2.imencode(".png", out)
         return base64.b64encode(png.tobytes()).decode("ascii") if ok else None
 
-    def save(self) -> None:
+    def json_data(self) -> dict:
+        """The page's JSON as ``save`` writes it."""
         data = dict(self.page_data)
         data["regions"] = self.to_json_regions()
         new_mask = self.output_mask()
         if new_mask is not None:
             data["mask_raw"] = new_mask
-        write_json_atomic(self.json_path, {self.key: data})
+        return {self.key: data}
+
+    def save(self) -> None:
+        write_json_atomic(self.json_path, self.json_data())
 
     def sidecar(self) -> dict:
         return {

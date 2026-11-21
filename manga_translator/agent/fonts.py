@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tup
 
 import numpy as np
 
+from . import json_guard
 from .store import write_json_atomic
 
 logger = logging.getLogger("manga_translator.agent")
@@ -864,8 +865,8 @@ class FontService:
 
         json_path = find_json_path(image_path)
         stem = os.path.splitext(os.path.basename(image_path))[0]
-        if not json_path or not os.path.exists(json_path):
-            return {"page": stem, "changed": 0, "unfixed": 0}
+        if not json_path or not os.path.exists(json_path) or json_guard.taken(json_path):
+            return {"page": stem, "changed": 0, "unfixed": 0}  # no JSON, or the user saved it during the run
         with open(json_path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
         entry = raw[next(iter(raw))]
@@ -918,6 +919,8 @@ class FontService:
                               "reason": _human(self.target_lang, "missing", font=current, chars=missing)})
         if hasattr(self.backend, "done"):
             self.backend.done(image_path)
+        if json_guard.taken(json_path):  # saved in the editor during the check
+            return {"page": stem, "changed": 0, "unfixed": 0}
         if new_fonts or new_texts:
             with open(json_path, "r", encoding="utf-8") as fh:  # re-read: write only these fields
                 raw = json.load(fh)
@@ -930,6 +933,7 @@ class FontService:
                 if index < len(saved):
                     saved[index].update(fields)
             write_json_atomic(json_path, raw)
+            json_guard.note(json_path)
         if changes or borrowed or unfixed or kept:
             side = store.load_sidecar(stem) or {}
             side.pop("version", None)

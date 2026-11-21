@@ -15,7 +15,7 @@ Translate = Callable[..., str]
 
 SKIP_KINDS = ("sign", "sfx", "credit", "not_text", "duplicate", "other")
 FLAG_KINDS = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "missing_text", "low_confidence",
-              "step_limit", "error", "other")
+              "step_limit", "error", "other", "conflict")
 ISSUES = ("residual_text", "broken_lines")
 CHECKS = ("untranslated_kana", "glossary_mismatch", "character_mismatch", "empty_source", "overflow",
           "needs_second_read", "missing_line_break")

@@ -355,6 +355,9 @@ class MangaTranslator:
         # Called with the context after each translated image is saved (the agent workflow's
         # render step uses it to tell the Agents page where each result is).
         self.on_result_saved = None
+        # The agent workflow's render: image path -> False when the page's JSON must not be written
+        # again (the user saved it in the editor during the run).
+        self.json_save_guard = None
         self._add_logger_hook()
         
         # 取消检查回调（用于Web服务器等场景）
@@ -742,6 +745,16 @@ class MangaTranslator:
 
     def _save_text_to_file(self, image_path: str, ctx: Context, config: Config = None) -> bool:
         """保存/回写文本区域到JSON（含translation、font_size等渲染后字段），使用新的目录结构"""
+        guard = getattr(self, "json_save_guard", None)
+        if guard is not None and not self.text_output_file:
+            try:
+                keep = not guard(image_path)
+            except Exception as guard_err:
+                logger.debug(f"json_save_guard failed: {guard_err}")
+                keep = False
+            if keep:
+                logger.info(f"JSON kept as the user saved it in the editor: {os.path.basename(image_path)}")
+                return True
         text_output_file = self.text_output_file
         if not text_output_file:
             # 使用新的路径管理器生成JSON路径

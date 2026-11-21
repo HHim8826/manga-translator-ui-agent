@@ -15,7 +15,7 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import checks, images
+from . import checks, images, json_guard
 from .events import EventLog
 from .page import BREAK, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
@@ -115,6 +115,9 @@ class ProofPage:
     def write(self, rid: int, translation: str) -> None:
         """Re-read the JSON and change only this region's translation (the inpaint review may have
         written the mask in the meantime)."""
+        if json_guard.taken(self.json_path):
+            raise ProofError(f"page {self.stem} was saved in the editor during the run: it is the user's now, "
+                             f"leave it")
         with open(self.json_path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
         data = raw[self.key]
@@ -124,6 +127,7 @@ class ProofPage:
         entry["translation_raw"] = translation
         entry.pop("translation_rich", None)
         write_json_atomic(self.json_path, raw)
+        json_guard.note(self.json_path)
         self.regions[rid].data.update(translation=translation, translation_raw=translation)
 
 
@@ -265,6 +269,10 @@ class Proofreader:
 
         pages: Dict[str, ProofPage] = {}
         for path in image_paths:
+            from ..utils.path_manager import find_json_path
+
+            if json_guard.taken(find_json_path(path)):  # saved in the editor during the run: the user's
+                continue
             try:
                 page = ProofPage(path)
             except Exception as exc:

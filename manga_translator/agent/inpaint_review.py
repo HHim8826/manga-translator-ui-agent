@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw
 from . import images
 from .events import EventLog
 from .inpaint import FILL, Attempt, InpaintBackend, InpaintError, InpaintPage, Unit, decode_mask, encode_mask
+from . import json_guard
 from .page import PageDoc
 from .settings import AgentSettings
 from .store import AgentStore, write_json_atomic
@@ -495,6 +496,8 @@ class InpaintReviewer:
 
         doc = PageDoc.load(image_path)
         stem = doc.stem
+        if json_guard.taken(doc.json_path):  # saved in the editor during the run: the user's
+            return {"page": stem, "image": image_path, "status": "skipped", "reason": "saved in the editor"}
         encoded = doc.page_data.get("mask_raw")
         mask = decode_mask(encoded) if isinstance(encoded, str) else None
         methods = list(self.backend.methods())
@@ -562,15 +565,22 @@ class InpaintReviewer:
     def _save(self, doc: PageDoc, page: InpaintPage, session: ReviewSession,
               usage: Dict[str, int]) -> Dict[str, Any]:
         stem = doc.stem
+        if json_guard.taken(doc.json_path):  # saved in the editor during the review: the user's
+            self.events.emit("inpaint_done", page=stem, agent="inpaint", status="done", skipped="edited",
+                             units=len(page.units), retried=0, filled=0, flagged=0, image=doc.image_path)
+            return {"page": stem, "image": doc.image_path, "status": "skipped", "reason": "saved in the editor"}
         composite = page.composite()
+        saved = None
         if self.save_image is not None:
-            self.save_image(doc.image_path, composite)
+            # raises when the image was not written: the render must not reuse an older one
+            saved = self.save_image(doc.image_path, composite)
         with open(doc.json_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         entry = data[doc.key]
         entry["mask_raw"] = encode_mask(page.final_mask())
         entry["mask_is_refined"] = True
         write_json_atomic(doc.json_path, data)
+        json_guard.note(doc.json_path)
 
         candidates = page.save_candidates(self.store.candidates_dir(stem))
         side = self.store.load_sidecar(stem) or {}
@@ -595,7 +605,7 @@ class InpaintReviewer:
         inpainted = None
         if self.save_image is not None:  # where the Agents page preview finds the result
             from ..utils.path_manager import find_inpainted_path
-            inpainted = find_inpainted_path(doc.image_path)
+            inpainted = saved if isinstance(saved, str) and saved else find_inpainted_path(doc.image_path)
         self.events.emit("inpaint_done", page=stem, agent="inpaint", status=side.get("status") or "done",
                          units=len(page.units), retried=retried, filled=filled, flagged=flagged, score=score,
                          confidence=confidence, flags=len(flags), steps=session.steps, usage=usage,

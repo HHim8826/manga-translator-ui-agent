@@ -27,7 +27,7 @@ def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
     others = [s for s in states if not s.status and getattr(s, "translated", False)]
     if not seen and not others:
         return None
-    done = [s for s in seen if s.status == "done"]
+    done = [s for s in seen if s.status in ("done", "edited")]  # edited: the user saved it during a run
     edited = [s for s in seen if s.edited]
     separator = t("Agent Result Separator")
     parts = []

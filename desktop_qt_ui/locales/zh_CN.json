@@ -1793,5 +1793,8 @@
   "Agent Rerun Translated": "有 {count} 页已经有不是 AI Agent 做的译文（普通翻译，或在编辑器里写的）：{pages}。重跑会换成 AI Agent 的翻译，换之前会把它们的 JSON 备份到 manga_translator_work/agent/backups；只处理没完成的页时不会动它们。",
   "Agent Rerun Stop Note": "中途停止或失败时，还没做完的页会还原成运行前的样子。",
   "Agent Result Not Run": "没执行：这页已经标成完成",
-  "Agent Error Preprocess": "前处理失败，这页保持运行前的样子：{reason}"
+  "Agent Error Preprocess": "前处理失败，这页保持运行前的样子：{reason}",
+  "Agent Flag conflict": "你在编辑器存过",
+  "Agent Page Edited": "你改过",
+  "Agents Inpaint Skipped Edited": "你在编辑器存了这页，跳过修复审查"
 }
