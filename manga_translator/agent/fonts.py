@@ -803,6 +803,18 @@ def borrow_glyphs(region: dict, face: "FontFace", fallback: str) -> Optional[Dic
     return fields
 
 
+def _where(region: dict) -> Dict[str, Any]:
+    """Where a JSON region is (box, center) and its text, so the editor finds it again after the user
+    reorders the boxes (review flags numbered in JSON order)."""
+    from .page import Region
+
+    try:
+        found = Region(id=0, data=region)
+        return {"center": found.center, "bbox": found.bbox, "text": str(region.get("translation") or "")}
+    except Exception:
+        return {}
+
+
 class FontService:
     def __init__(self, catalog: FontCatalog, backend, default_font: str, target_lang: str):
         self.catalog = catalog
@@ -893,7 +905,8 @@ class FontService:
                     changes.append({"region": index + 1, "from": current, "to": self.default_font,
                                     "reason": "layout", "detail": why})
                     flags.append({"region": index + 1, "type": "layout", "agent": "fonts", "reason": _human(
-                        self.target_lang, "layout", font=_font_label(current), default=self.default_font)})
+                        self.target_lang, "layout", font=_font_label(current), default=self.default_font),
+                        **_where(region)})
                     current = self.default_font
             if current != original:
                 new_fonts[index] = current
@@ -916,7 +929,8 @@ class FontService:
             else:  # only missing letters go on the review list
                 unfixed.append({"region": index + 1, "font": current, "missing": missing, "tried": []})
                 flags.append({"region": index + 1, "type": "layout", "agent": "fonts",
-                              "reason": _human(self.target_lang, "missing", font=current, chars=missing)})
+                              "reason": _human(self.target_lang, "missing", font=current, chars=missing),
+                              **_where(region)})
         if hasattr(self.backend, "done"):
             self.backend.done(image_path)
         if json_guard.taken(json_path):  # saved in the editor during the check
@@ -942,7 +956,7 @@ class FontService:
             store.save_sidecar(stem, side)
             for flag in flags:
                 events.emit("flag", page=stem, agent="fonts", region=flag["region"], flag="layout",
-                            reason=flag["reason"], source="check")
+                            reason=flag["reason"], source="check", bbox=flag.get("bbox"))
         if changes or borrowed or unfixed:
             keys = ("region", "from", "to", "font", "fallback", "reason", "missing")
             events.emit("fonts", page=stem, agent="fonts", changed=len(changes), borrowed=len(borrowed),

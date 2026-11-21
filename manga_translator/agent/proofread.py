@@ -131,6 +131,21 @@ class ProofPage:
         self.regions[rid].data.update(translation=translation, translation_raw=translation)
 
 
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".jxl")
+
+
+def page_key(name: Any, pages) -> Optional[str]:
+    """The page a name the model gave refers to: the name as listed (``v1.2``), else the name with
+    an image extension (``v1.2.png``); None when there is no such page."""
+    text = str(name or "").strip()
+    if text in pages:
+        return text
+    stem, ext = os.path.splitext(text)
+    if ext.lower() in IMAGE_EXTENSIONS and stem in pages:
+        return stem
+    return None
+
+
 def _one_line(text: str) -> str:
     return " ".join(str(text).replace(BREAK, " ").split())
 
@@ -148,10 +163,11 @@ class ProofSession:
         self.flags: List[Dict[str, Any]] = []
         self.note = ""
         self.finished = False
+        self.steps = 0
 
     def page(self, name: Any) -> ProofPage:
-        key = os.path.splitext(str(name or "").strip())[0]
-        if key not in self.pages:
+        key = page_key(name, self.pages)
+        if key is None:
             raise ProofError(f"there is no page {name!r}; pages: {', '.join(self.pages)}")
         return self.pages[key]
 
@@ -207,13 +223,16 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
     if name == "flag_for_review":
         page = s.page(args.get("page"))
         rid = args.get("id")
+        where = {}
         if rid is not None:
-            rid = s.region(page, rid).id
+            region = s.region(page, rid)
+            rid = region.id
+            where = {"center": region.center, "bbox": region.bbox, "text": page.translation(region)}
         reason = str(args.get("reason") or "").strip()
         if not reason:
             raise ProofError("reason is required")
         s.flags.append({"page": page.stem, "region": rid, "type": "uncertain_translation", "reason": reason,
-                        "agent": "proofread"})
+                        "agent": "proofread", **where})
         return "Added to the review list.", f"{page.stem}" + (f" #{rid}" if rid else ""), []
     if name == "finish_proofread":
         s.note = str(args.get("note") or "")
@@ -265,7 +284,7 @@ class Proofreader:
         return "\n\n".join(parts)
 
     async def run(self, image_paths: Sequence[str]) -> Dict[str, Any]:
-        from .runner import AgentStopped, _compact_args
+        from .runner import _compact_args
 
         pages: Dict[str, ProofPage] = {}
         for path in image_paths:
@@ -288,8 +307,30 @@ class Proofreader:
         self.events.emit("proofread_start", agent="proofread", pages=len(pages), regions=regions)
         messages: List[dict] = [{"role": "system", "content": self.system_prompt()},
                                 {"role": "user", "content": self.first_message(pages)}]
-        steps = 0
+        try:
+            await self._converse(session, messages, _compact_args)
+        finally:
+            # each revision is already in the JSON: its old text, reason and the flags go to the
+            # sidecar too, also when a request failed or the run was stopped
+            try:
+                self._save(session, session.steps)
+            except Exception:
+                logger.exception("saving the proofreading record failed")
+        steps = session.steps
+        by_page = {}
+        for item in session.revisions:
+            by_page[item["page"]] = by_page.get(item["page"], 0) + 1
+        self.events.emit("proofread_done", agent="proofread", revised=len(session.revisions),
+                         flagged=len(session.flags), pages=by_page, finished=session.finished, steps=steps,
+                         note=session.note, usage=dict(self.totals))
+        return {"status": "done" if session.finished else "incomplete", "revised": len(session.revisions),
+                "flagged": len(session.flags), "steps": steps}
+
+    async def _converse(self, session: ProofSession, messages: List[dict], _compact_args) -> None:
+        from .runner import AgentStopped
+
         for steps in range(1, self.settings.proofread_steps + 1):
+            session.steps = steps
             if self.should_stop():
                 raise AgentStopped()
             reply = await self.client.complete(messages, TOOLS, "required", effort=self.settings.reasoning_effort)
@@ -314,7 +355,7 @@ class Proofreader:
                     args, error = {}, str(exc)
                 else:
                     error = ""
-                page_name = os.path.splitext(str(args.get("page") or ""))[0] or None
+                page_name = page_key(args.get("page"), session.pages) or str(args.get("page") or "") or None
                 self.events.emit("tool_call", page=page_name, agent="proofread", tool=call.name,
                                  args=_compact_args(args), reason=str(args.get("reason") or ""))
                 pictures: List[str] = []
@@ -329,7 +370,7 @@ class Proofreader:
                 if ok and call.name == "flag_for_review" and session.flags:
                     flag = session.flags[-1]
                     self.events.emit("flag", page=flag["page"], agent="proofread", region=flag["region"],
-                                     flag=flag["type"], reason=flag["reason"])
+                                     flag=flag["type"], reason=flag["reason"], bbox=flag.get("bbox"))
                 self.events.emit("tool_result", page=page_name, agent="proofread", tool=call.name, ok=ok,
                                  summary=summary, images=len(pictures))
                 content: Any = text
@@ -340,15 +381,6 @@ class Proofreader:
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
             if session.finished:
                 break
-        self._save(session, steps)
-        by_page = {}
-        for item in session.revisions:
-            by_page[item["page"]] = by_page.get(item["page"], 0) + 1
-        self.events.emit("proofread_done", agent="proofread", revised=len(session.revisions),
-                         flagged=len(session.flags), pages=by_page, finished=session.finished, steps=steps,
-                         note=session.note, usage=dict(self.totals))
-        return {"status": "done" if session.finished else "incomplete", "revised": len(session.revisions),
-                "flagged": len(session.flags), "steps": steps}
 
     def _save(self, session: ProofSession, steps: int) -> None:
         """Sidecar per page: the revisions (old and new text, reason) and the review flags."""

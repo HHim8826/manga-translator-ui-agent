@@ -17,13 +17,17 @@ from __future__ import annotations
 import copy
 import io
 import json
+import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .store import AgentStore, write_json_atomic
+from .store import AgentStore
+
+logger = logging.getLogger("manga_translator.agent")
 
 Box = List[float]
 
@@ -148,7 +152,14 @@ def load(image_path: str) -> Optional[PageReview]:
             x1, y1, x2, y2 = units[str(number)].box
             flag.bbox, flag.center = [x1, y1, x2, y2], [(x1 + x2) / 2, (y1 + y2) / 2]
         elif number is not None and agent in ("proofread", "fonts"):
-            flag.json_index = number - 1
+            box = _box(raw.get("bbox"))
+            if box is not None:  # where the region was: found again after the user reorders the boxes
+                center = raw.get("center")
+                flag.bbox = box
+                flag.center = list(center) if isinstance(center, (list, tuple)) and len(center) == 2 else \
+                    [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
+            else:  # flags from before they kept the position: the JSON order at the time
+                flag.json_index = number - 1
         flags.append(flag)
     skipped = []
     for region in side.get("regions") or []:
@@ -211,11 +222,12 @@ def match_region(center: Optional[Sequence[float]], bbox: Optional[Box], regions
 
 
 def flag_region(flag: Flag, regions: Sequence[dict]) -> Optional[int]:
-    """The editor region a flag is about, if any."""
+    """The editor region a flag is about, if any: the box at the flag's position (None when it was
+    deleted or moved away), or for old proofreading and font flags the JSON order."""
+    if flag.agent != "inpaint" and flag.bbox is not None:
+        return match_region(flag.center, flag.bbox, regions)
     if flag.json_index is not None:
         return flag.json_index if 0 <= flag.json_index < len(regions) else None
-    if flag.agent == "translator":
-        return match_region(flag.center, flag.bbox, regions)
     return None
 
 
@@ -300,9 +312,11 @@ def use_attempt(review: PageReview, unit_id: str, n: int) -> str:
     view = image[y1:y2, x1:x2]
     view[old_mask] = original[y1:y2, x1:x2][old_mask]  # what the chosen attempt replaced goes back
     view[new_mask] = patch[new_mask]
-    Image.fromarray(image).save(target)
 
+    # everything is worked out first; then the image, the JSON mask and the sidecar's choice are
+    # replaced together, and put back as they were when one of them cannot be written
     json_path = find_json_path(review.image_path)
+    data = None
     if json_path and os.path.exists(json_path):
         with open(json_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -313,14 +327,61 @@ def use_attempt(review: PageReview, unit_id: str, n: int) -> str:
                     full = mask > 0
                     full[y1:y2, x1:x2] = (full[y1:y2, x1:x2] & ~old_mask) | new_mask
                     entry["mask_raw"] = encode_mask(full)
-        write_json_atomic(json_path, data)
-
     with open(review.sidecar_path, "r", encoding="utf-8") as fh:
         side = json.load(fh)
     saved = ((side.get("inpaint") or {}).get("units") or {}).get(str(unit_id))
     if isinstance(saved, dict):
         saved["chosen"] = n
         saved["picked_in_editor"] = True
-    write_json_atomic(review.sidecar_path, side)
+
+    staged: List[tuple] = []  # (temporary file, target)
+    try:
+        staged.append((_stage_image(target, image), target))
+        if data is not None:
+            staged.append((_stage_json(json_path, data), json_path))
+        staged.append((_stage_json(review.sidecar_path, side), review.sidecar_path))
+        _commit(staged)
+    finally:
+        for tmp, _ in staged:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     unit.chosen = n
     return target
+
+
+def _stage_image(target: str, image: np.ndarray) -> str:
+    from PIL import Image
+
+    folder, name = os.path.split(target)
+    tmp = os.path.join(folder, f".tmp_{os.getpid()}_{name}")  # same extension: same image format
+    Image.fromarray(image).save(tmp)
+    return tmp
+
+
+def _stage_json(target: str, data: Any) -> str:
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=os.path.dirname(target))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return tmp
+
+
+def _commit(staged: Sequence[tuple]) -> None:
+    """Move each staged file over its target. When one move fails, the targets already replaced get
+    their old content back and the error is raised."""
+    old = []
+    for _, target in staged:
+        with open(target, "rb") as fh:
+            old.append(fh.read())
+    done = 0
+    try:
+        for tmp, target in staged:
+            os.replace(tmp, target)
+            done += 1
+    except BaseException:
+        for (_, target), content in zip(staged[:done], old[:done]):
+            try:
+                with open(target, "wb") as fh:
+                    fh.write(content)
+            except OSError:
+                logger.exception(f"could not put {target} back")
+        raise

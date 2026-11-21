@@ -228,7 +228,10 @@ class ScriptedClient:
             return _calls(("finish_review", {}))
         if tools and tools[0]["function"]["name"] == "view_page":  # proofreading: scripted or nothing to change
             self.proof_requests.append(messages)
-            return self.proof.pop(0) if self.proof else _calls(("finish_proofread", {}))
+            step = self.proof.pop(0) if self.proof else _calls(("finish_proofread", {}))
+            if isinstance(step, BaseException):
+                raise step
+            return step
         if tools and tools[0]["function"]["name"] == "report_unboxed_text":
             self.recall_requests.append(messages)
             items = self.recall.pop(0) if self.recall else []

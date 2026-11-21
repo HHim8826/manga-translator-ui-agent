@@ -364,3 +364,52 @@ def test_the_editor_centers_restores_and_switches_attempts(app, tmp_path):  # no
     assert store.load_sidecar("001")["inpaint"]["units"]["1"]["chosen"] == 2
     EditorView._use_agent_attempt(view, "1", 7)
     assert toasts[-1][0] == "show_error" and len(loaded) == 2
+
+
+# --- review 14: proofreading and font flags after a reorder --------------------------------------
+def test_proofreading_and_font_flags_find_their_box_after_a_reorder(tmp_path):
+    image_path, _, store, regions = _agent_page(tmp_path)
+    side = store.load_sidecar("001")
+    side["review_flags"] = [
+        {"region": 2, "type": "uncertain_translation", "reason": "pun", "agent": "proofread",
+         "center": [120.0, 70.0], "bbox": [100, 20, 140, 120], "text": "乙"},
+        {"region": 1, "type": "layout", "reason": "moved", "agent": "fonts", "bbox": [20, 20, 60, 120]}]
+    store.save_sidecar("001", side)
+    proofread, fonts = review.load(image_path).flags
+    assert proofread.json_index is None and proofread.bbox == [100, 20, 140, 120]
+    assert fonts.center == [40.0, 70.0]  # worked out from the box
+    assert review.flag_region(proofread, regions) == 1 and review.flag_region(fonts, regions) == 0
+    swapped = [regions[1], regions[0]]  # the user moved the second box to the front
+    assert review.flag_region(proofread, swapped) == 0 and review.flag_region(fonts, swapped) == 1
+    assert review.flag_region(proofread, [regions[0]]) is None  # deleted: not found, not another box
+
+
+# --- review 11: switching an attempt is all or nothing -------------------------------------------
+def test_an_attempt_switch_that_cannot_be_written_leaves_every_file_as_it_was(tmp_path, monkeypatch):
+    import pytest
+
+    image_path, json_path, store, _ = _agent_page(tmp_path)
+    _write_attempts(store)
+    target = get_inpainted_path(image_path)
+    cv2.imwrite(target, _gray(128, (240, 320)))
+    sidecar = store.sidecar_path("001")
+    before = {path: open(path, "rb").read() for path in (target, json_path, sidecar)}
+    page = review.load(image_path)
+    replace = os.replace
+
+    def failing(src, dst):
+        if os.path.abspath(dst) == os.path.abspath(sidecar):
+            raise PermissionError("the sidecar is open in another program")
+        replace(src, dst)
+
+    monkeypatch.setattr(review.os, "replace", failing)
+    with pytest.raises(PermissionError):
+        review.use_attempt(page, "1", 2)
+    monkeypatch.undo()
+    assert {path: open(path, "rb").read() for path in before} == before  # image and JSON put back
+    assert page.units[0].chosen == 1
+    leftovers = [name for folder in {os.path.dirname(p) for p in before} for name in os.listdir(folder)
+                 if name.startswith(".tmp_")]
+    assert leftovers == []
+    assert review.use_attempt(page, "1", 2) == target  # works once the file can be written
+    assert store.load_sidecar("001")["inpaint"]["units"]["1"]["chosen"] == 2

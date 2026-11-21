@@ -139,6 +139,7 @@ def test_letters_that_no_font_has_go_on_the_review_list(tmp_path, catalog, verti
     side = store.load_sidecar("001")
     assert side["fonts"]["unfixed"][0]["missing"] == "\U00020000"
     assert side["review_flags"][-1]["type"] == "layout" and "\U00020000" in side["review_flags"][-1]["reason"]
+    assert side["review_flags"][-1]["bbox"] == [20, 20, 60, 120]  # found again after a reorder
     assert any(e["type"] == "flag" and e.get("agent") == "fonts" for e in read_events(events.path))
 
 
@@ -501,3 +502,11 @@ def test_borrowed_glyphs_keep_the_rich_text_and_its_fonts(vertical_rules):
     assert _runs(borrow_glyphs(tall, face, "Yu Mincho")) == [[("好", None), ("︒", "Yu Mincho")]]
     wide = dict(tall, lines=[[[0, 0], [200, 0], [200, 30], [0, 30]]])
     assert borrow_glyphs(wide, face, "Yu Mincho") is None
+
+
+def test_a_font_flag_keeps_where_its_box_is():
+    from manga_translator.agent.fonts import _where
+
+    region = {"lines": [[[20, 20], [60, 20], [60, 120], [20, 120]]], "translation": "譯"}
+    assert _where(region) == {"center": [40.0, 70.0], "bbox": [20, 20, 60, 120], "text": "譯"}
+    assert _where({"lines": "broken"}) == {}
