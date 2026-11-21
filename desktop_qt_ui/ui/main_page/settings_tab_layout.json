@@ -167,9 +167,11 @@
         "agent.recall_pass",
         "agent.use_work_prompt",
         "agent.update_work_glossary",
+        "agent.share_memory",
         "agent.proofread",
         "agent.fix_missing_glyphs",
         "agent.choose_fonts",
+        "agent.show_page_on_start",
         {
           "kind": "divider",
           "title": "Advanced"
@@ -178,6 +180,7 @@
         "agent.reasoning_effort",
         "agent.review_reasoning_effort",
         "agent.extra_instructions",
+        "agent.memory_dir",
         "agent.max_context_tokens",
         "agent.compact_threshold_tokens",
         "agent.keep_images_last_n_pages",

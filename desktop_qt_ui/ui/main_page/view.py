@@ -173,6 +173,9 @@ class MainView(QObject):
 
         # Connect signals for button state management
         self.controller.state_manager.is_translating_changed.connect(self.on_translation_state_changed, type=Qt.ConnectionType.QueuedConnection)
+        self.controller.state_manager.is_translating_changed.connect(self.agents_page.set_task_running,
+                                                                     type=Qt.ConnectionType.QueuedConnection)
+        self.agents_page.stop_requested.connect(self.controller.stop_task)
         self.controller.state_manager.current_config_changed.connect(self.update_start_button_text)
         QTimer.singleShot(100, self.update_start_button_text) # Set initial text
         QTimer.singleShot(100, self._sync_workflow_mode_from_config) # Sync workflow mode dropdown

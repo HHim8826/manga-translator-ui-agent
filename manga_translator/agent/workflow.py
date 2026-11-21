@@ -36,7 +36,8 @@ from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
 from .work_glossary import update_work_glossary
-from .work_prompt import load_work_prompt
+from .work_memory import bootstrap, save_chapter, seed_chapter, work_memory_dir
+from .work_prompt import load_work_prompt, resolve_path
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -181,6 +182,58 @@ def _save_work_styles(path: str, memory, work_dir: str, events: EventLog, log) -
         events.emit("font_styles", agent="memory", file=os.path.basename(path),
                     styles={name: memory.font_styles[name]["font"] for name in saved})
         log(f"[Agent] Font styles saved for the work: {', '.join(saved)}")
+
+
+def _work_memory(settings: AgentSettings, prompt_path: str, log) -> Tuple[str, str]:
+    """The work's memory folder and its prompt file's name (``work_memory.py``); empty when the
+    chapters do not share one."""
+    if settings.memory_dir:
+        log(f"[Agent] Memory: {settings.memory_dir} (every chapter)")
+        return "", ""
+    if not settings.share_memory:
+        log("[Agent] Memory: each chapter its own")
+        return "", ""
+    resolved = resolve_path(prompt_path) if prompt_path else None
+    if not resolved:
+        log("[Agent] Memory: each chapter its own (a work prompt file lets the chapters share it)")
+        return "", ""
+    folder = work_memory_dir(resolved)
+    log(f"[Agent] Memory shared by the work's chapters: {folder}")
+    return folder, os.path.basename(resolved)
+
+
+def _seed_memory(folder: str, prompt_name: str, store: AgentStore, log) -> Optional[dict]:
+    """A chapter's first run starts with what the earlier chapters learned; a failure is logged."""
+    chapter = os.path.basename(os.path.dirname(os.path.abspath(store.work_dir)))
+    try:
+        earlier = bootstrap(folder, store.work_dir, prompt_name)
+        if earlier:
+            log(f"[Agent] Work memory put together from {len(earlier)} earlier chapter(s): {', '.join(earlier)}")
+        seeded = seed_chapter(store.memory(), folder)
+    except Exception as exc:
+        logger.exception("reading the work's memory failed")
+        log(f"[Agent] {chapter}: the work's memory was not read ({type(exc).__name__}: {exc})")
+        return None
+    if not seeded:
+        return None
+    log(f"[Agent] {chapter}: starts with the work's memory: {seeded['glossary']} term(s), "
+        f"{seeded['characters']} character(s), story summary of {seeded['story']} characters")
+    return {**seeded, "from": earlier}
+
+
+def _save_memory(folder: str, memory, work_dir: str, events: EventLog, log) -> None:
+    """Merge the chapter's memory into the work's; a failure is logged and the chapter goes on."""
+    chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
+    try:
+        changes = save_chapter(memory, folder, chapter)
+    except Exception as exc:
+        logger.exception("saving the work's memory failed")
+        events.emit("error", agent="memory", error=f"the work's memory was not saved: {type(exc).__name__}: "
+                                                   f"{str(exc)[:300]}")
+        return
+    events.emit("work_memory", agent="memory", action="saved", folder=folder, **changes)
+    log(f"[Agent] Work memory: {changes['glossary_added']} new term(s), {changes['glossary_updated']} changed, "
+        f"{changes['characters_added']} new character(s)")
 
 
 async def _check_fonts(service, pages: List[str], store: AgentStore, events: EventLog, settings: AgentSettings,
@@ -418,11 +471,12 @@ async def run_agent_workflow(
             f"reasoning effort {settings.reasoning_effort or 'default'} "
             f"(recall and inpaint review: {settings.review_reasoning_effort or 'default'})")
         work_prompt = None
+        prompt_path = getattr(getattr(config, "translator", None), "high_quality_prompt_path", None) or ""
         if settings.use_work_prompt:
-            prompt_path = getattr(getattr(config, "translator", None), "high_quality_prompt_path", None) or ""
             work_prompt = load_work_prompt(prompt_path, language_name(target_lang))
             if work_prompt is not None:
                 log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
+        work_memory, prompt_name = _work_memory(settings, prompt_path, log)
         font_service = fonts if font_task is None else await font_task
         breaks = line_break_rules(config)
         if breaks:
@@ -435,6 +489,7 @@ async def run_agent_workflow(
         batch_id = f"b{uuid.uuid4().hex[:12]}"  # the chapters of this run, for the AI Agent page
         for work_dir, pages in group_by_chapter(paths):
             store = AgentStore(work_dir, settings.memory_dir)
+            seeded = _seed_memory(work_memory, prompt_name, store, log) if work_memory else None
             run_id = new_run_id()
             taken = {run for _, run in chapter_logs.values()}
             base, number = run_id, 1
@@ -470,7 +525,8 @@ async def run_agent_workflow(
                                      on_page_done=page_done, work_prompt=work_prompt,
                                      fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
                                      font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
-                                     run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
+                                     run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
+                                               **({"work_memory": seeded} if seeded else {})})
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -503,6 +559,8 @@ async def run_agent_workflow(
                             # the next chapter reads the file again, with the new terms
                             work_prompt = load_work_prompt(work_prompt.path, language_name(target_lang)) \
                                 or work_prompt
+                        if work_memory:
+                            _save_memory(work_memory, runner.memory, work_dir, events, log)
                     except BaseException:
                         for task in (review_task, proof_task):
                             if task is not None and not task.done():

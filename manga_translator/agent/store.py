@@ -100,7 +100,7 @@ class AgentMemory:
         """Style name → {"font", "reason", "page"} (``font_styles.py``)."""
         try:
             with open(self._story_path, "r", encoding="utf-8") as fh:
-                self.story = fh.read()
+                self.story = fh.read().strip()  # as story_update wrote it
         except FileNotFoundError:
             self.story = ""
 
@@ -181,6 +181,15 @@ class AgentMemory:
         with open(self._story_path, "w", encoding="utf-8") as fh:
             fh.write(self.story + "\n")
 
+    def replace(self, glossary: List[Dict[str, str]], characters: Dict[str, Dict[str, str]], story: str) -> None:
+        """Set and save the glossary, the characters and the story at once (``work_memory.py``)."""
+        self.glossary = glossary
+        self.characters = characters
+        write_json_atomic(self._glossary_path, self.glossary)
+        write_json_atomic(self._characters_path, self.characters)
+        if story or self.story:
+            self.story_update(story)
+
     def counts(self) -> Dict[str, int]:
         return {"glossary": len(self.glossary), "characters": len(self.characters),
                 "story_chars": len(self.story)}
@@ -196,7 +205,7 @@ class AgentMemory:
         if self.characters:
             lines = []
             for name, info in self.characters.items():
-                details = ", ".join(f"{k}: {v}" for k, v in info.items() if k not in ("page", "updated_page"))
+                details = ", ".join(f"{k}: {v}" for k, v in info.items() if k not in ("page", "updated_page", "chapter"))
                 lines.append(f"- {name}: {details}")
             parts.append("Characters:\n" + "\n".join(lines))
         if self.story:

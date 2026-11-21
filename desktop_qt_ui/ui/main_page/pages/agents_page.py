@@ -20,8 +20,8 @@ import json
 import os
 from typing import Callable, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QListWidgetItem, QSplitter, QTreeWidgetItem, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -117,6 +117,10 @@ def _requests(event: dict) -> int:
 
 class AgentsPage(QWidget):
     event_received = pyqtSignal(dict)
+    stop_requested = pyqtSignal()
+    """The stop button: the main window stops the running task."""
+    open_in_editor_requested = pyqtSignal(str)
+    """An image path to open in the editor."""
 
     def __init__(self, translate: Callable[..., str], parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -145,9 +149,18 @@ class AgentsPage(QWidget):
         self._items: Dict[str, QListWidgetItem] = {}
         self._stopped = False
         self._failed = False
+        self._task_running = False
+        self._stopping = False
+        self._viewing_log = ""
+        """The run log the user opened; live events are kept meanwhile and not shown."""
+        self._live_events: List[dict] = []
+        """The live events since the current run started, for "back to the current run"."""
+        self._live_batch: Optional[str] = None
+        self._last_output = ""
+        self._last_log_dir = ""
         self._build()
         self.preview.label_for = self._label
-        self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
+        self.event_received.connect(self._handle_live, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
         self.destroyed.connect(lambda *_: agent_events.remove_listener(self._on_agent_event))
         self.refresh_texts()
@@ -176,16 +189,33 @@ class AgentsPage(QWidget):
         self.context_bar.setRange(0, 1000)
         self.context_bar.setValue(0)
         self.context_bar.setFixedWidth(180)
-        self.problems_only = CheckBox(header)
-        self.problems_only.stateChanged.connect(lambda *_: self._apply_filter())
-        self.open_log_button = PushButton(header)
-        self.open_log_button.clicked.connect(self._open_run_log)
         row.addWidget(self.status_label, 1)
         row.addWidget(self.context_label)
         row.addWidget(self.context_bar)
-        row.addWidget(self.problems_only)
-        row.addWidget(self.open_log_button)
         head.addLayout(row)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.stop_button = PushButton(header)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._on_stop_clicked)
+        self.editor_button = PushButton(header)
+        self.editor_button.clicked.connect(self._open_in_editor)
+        self.output_button = PushButton(header)
+        self.output_button.clicked.connect(self._open_output_folder)
+        self.open_log_button = PushButton(header)
+        self.open_log_button.clicked.connect(self._open_run_log)
+        self.live_button = PushButton(header)
+        self.live_button.clicked.connect(self._back_to_live)
+        self.live_button.hide()
+        self.problems_only = CheckBox(header)
+        self.problems_only.stateChanged.connect(lambda *_: self._apply_filter())
+        for button in (self.stop_button, self.editor_button, self.output_button, self.open_log_button,
+                       self.live_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        actions.addWidget(self.problems_only)
+        head.addLayout(actions)
         root.addWidget(header)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -213,9 +243,14 @@ class AgentsPage(QWidget):
 
     def refresh_texts(self) -> None:
         self.title_label.setText(self._t("Agents"))
-        self.subtitle_label.setText(self._t("Agents Page Subtitle"))
+        self._show_subtitle()
         self.problems_only.setText(self._t("Agents Problems Only"))
         self.open_log_button.setText(self._t("Agents Open Run Log"))
+        self.stop_button.setText(self._t("Stopping...") if self._stopping else self._t("Agents Stop"))
+        self.editor_button.setText(self._t("Agents Open In Editor"))
+        self.editor_button.setToolTip(self._t("Agents Open In Editor Tip"))
+        self.output_button.setText(self._t("Agents Open Output Folder"))
+        self.live_button.setText(self._t("Agents Back To Live"))
         self.timeline.setHeaderLabels([self._t("Agents Column Time"), self._t("Agents Column Page"),
                                        self._t("Agents Column Action"), self._t("Agents Column Result"),
                                        self._t("Agents Column Reason")])
@@ -225,12 +260,97 @@ class AgentsPage(QWidget):
         self._update_context(None)
         self._rebuild_page_list()
         self.preview.refresh_texts()
+        self._update_actions()
+
+    def _show_subtitle(self) -> None:
+        if self._viewing_log:
+            self.subtitle_label.setText(self._t("Agents Viewing Log", file=os.path.basename(self._viewing_log)))
+        else:
+            self.subtitle_label.setText(self._t("Agents Page Subtitle"))
+
+    # --- actions --------------------------------------------------------------
+    def set_task_running(self, running: bool) -> None:
+        """The app started or ended a task: the stop button follows it."""
+        self._task_running = bool(running)
+        self._stopping = False
+        self.stop_button.setText(self._t("Agents Stop"))
+        self.stop_button.setEnabled(self._task_running)
+
+    def _on_stop_clicked(self) -> None:
+        self._stopping = True
+        self.stop_button.setEnabled(False)
+        self.stop_button.setText(self._t("Stopping..."))
+        self.stop_requested.emit()
+
+    def _current_page(self) -> str:
+        """The page the user picked, else the one the preview shows."""
+        if self._page_filter != ALL_PAGES:
+            return self._page_filter
+        return self.preview.shown or ""
+
+    def _open_in_editor(self) -> None:
+        image = self.preview.pages.get(self._current_page(), {}).get("image")
+        if image:
+            self.open_in_editor_requested.emit(image)
+
+    def _output_folder(self) -> str:
+        output = self.preview.pages.get(self._current_page(), {}).get("output") or self._last_output
+        return os.path.dirname(output) if output else ""
+
+    def _open_output_folder(self) -> None:
+        folder = self._output_folder()
+        if folder and os.path.isdir(folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(folder)))
+
+    def _update_actions(self) -> None:
+        self.editor_button.setEnabled(bool(self.preview.pages.get(self._current_page(), {}).get("image")))
+        self.output_button.setEnabled(bool(self._output_folder()))
+        self.live_button.setVisible(bool(self._viewing_log and self._live_events))
+
+    def _log_folder(self) -> str:
+        """Where the run log dialog opens: the last log's folder, else the runs of the chapter shown."""
+        if self._last_log_dir and os.path.isdir(self._last_log_dir):
+            return self._last_log_dir
+        images = [info.get("image") for info in self.preview.pages.values() if info.get("image")]
+        if self.preview.shown and self.preview.pages.get(self.preview.shown, {}).get("image"):
+            images.insert(0, self.preview.pages[self.preview.shown]["image"])
+        for image in images:
+            runs = os.path.join(os.path.dirname(os.path.abspath(image)), "manga_translator_work", "agent", "runs")
+            if os.path.isdir(runs):
+                return runs
+        return ""
 
     # --- events -------------------------------------------------------------
     def _on_agent_event(self, event: dict) -> None:  # worker thread
         self.event_received.emit(dict(event))
 
+    def _handle_live(self, event: dict) -> None:
+        """A live event: kept for "back to the current run", shown unless an old run log is open."""
+        new_run = event.get("type") == "run_start" and (not event.get("batch") or event.get("batch") != self._live_batch)
+        if new_run:
+            self._live_events = []
+            self._live_batch = event.get("batch")
+            if self._viewing_log:  # a new run takes the page back from the old log
+                self._viewing_log = ""
+                self._batch = None
+                self._show_subtitle()
+        self._live_events.append(event)
+        if not self._viewing_log:
+            self.handle_event(event)
+        self._update_actions()
+
+    def _back_to_live(self) -> None:
+        self._viewing_log = ""
+        self._batch = None
+        self._show_subtitle()
+        self.replay(list(self._live_events))
+        self._update_actions()
+
     def handle_event(self, event: dict) -> None:
+        self._handle(event)
+        self._update_actions()
+
+    def _handle(self, event: dict) -> None:
         kind = event.get("type")
         if kind == "run_start":
             self._start_chapter(event)
@@ -400,6 +520,7 @@ class AgentsPage(QWidget):
         elif kind == "render_done":
             self.preview.follow(page)
             output = event.get("output") or ""
+            self._last_output = output or self._last_output
             row = self._add_row(event, self._t("Agents Render"),
                                 self._t("Agents Render Detail", file=os.path.basename(output)), "")
             row.setToolTip(3, output)
@@ -449,6 +570,12 @@ class AgentsPage(QWidget):
                 self.status_label.setText(self._finished_status())
         elif kind == "stopped":
             self._mark_stopped(run)
+        elif kind == "work_memory":
+            row = self._add_row(event, self._t("Agents Work Memory"), self._t(
+                "Agents Work Memory Saved", added=event.get("glossary_added", 0),
+                updated=event.get("glossary_updated", 0), characters=event.get("characters_added", 0)), "")
+            row.setToolTip(4, event.get("folder", ""))
+            self._paint(row, MUTED)
 
     def _finished_status(self) -> str:
         """Pages done by the translator, flags as the page list counts them (every agent's), requests."""
@@ -490,7 +617,8 @@ class AgentsPage(QWidget):
 
     def replay(self, events: List[dict]) -> None:
         for event in events:
-            self.handle_event(event)
+            self._handle(event)
+        self._update_actions()
 
     # --- helpers --------------------------------------------------------------
     def _start_chapter(self, event: dict) -> None:
@@ -515,6 +643,13 @@ class AgentsPage(QWidget):
         self._rebuild_page_list()
         self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
         self._update_memory(event.get("memory"))
+        seeded = event.get("work_memory")
+        if isinstance(seeded, dict):  # the chapter's first run starts with what the earlier chapters learned
+            row = self._add_row(event, self._t("Agents Work Memory"), self._t(
+                "Agents Work Memory Seeded", glossary=seeded.get("glossary", 0),
+                characters=seeded.get("characters", 0), story=seeded.get("story", 0)),
+                self._t("Agent Result Separator").join(seeded.get("from") or []))
+            self._paint(row, MUTED)
 
     def _reset(self) -> None:
         self.timeline.clear()
@@ -691,6 +826,7 @@ class AgentsPage(QWidget):
             self.preview.set_following(True)
         else:
             self.preview.show_page(self._page_filter)
+        self._update_actions()
 
     def _on_row_selected(self, current, _previous) -> None:
         """A timeline row: show its page, and its region when it has one."""
@@ -699,6 +835,7 @@ class AgentsPage(QWidget):
         page = current.data(0, Qt.ItemDataRole.UserRole) or ""
         if page and page in self.preview.pages:
             self.preview.show_page(page, highlight=current.data(0, Qt.ItemDataRole.UserRole + 2))
+            self._update_actions()
 
     def _update_context(self, tokens: Optional[int]) -> None:
         if tokens is not None:
@@ -716,13 +853,20 @@ class AgentsPage(QWidget):
                                           story=counts.get("story_chars", 0)))
 
     def _open_run_log(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, self._t("Agents Open Run Log"), "", "Agent run log (*.jsonl)")
-        if not path:
-            return
+        path, _ = QFileDialog.getOpenFileName(self, self._t("Agents Open Run Log"), self._log_folder(),
+                                              "Agent run log (*.jsonl)")
+        if path:
+            self.open_run_log(path)
+
+    def open_run_log(self, path: str) -> None:
+        """Show an old run; live events of a run going on meanwhile are kept for "back to the current run"."""
         try:
             events = agent_events.read_events(path)
         except OSError as exc:
             self.status_label.setText(str(exc))
             return
+        self._last_log_dir = os.path.dirname(os.path.abspath(path))
+        self._viewing_log = path
+        self._show_subtitle()
         self._batch = None  # a log on its own, not the next chapter of the run shown now
         self.replay(events)

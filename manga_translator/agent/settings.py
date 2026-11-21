@@ -65,8 +65,16 @@ class AgentSettings(BaseModel):
     retry_attempts: int = Field(default=3, ge=1)
     """Attempts per API candidate before moving to the next candidate."""
     memory_dir: str = ""
-    """Glossary, characters and story summary. Empty keeps them in the chapter's
-    ``manga_translator_work/agent/memory``; point several chapters at one folder to share them."""
+    """One folder for the glossary, characters and story summary of every chapter. Empty keeps them
+    in each chapter's ``manga_translator_work/agent/memory`` (shared through the work's memory, see
+    ``share_memory``)."""
+    share_memory: bool = True
+    """The chapters of a work share what they learn: a chapter's first run starts with the glossary,
+    characters and story summary of the chapters before it, and each chapter adds its own when it
+    ends. The work's memory sits next to its prompt file (``<folder>/agent/<name>.memory/``); without
+    a prompt file every chapter keeps its own (``work_memory.py``)."""
+    show_page_on_start: bool = True
+    """Switch to the AI Agent page when an AI Agent run starts."""
     use_work_prompt: bool = True
     """Use the translator's prompt file for the work (``translator.high_quality_prompt_path``, for
     example ``dict/<work>.yaml``): its instructions and glossary go into the agent's system prompt,

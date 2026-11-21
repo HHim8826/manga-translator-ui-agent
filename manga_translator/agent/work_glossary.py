@@ -95,7 +95,7 @@ def candidates(memory: AgentMemory, data: Dict[str, Any], translations: Iterable
     skipped: Dict[str, List[str]] = {"known": [], "other": [], "unused": []}
     seen = set()
 
-    def consider(source: str, target: str, category: str, note: str, page: str) -> None:
+    def consider(source: str, target: str, category: str, note: str, page: str, found_in: str = "") -> None:
         source, target, key = (source or "").strip(), (target or "").strip(), normalize(source)
         if not source or not target or key in seen:
             return
@@ -107,17 +107,19 @@ def candidates(memory: AgentMemory, data: Dict[str, Any], translations: Iterable
         elif target not in text:
             skipped["unused"].append(source)
         else:
-            origin = origin_text.format(where=chapter + (f" p.{page}" if page else ""))
+            # a term from an earlier chapter (the work's memory, ``work_memory.py``) names that chapter
+            origin = origin_text.format(where=(found_in or chapter) + (f" p.{page}" if page else ""))
             note = (note or "").strip()
             terms.append(NewTerm(category, source, target, with_note.format(note=note, origin=origin)
                                  if note else origin))
 
     for name, info in memory.characters.items():
         category = info.get("category") if info.get("category") in ("Person", "Creature") else "Person"
-        consider(name, info.get("target_name", ""), category, info.get("notes", ""), info.get("page", ""))
+        consider(name, info.get("target_name", ""), category, info.get("notes", ""), info.get("page", ""),
+                 info.get("chapter", ""))
     for entry in memory.glossary:
         consider(entry.get("source", ""), entry.get("target", ""), entry.get("category", ""),
-                 entry.get("note", ""), entry.get("page", ""))
+                 entry.get("note", ""), entry.get("page", ""), entry.get("chapter", ""))
     return terms, skipped
 
 

@@ -34,6 +34,10 @@ BOX_COLORS = {
 HIGHLIGHT = QColor(30, 120, 230)
 MAX_SIDE = 2000
 """Images are decoded at most this large; double-clicking opens the full file."""
+MAX_ZOOM = 8.0
+"""Zoom of the preview over the fitted page."""
+ZOOM_STEP = 1.25
+"""Zoom factor of one wheel notch."""
 
 
 class ImageCache:
@@ -75,7 +79,12 @@ class ImageCache:
 
 class PreviewCanvas(QWidget):
     """Paints one image fitted to the widget, the region boxes on top, and in comparison mode
-    the original left of a divider the user drags."""
+    the original left of a divider the user drags.
+
+    The wheel zooms in at the cursor (up to ``MAX_ZOOM`` times the fitted page); a zoomed image
+    moves with a drag (with the right or middle button while comparing, where the left button moves
+    the divider); a right click without moving fits the page again. The zoom is kept when the stage
+    changes, so the same spot can be compared, and reset for another page."""
 
     double_clicked = pyqtSignal()
 
@@ -88,6 +97,12 @@ class PreviewCanvas(QWidget):
         self.highlight: Optional[int] = None
         self.split = 0.5
         self.message = ""
+        self.zoom = 1.0
+        self.center = QPointF(0.5, 0.5)
+        """The image point (0-1 of its width and height) at the middle of the widget when zoomed."""
+        self._pan_from: Optional[QPointF] = None
+        self._pan_button = Qt.MouseButton.NoButton
+        self._pan_moved = False
         self.setMinimumSize(220, 260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -106,11 +121,63 @@ class PreviewCanvas(QWidget):
         self.update()
 
     def image_rect(self) -> QRectF:
+        """Where the whole image is drawn; larger than the widget when zoomed in."""
         if self.main is None or self.main.width() <= 0 or self.main.height() <= 0:
             return QRectF()
-        scale = min(self.width() / self.main.width(), self.height() / self.main.height())
+        scale = min(self.width() / self.main.width(), self.height() / self.main.height()) * self.zoom
         w, h = self.main.width() * scale, self.main.height() * scale
-        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+        x, y = self.width() / 2 - self.center.x() * w, self.height() / 2 - self.center.y() * h
+        # centered while it fits, otherwise no empty margin on either side
+        x = (self.width() - w) / 2 if w <= self.width() else min(0.0, max(self.width() - w, x))
+        y = (self.height() - h) / 2 if h <= self.height() else min(0.0, max(self.height() - h, y))
+        return QRectF(x, y, w, h)
+
+    def view_rect(self) -> QRectF:
+        """The part of the image that is on screen."""
+        return self.image_rect().intersected(QRectF(self.rect()))
+
+    def _keep_center(self, rect: QRectF) -> None:
+        if rect.width() > 0 and rect.height() > 0:
+            self.center = QPointF((self.width() / 2 - rect.left()) / rect.width(),
+                                  (self.height() / 2 - rect.top()) / rect.height())
+
+    def reset_zoom(self) -> None:
+        self.zoom = 1.0
+        self.center = QPointF(0.5, 0.5)
+        self.update()
+
+    def zoom_at(self, pos: QPointF, steps: float) -> None:
+        """Zoom by ``ZOOM_STEP`` per step, keeping the image point under ``pos`` where it is."""
+        rect = self.image_rect()
+        zoom = min(MAX_ZOOM, max(1.0, self.zoom * ZOOM_STEP ** steps))
+        if rect.isEmpty() or zoom == self.zoom:
+            return
+        px = min(1.0, max(0.0, (pos.x() - rect.left()) / rect.width()))
+        py = min(1.0, max(0.0, (pos.y() - rect.top()) / rect.height()))
+        w, h = rect.width() * zoom / self.zoom, rect.height() * zoom / self.zoom
+        self.zoom = zoom
+        self._keep_center(QRectF(pos.x() - px * w, pos.y() - py * h, w, h))
+        self._keep_center(self.image_rect())  # within the image's edges
+        self.update()
+
+    def pan(self, dx: float, dy: float) -> None:
+        rect = self.image_rect()
+        if rect.isEmpty() or self.zoom <= 1.0:
+            return
+        self._keep_center(rect.translated(dx, dy))
+        self._keep_center(self.image_rect())
+        self.update()
+
+    @staticmethod
+    def _draw(painter: QPainter, pixmap: QPixmap, rect: QRectF, target: QRectF) -> None:
+        """The part of ``pixmap`` (drawn at ``rect``) that falls in ``target``."""
+        target = target.intersected(rect)
+        if target.isEmpty():
+            return
+        sx, sy = pixmap.width() / rect.width(), pixmap.height() / rect.height()
+        source = QRectF((target.left() - rect.left()) * sx, (target.top() - rect.top()) * sy,
+                        target.width() * sx, target.height() * sy)
+        painter.drawPixmap(target, pixmap, source)
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
@@ -122,24 +189,19 @@ class PreviewCanvas(QWidget):
                              int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap), self.message)
             return
         rect = self.image_rect()
+        view = self.view_rect()
         if self.before is not None:
-            x = rect.left() + rect.width() * self.split
-            painter.save()
-            painter.setClipRect(QRectF(rect.left(), rect.top(), x - rect.left(), rect.height()))
-            painter.drawPixmap(rect, self.before, QRectF(self.before.rect()))
-            painter.restore()
-            painter.save()
-            painter.setClipRect(QRectF(x, rect.top(), rect.right() - x, rect.height()))
-            painter.drawPixmap(rect, self.main, QRectF(self.main.rect()))
-            painter.restore()
+            x = view.left() + view.width() * self.split  # the divider stays on screen when zoomed
+            self._draw(painter, self.before, rect, QRectF(view.left(), view.top(), x - view.left(), view.height()))
+            self._draw(painter, self.main, rect, QRectF(x, view.top(), view.right() - x, view.height()))
             painter.setPen(QPen(QColor(255, 255, 255), 3))
-            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            painter.drawLine(QPointF(x, view.top()), QPointF(x, view.bottom()))
             painter.setPen(QPen(HIGHLIGHT, 1))
-            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            painter.drawLine(QPointF(x, view.top()), QPointF(x, view.bottom()))
             painter.setBrush(QBrush(HIGHLIGHT))
-            painter.drawEllipse(QPointF(x, rect.center().y()), 7, 7)
+            painter.drawEllipse(QPointF(x, view.center().y()), 7, 7)
         else:
-            painter.drawPixmap(rect, self.main, QRectF(self.main.rect()))
+            self._draw(painter, self.main, rect, view)
         if self.source.width() > 0 and (self.boxes or self.highlight is not None):
             self._paint_boxes(painter, rect, rect.width() / self.source.width())
 
@@ -185,21 +247,45 @@ class PreviewCanvas(QWidget):
         painter.drawText(tag, int(Qt.AlignmentFlag.AlignCenter), text)
 
     def _drag(self, x: float) -> None:
-        rect = self.image_rect()
-        if self.before is None or rect.width() <= 0:
+        view = self.view_rect()
+        if self.before is None or view.width() <= 0:
             return
-        self.split = min(1.0, max(0.0, (x - rect.left()) / rect.width()))
+        self.split = min(1.0, max(0.0, (x - view.left()) / view.width()))
         self.update()
 
+    def wheelEvent(self, event) -> None:
+        steps = event.angleDelta().y() / 120
+        if steps and self.main is not None:
+            self.zoom_at(event.position(), steps)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        button = event.button()
+        if button == Qt.MouseButton.LeftButton and self.before is not None:
             self._drag(event.position().x())
+        elif button in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._pan_from, self._pan_button, self._pan_moved = event.position(), button, False
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if event.buttons() & Qt.MouseButton.LeftButton:
+        if self._pan_from is not None and event.buttons() & self._pan_button:
+            delta = event.position() - self._pan_from
+            if self._pan_moved or abs(delta.x()) + abs(delta.y()) > 3:
+                self._pan_moved = True
+                self._pan_from = event.position()
+                self.pan(delta.x(), delta.y())
+        elif event.buttons() & Qt.MouseButton.LeftButton:
             self._drag(event.position().x())
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.RightButton and not self._pan_moved:
+            self.reset_zoom()  # a right click fits the page again
+        if event.button() == self._pan_button:
+            self._pan_from, self._pan_button = None, Qt.MouseButton.NoButton
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.double_clicked.emit()
@@ -361,6 +447,8 @@ class PagePreview(QWidget):
         self._render()
 
     def _show(self, page: str, stage: str, highlight: Optional[int]) -> None:
+        if page != self.shown:
+            self.canvas.reset_zoom()  # the zoom stays while switching stages of one page
         self.shown = page
         self.stage = stage
         self.highlight = highlight

@@ -129,6 +129,10 @@ class MainWindow(FluentWindow):
 
         # 设置 app_logic 对 main_view 的引用，用于更新进度条
         self.app_logic.main_view = self.main_view
+        self.main_view.agents_page.open_in_editor_requested.connect(
+            lambda path: self.enter_editor_mode(file_to_load=path))
+        self.app_logic.state_manager.is_translating_changed.connect(
+            self._show_agents_page_on_start, type=Qt.ConnectionType.QueuedConnection)
 
         self.stacked_widget = self.stackedWidget
         self._main_navigation_items = {}
@@ -190,6 +194,17 @@ class MainWindow(FluentWindow):
         self._main_pages_by_widget = {page: key for key, page, _icon, _text in pages}
         self.main_view.set_navigation_switcher(self._switch_main_page)
         self.switchTo(self.main_view.translation_interface)
+
+    def _show_agents_page_on_start(self, is_translating: bool):
+        """An AI Agent run started: show its page (``agent.show_page_on_start``)."""
+        if not is_translating:
+            return
+        try:
+            config = self.config_service.get_config()
+            if getattr(config.cli, "agent_workflow", False) and getattr(config.agent, "show_page_on_start", True):
+                self._switch_main_page("agents")
+        except Exception as exc:
+            self.logger.warning(f"switching to the AI Agent page failed: {exc}")
 
     def _switch_main_page(self, page_key: str):
         page = (
