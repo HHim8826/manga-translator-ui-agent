@@ -218,6 +218,8 @@ class PagePreview(QWidget):
         self.live: Optional[str] = None
         self.highlight: Optional[int] = None
         self.images = ImageCache()
+        self.label_for: Callable[[str], str] = lambda page: page
+        """The page's name in the title; the Agents page keys pages by chapter when a run has several."""
         self._build()
         self.refresh_texts()
 
@@ -383,7 +385,7 @@ class PagePreview(QWidget):
             return
         stage = self.stage if self.available(page, self.stage) else ORIGINAL
         self.stages.setCurrentItem(stage)
-        self.title_label.setText(f"{self._t('Agents Preview')} · {page}")
+        self.title_label.setText(f"{self._t('Agents Preview')} · {self.label_for(page)}")
         info = self.pages.get(page, {})
         path = self.stage_path(page, stage)
         loaded = self.images.get(path)

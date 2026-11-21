@@ -1739,5 +1739,7 @@
   "Agent Rerun Text": "这次的 {pages} 页里，有 {seen} 页已经跑过 AI Agent（{done} 页完成）。重跑会重新检测，并覆写这些页的译文和 JSON。",
   "Agent Rerun Edited": "其中 {count} 页在上次执行后改过（多半是在编辑器里）：{pages}。重跑前会把它们的 JSON 备份到 manga_translator_work/agent/backups。",
   "Agent Rerun Unfinished": "只处理没完成的 {count} 页",
-  "Agent Rerun All": "全部重跑（{count} 页）"
+  "Agent Rerun All": "全部重跑（{count} 页）",
+  "Agents Stopped Status": "已停止：完成 {done}/{pages} 页，{flagged} 个待确认，共 {requests} 次请求",
+  "Agents Finished Failed": "，连续三页失败而提前结束"
 }

@@ -1,9 +1,13 @@
 """Event log of an agent run: one JSON object per line, also pushed to live listeners.
 
-Event types (design doc, "事件紀錄"): ``run_start``, ``page_start``, ``tool_call``,
-``tool_result``, ``flag``, ``usage``, ``compact``, ``recall``, ``error``, ``page_done``, ``run_end``,
-``inpaint_start``/``inpaint_done``, ``proofread_start``/``proofread_done``, ``fonts``,
-``work_glossary`` (new terms saved to the work's prompt file) and ``render_start``/``render_done`` (the image paths and region boxes the preview uses: "即時預覽").
+Event types (design doc, "事件紀錄"): ``run_start`` (with ``chapter`` and ``batch``: the chapters
+of one workflow run share the batch id), ``page_start``, ``tool_call``, ``tool_result``, ``flag``,
+``usage``, ``compact``, ``recall``, ``error``, ``page_done``, ``run_end`` (``reason``: empty, or
+``stopped``/``failed`` when the run ended early), ``inpaint_start``/``inpaint_done``,
+``proofread_start``/``proofread_done``, ``fonts``, ``font_styles``, ``work_glossary`` (new terms
+saved to the work's prompt file), ``render_start``/``render_done`` (the image paths and region boxes
+the preview uses: "即時預覽") and ``stopped`` (the user stopped the run; ``stage`` is ``agent`` or
+``render``).
 Listeners (the Agents page) are called on the agent's thread and must not block.
 """
 from __future__ import annotations

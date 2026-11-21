@@ -9,6 +9,10 @@ Layout (design doc, "Agents 頁面"), M2 skeleton:
 
 Events come from ``manga_translator.agent.events`` on the worker thread and are
 moved to the UI thread through a Qt signal.
+
+The chapters of one run (one ``batch`` id in ``run_start``) stay on the page together. Pages are
+keyed by their file name; the second and later chapters prefix it with their run id
+(``r20261121-152424|001``), so every chapter's ``001`` keeps its own row, state and preview.
 """
 from __future__ import annotations
 
@@ -125,13 +129,24 @@ class AgentsPage(QWidget):
         self._translating = False
         self._proofreading = False
         self._finished: Optional[dict] = None
-        """``done`` and ``pages`` of the translator's run_end; the status is built from it and the totals."""
+        """``done`` and ``pages`` of the translators' run_end, added over the chapters; the status is
+        built from it and the totals."""
+        self._finished_runs: Dict[str, dict] = {}
         self._requests = 0
         """Model requests of every agent: translator and recall, inpaint review, proofreading."""
         self._rendering: Dict[str, int] = {}
         self._unrendered = 0
         """Pages of the run the render left out: they have no agent translation."""
+        self._batch: Optional[str] = None
+        self._chapters: Dict[str, str] = {}
+        """Run id -> chapter folder name, in the order the chapters started."""
+        self._prefix: Dict[str, str] = {}
+        """Run id -> the prefix of its page keys (none for the first chapter)."""
+        self._items: Dict[str, QListWidgetItem] = {}
+        self._stopped = False
+        self._failed = False
         self._build()
+        self.preview.label_for = self._label
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
         self.destroyed.connect(lambda *_: agent_events.remove_listener(self._on_agent_event))
@@ -217,24 +232,19 @@ class AgentsPage(QWidget):
 
     def handle_event(self, event: dict) -> None:
         kind = event.get("type")
-        page = event.get("page") or ""
+        if kind == "run_start":
+            self._start_chapter(event)
+            return
+        page = self._key(event)
+        run = str(event.get("run") or "")
         if kind in ("page_start", "page_done", "inpaint_done", "render_done") or event.get("boxes") is not None:
             self.preview.update_page(page, image=event.get("image"), boxes=event.get("boxes"),
                                      inpainted=event.get("inpainted"), output=event.get("output"))
-        if kind == "run_start":
-            self._reset([os.path.splitext(p)[0] for p in event.get("pages", [])])
-            self._translating = True
-            self._proofreading = False
-            self._finished = None
-            self._requests = 0
-            self._unrendered = 0
-            self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
-            self._update_memory(event.get("memory"))
-        elif kind == "page_start":
+        if kind == "page_start":
             self.preview.follow(page)
             self._set_page(page, state="working")
             self.status_label.setText(self._t("Agents Page Progress", current=int(event.get("index", 0)) + 1,
-                                              total=event.get("total", len(self._order)), page=page))
+                                              total=event.get("total", len(self._order)), page=self._label(page)))
         elif kind == "tool_call":
             tool = event.get("tool", "")
             args = event.get("args") if isinstance(event.get("args"), dict) else {}
@@ -268,9 +278,12 @@ class AgentsPage(QWidget):
                 row = self._add_row(event, self._t("Agents Flag"), detail, event.get("reason", ""), problem=True,
                                     region=_own_region(event, region))
             self._paint(row, WARN)
-            info = self._pages.setdefault(page, {"state": "working", "flags": 0})
-            info["flags"] = info.get("flags", 0) + 1
-            self._rebuild_page_list()
+            if page:
+                if page not in self._pages:
+                    self._set_page(page, state="working")
+                info = self._pages[page]
+                info["flags"] = info.get("flags", 0) + 1
+                self._update_item(page)
         elif kind == "usage":
             self._limit = int(event.get("limit") or self._limit)
             self._update_context(int(event.get("prompt_tokens") or 0))
@@ -292,7 +305,7 @@ class AgentsPage(QWidget):
         elif kind == "inpaint_start":
             self._set_page(page, state="inpainting")
             if not (self._translating or self._proofreading):  # the status line follows the main work
-                self.status_label.setText(self._t("Agents Inpaint Progress", page=page))
+                self.status_label.setText(self._t("Agents Inpaint Progress", page=self._label(page)))
             self._add_row(event, self._t("Agents Inpaint"),
                           self._t("Agents Inpaint Start", units=event.get("units", 0), issues=event.get("issues", 0)),
                           "")
@@ -364,7 +377,6 @@ class AgentsPage(QWidget):
             if not added:
                 self._paint(row, MUTED)
         elif kind == "render_start":
-            run = str(event.get("run") or "")
             pages = int(event.get("pages") or 0)
             skipped = event.get("skipped") or {}
             self._unrendered += len(skipped)
@@ -372,7 +384,8 @@ class AgentsPage(QWidget):
             reason = ""
             if skipped:  # pages without an agent translation are not typeset
                 for stem, status in skipped.items():
-                    self._set_page(stem, state=status if status in PAGE_STATE_KEYS else "not_reached")
+                    self._set_page(self._key(event, stem),
+                                   state=status if status in PAGE_STATE_KEYS else "not_reached")
                 reason = self._t("Agents Render Skipped", pages=self._t("Agent Result Separator").join(
                     f"{stem}（{self._t(PAGE_STATE_KEYS.get(status, 'Agent Page Not Reached'))}）"
                     for stem, status in skipped.items()))
@@ -391,11 +404,10 @@ class AgentsPage(QWidget):
                                 self._t("Agents Render Detail", file=os.path.basename(output)), "")
             row.setToolTip(3, output)
             self._paint(row, MUTED)
-            run = str(event.get("run") or "")
             left = self._rendering.get(run, 0) - 1
             if left > 0:
                 self._rendering[run] = left
-                self.status_label.setText(self._t("Agents Render Progress", page=page))
+                self.status_label.setText(self._t("Agents Render Progress", page=self._label(page)))
             else:
                 self._rendering.pop(run, None)
                 if self._finished is not None and not self._rendering:
@@ -419,25 +431,56 @@ class AgentsPage(QWidget):
             self._translating = False
             self._requests += int(totals.get("requests") or 0) + int(totals.get("recall_requests") or 0)
             # ``total``: every page of the run, also the ones a stopped run never reached
-            self._finished = {"done": event.get("done", 0), "pages": event.get("total", event.get("pages", 0))}
-            for stem in self._order:
-                if self._pages.get(stem, {}).get("state") == "waiting":
-                    self._set_page(stem, state="not_reached")
+            self._finished_runs[run] = {"done": int(event.get("done") or 0),
+                                        "pages": int(event.get("total", event.get("pages", 0)) or 0)}
+            self._finished = {key: sum(r[key] for r in self._finished_runs.values()) for key in ("done", "pages")}
+            for key in self._run_pages(run):
+                if self._pages[key].get("state") == "waiting":
+                    self._set_page(key, state="not_reached")
+            self._update_memory(event.get("memory"))
+            if event.get("reason") == "stopped":
+                self._mark_stopped(run)
+                return
+            self._failed = self._failed or event.get("reason") == "failed"
             reviewing = [p for p in self._order if self._pages.get(p, {}).get("state") == "inpainting"]
             if reviewing:  # the inpaint review of the last page(s) is still running
-                self.status_label.setText(self._t("Agents Inpaint Progress", page=reviewing[0]))
+                self.status_label.setText(self._t("Agents Inpaint Progress", page=self._label(reviewing[0])))
             else:
                 self.status_label.setText(self._finished_status())
-            self._update_memory(event.get("memory"))
+        elif kind == "stopped":
+            self._mark_stopped(run)
 
     def _finished_status(self) -> str:
         """Pages done by the translator, flags as the page list counts them (every agent's), requests."""
         flagged = sum(int(info.get("flags") or 0) for info in self._pages.values())
-        text = self._t("Agents Finished", done=self._finished["done"], pages=self._finished["pages"],
-                       flagged=flagged, requests=self._requests)
+        if self._finished is not None:
+            done, pages = self._finished["done"], self._finished["pages"]
+        else:  # stopped before a translator finished
+            done = sum(1 for info in self._pages.values() if info.get("state") == "done")
+            pages = len(self._order)
+        key = "Agents Stopped Status" if self._stopped else "Agents Finished"
+        text = self._t(key, done=done, pages=pages, flagged=flagged, requests=self._requests)
+        if self._failed:
+            text += self._t("Agents Finished Failed")
         if self._unrendered:
             text += self._t("Agents Finished Unrendered", count=self._unrendered)
         return text
+
+    def _mark_stopped(self, run: str) -> None:
+        """The user stopped the run: pages being worked on are stopped, the ones after never started."""
+        self._stopped = True
+        self._translating = self._proofreading = False
+        for key in self._run_pages(run):
+            state = self._pages[key].get("state")
+            if state in ("working", "inpainting"):
+                self._set_page(key, state="stopped")
+            elif state == "waiting":
+                self._set_page(key, state="not_reached")
+        if run:
+            self._rendering.pop(run, None)
+        else:
+            self._rendering.clear()
+        self.status_label.setText(self._finished_status())
 
     def _show_finished_if_idle(self) -> None:
         if self._translating or self._proofreading or self._finished is None:
@@ -450,11 +493,42 @@ class AgentsPage(QWidget):
             self.handle_event(event)
 
     # --- helpers --------------------------------------------------------------
-    def _reset(self, pages: List[str]) -> None:
+    def _start_chapter(self, event: dict) -> None:
+        """``run_start``: a new run clears the page; the next chapter of the same run is added to it."""
+        run = str(event.get("run") or "")
+        batch = event.get("batch") or None
+        if batch is None or batch != self._batch or run in self._chapters:
+            self._reset()
+        self._batch = batch
+        self._prefix[run] = f"{run}|" if self._chapters else ""
+        self._chapters[run] = str(event.get("chapter") or "")
+        for name in event.get("pages", []):
+            stem = os.path.splitext(name)[0]
+            key = self._prefix[run] + stem
+            if key not in self._pages:
+                self._order.append(key)
+            self._pages[key] = {"state": "waiting", "flags": 0, "run": run, "stem": stem}
+        self._translating = True
+        self._proofreading = False
+        self._finished = None
+        self._update_context(0)
+        self._rebuild_page_list()
+        self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
+        self._update_memory(event.get("memory"))
+
+    def _reset(self) -> None:
         self.timeline.clear()
         self._pending_rows.clear()
-        self._pages = {p: {"state": "waiting", "flags": 0} for p in pages}
-        self._order = list(pages)
+        self._pages = {}
+        self._order = []
+        self._items = {}
+        self._chapters = {}
+        self._prefix = {}
+        self._finished_runs = {}
+        self._finished = None
+        self._requests = 0
+        self._unrendered = 0
+        self._stopped = self._failed = False
         self._page_filter = ALL_PAGES
         self._rendering.clear()
         self.preview.reset()
@@ -462,21 +536,50 @@ class AgentsPage(QWidget):
         self._update_context(0)
         self._rebuild_page_list()
 
+    def _key(self, event: dict, stem: Optional[str] = None) -> str:
+        """The page's key: its file name, after its run id from the second chapter of a run on."""
+        stem = (event.get("page") or "") if stem is None else stem
+        return self._prefix.get(str(event.get("run") or ""), "") + stem if stem else ""
+
+    def _label(self, key: str) -> str:
+        """The page's name for the status line and the preview: the chapter too when there are several."""
+        info = self._pages.get(key)
+        if not info:
+            return key
+        stem = info.get("stem") or key
+        chapter = self._chapters.get(info.get("run", ""), "") if len(self._chapters) > 1 else ""
+        return f"{chapter} · {stem}" if chapter else stem
+
+    def _run_pages(self, run: str) -> List[str]:
+        """The pages of one chapter (all of them for an event without a run id)."""
+        return [key for key in self._order if not run or self._pages[key].get("run", "") == run]
+
     def _add_row(self, event: dict, action: str, detail: str, reason: str, problem: bool = False,
                  region=None) -> QTreeWidgetItem:
         ts = str(event.get("ts", ""))
         clock = ts[11:19] if len(ts) >= 19 else ts
+        key = self._key(event)
         row = QTreeWidgetItem([clock, event.get("page") or "", action, detail, reason or ""])
+        row.setToolTip(1, self._label(key) if key else "")
         row.setToolTip(3, detail)
         row.setToolTip(4, reason or "")
-        row.setData(0, Qt.ItemDataRole.UserRole, event.get("page") or "")
+        row.setData(0, Qt.ItemDataRole.UserRole, key)
         row.setData(0, Qt.ItemDataRole.UserRole + 1, problem)
         row.setData(0, Qt.ItemDataRole.UserRole + 2, _region_id(region))
+        at_bottom = self._at_bottom()  # the user scrolled up to read: stay there
         self.timeline.addTopLevelItem(row)
         self._apply_filter_to(row)
-        if not row.isHidden():
+        if at_bottom and not row.isHidden():
             self.timeline.scrollToItem(row)
         return row
+
+    def _at_bottom(self) -> bool:
+        """The timeline shows its last row: within a row's height (it scrolls by pixels)."""
+        bar = self.timeline.verticalScrollBar()
+        slack = 1
+        if self.timeline.verticalScrollMode() == self.timeline.ScrollMode.ScrollPerPixel:
+            slack = max(2, self.timeline.sizeHintForRow(0)) if self.timeline.topLevelItemCount() else 2
+        return bar.value() >= bar.maximum() - slack
 
     @staticmethod
     def _paint(row: QTreeWidgetItem, color: QColor) -> None:
@@ -495,42 +598,89 @@ class AgentsPage(QWidget):
     def _set_page(self, page: str, state: str, flags=None, confidence=None) -> None:
         if not page:
             return
-        if page not in self._pages:
+        added = page not in self._pages
+        if added:
             self._order.append(page)
-        info = self._pages.setdefault(page, {"state": state, "flags": 0})
+            run = next((r for r, prefix in self._prefix.items() if prefix and page.startswith(prefix)),
+                       next((r for r, prefix in self._prefix.items() if not prefix), ""))
+            self._pages[page] = {"state": state, "flags": 0, "run": run,
+                                 "stem": page[len(self._prefix.get(run, "")):]}
+        info = self._pages[page]
         info["state"] = state
         if flags is not None:
             info["flags"] = int(flags)
         if confidence is not None:
             info["confidence"] = float(confidence)
-        self._rebuild_page_list()
+        if added:
+            self._rebuild_page_list()
+        else:
+            self._update_item(page)
+
+    def _page_text(self, key: str) -> str:
+        info = self._pages.get(key, {})
+        state = self._t(PAGE_STATE_KEYS.get(info.get("state", "waiting"), "Agent Page Waiting"))
+        text = f"{info.get('stem') or key} · {state}"
+        if info.get("confidence") is not None:
+            text += " · " + self._t("Agents Page Confidence", percent=round(info["confidence"] * 100))
+        if info.get("flags"):
+            text += " · " + self._t("Agents Flag Count", count=info["flags"])
+        return text
+
+    def _update_item(self, key: str) -> None:
+        """A page's row changes in place: the list keeps its scroll position and selection."""
+        item = self._items.get(key)
+        if item is None:
+            self._rebuild_page_list()
+            return
+        item.setText(self._page_text(key))
+        state = self._pages.get(key, {}).get("state")
+        if state in ("error", "incomplete", "stopped"):
+            item.setForeground(QBrush(ERROR if state == "error" else WARN))
+        else:
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+
+    def _groups(self) -> List[tuple]:
+        """(chapter name or None, page keys): one group per chapter when the run has several."""
+        if len(self._chapters) <= 1:
+            return [(None, list(self._order))]
+        groups = [(name or run, [k for k in self._order if self._pages[k].get("run") == run])
+                  for run, name in self._chapters.items()]
+        rest = [k for k in self._order if self._pages[k].get("run") not in self._chapters]
+        return groups + ([(None, rest)] if rest else [])
 
     def _rebuild_page_list(self) -> None:
+        bar = self.page_list.verticalScrollBar()
+        scroll = bar.value()
         self.page_list.blockSignals(True)
         try:
             self.page_list.clear()
+            self._items = {}
             everything = QListWidgetItem(self._t("Agents All Pages"))
             everything.setData(Qt.ItemDataRole.UserRole, ALL_PAGES)
             self.page_list.addItem(everything)
-            for page in self._order:
-                info = self._pages.get(page, {})
-                state = self._t(PAGE_STATE_KEYS.get(info.get("state", "waiting"), "Agent Page Waiting"))
-                text = f"{page} · {state}"
-                if info.get("confidence") is not None:
-                    text += " · " + self._t("Agents Page Confidence", percent=round(info["confidence"] * 100))
-                if info.get("flags"):
-                    text += " · " + self._t("Agents Flag Count", count=info["flags"])
-                item = QListWidgetItem(text)
-                item.setData(Qt.ItemDataRole.UserRole, page)
-                if info.get("state") in ("error", "incomplete", "stopped"):
-                    item.setForeground(QBrush(ERROR if info.get("state") == "error" else WARN))
-                self.page_list.addItem(item)
-                if page == self._page_filter:
-                    self.page_list.setCurrentItem(item)
+            for chapter, keys in self._groups():
+                if chapter is not None:  # a heading, not a page: it cannot be selected
+                    heading = QListWidgetItem(chapter)
+                    heading.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                    font = heading.font()
+                    font.setBold(True)
+                    heading.setFont(font)
+                    heading.setForeground(QBrush(MUTED))
+                    self.page_list.addItem(heading)
+                for key in keys:
+                    item = QListWidgetItem()
+                    item.setData(Qt.ItemDataRole.UserRole, key)
+                    self._items[key] = item
+                    self._update_item(key)
+                    self.page_list.addItem(item)
+                    if key == self._page_filter:
+                        self.page_list.setCurrentItem(item)
             if self._page_filter == ALL_PAGES:
                 self.page_list.setCurrentItem(everything)
         finally:
             self.page_list.blockSignals(False)
+        self.page_list.doItemsLayout()
+        bar.setValue(scroll)
 
     def _on_page_selected(self, current, _previous) -> None:
         if current is None:
@@ -574,4 +724,5 @@ class AgentsPage(QWidget):
         except OSError as exc:
             self.status_label.setText(str(exc))
             return
+        self._batch = None  # a log on its own, not the next chapter of the run shown now
         self.replay(events)

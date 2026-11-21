@@ -1729,5 +1729,7 @@
   "Agent Rerun Text": "이번 {pages}페이지 중 {seen}페이지는 이미 AI Agent를 거쳤습니다(완료 {done}페이지). 다시 실행하면 텍스트를 다시 검출하고 번역과 JSON을 덮어씁니다.",
   "Agent Rerun Edited": "그중 {count}페이지는 지난 실행 후 수정되었습니다(대부분 편집기에서): {pages}. 다시 실행하기 전에 JSON을 manga_translator_work/agent/backups에 백업합니다.",
   "Agent Rerun Unfinished": "완료되지 않은 {count}페이지만 처리",
-  "Agent Rerun All": "모두 다시 실행({count}페이지)"
+  "Agent Rerun All": "모두 다시 실행({count}페이지)",
+  "Agents Stopped Status": "중지됨: {done}/{pages} 페이지 완료, 검토 필요 {flagged}개, 요청 {requests}회",
+  "Agents Finished Failed": ", 3페이지 연속 실패로 조기 종료"
 }

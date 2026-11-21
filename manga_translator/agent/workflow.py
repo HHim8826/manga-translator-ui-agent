@@ -291,6 +291,10 @@ class _RenderEvents:
             log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
                      image=image, output=getattr(ctx, "output_path", None), inpainted=find_inpainted_path(image))
 
+    def stopped(self) -> None:
+        for log in self.logs.values():
+            log.emit("stopped", agent="workflow", stage="render")
+
     def close(self) -> None:
         for log in self.logs.values():
             log.close()
@@ -428,9 +432,15 @@ async def run_agent_workflow(
         _report(progress, "translate", 0, len(paths))
         reviewed: set = set()
         chapter_logs: Dict[str, Tuple[str, str]] = {}
+        batch_id = f"b{uuid.uuid4().hex[:12]}"  # the chapters of this run, for the AI Agent page
         for work_dir, pages in group_by_chapter(paths):
             store = AgentStore(work_dir, settings.memory_dir)
             run_id = new_run_id()
+            taken = {run for _, run in chapter_logs.values()}
+            base, number = run_id, 1
+            while run_id in taken:  # two chapters started in the same second
+                number += 1
+                run_id = f"{base}~{number}"
             events = EventLog(store.run_log_path(run_id), run_id)
             chapter_logs[work_dir] = (events.path, run_id)
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
@@ -459,7 +469,8 @@ async def run_agent_workflow(
                 runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
                                      on_page_done=page_done, work_prompt=work_prompt,
                                      fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
-                                     font_styles=_work_styles(styles_path, font_service, log) if styles_path else None)
+                                     font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
+                                     run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -513,6 +524,9 @@ async def run_agent_workflow(
                     log(f"[Agent] Inpaint review tokens: {totals['prompt_tokens']} prompt "
                         f"({totals['cached_tokens']} cached), {totals['completion_tokens']} completion, "
                         f"{totals['requests']} requests")
+            except asyncio.CancelledError:  # the stop button: pages still working or in review are stopped
+                events.emit("stopped", agent="workflow", stage="agent")
+                raise
             finally:
                 events.close()
             for outcome in chapter:
@@ -563,6 +577,9 @@ async def run_agent_workflow(
                               ignore_existing_inpainted=not reuse, keep_empty_translations=True)
                     results.extend(await translator.translate_batch(batch, save_info=save_info))
                     batch_progress.offset += len(batch)
+        except asyncio.CancelledError:
+            render_events.stopped()
+            raise
         finally:
             translator.on_result_saved = saved_hook
             render_events.close()

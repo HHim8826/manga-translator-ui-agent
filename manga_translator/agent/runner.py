@@ -157,8 +157,11 @@ class AgentRunner:
                  should_stop: Callable[[], bool] = lambda: False,
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
                  work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
-                 font_styles: Optional[Dict[str, dict]] = None):
+                 font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None):
         self.settings = settings
+        self.run_info = dict(run_info or {})
+        """Extra ``run_start`` fields from the workflow: ``chapter`` (folder name) and ``batch`` (one id
+        for all chapters of a run, so the AI Agent page keeps the earlier chapters)."""
         self.work_prompt = work_prompt
         """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
@@ -473,9 +476,10 @@ class AgentRunner:
                          memory=self.memory.counts(),
                          work_prompt={"name": self.work_prompt.name, "terms": len(self.work_prompt.terms)}
                          if self.work_prompt else None,
-                         fonts=list(self.session.font_choices) or None)
+                         fonts=list(self.session.font_choices) or None, **self.run_info)
         outcomes: List[Dict[str, Any]] = []
         failures_in_a_row = 0
+        ended = ""  # why the run ended early: "stopped" or "failed"
         try:
             for index, path in enumerate(self.pages):
                 if self.should_stop():
@@ -493,11 +497,14 @@ class AgentRunner:
                     failures_in_a_row = 0
                     if self.on_page_done is not None:
                         self.on_page_done(outcome)
-                except AgentStopped:
+                except (AgentStopped, asyncio.CancelledError):
+                    # the stop button cancels the task: the page keeps what it has, marked stopped
+                    ended = "stopped"
                     doc.status = "stopped"
-                    self._finish_page(doc)
-                    raise
-                except asyncio.CancelledError:
+                    try:
+                        self._finish_page(doc)
+                    except Exception:
+                        logger.exception(f"saving the stopped page {stem} failed")
                     raise
                 except Exception as exc:
                     logger.exception(f"agent page {stem} failed")
@@ -510,7 +517,11 @@ class AgentRunner:
                     self.history = [(i, m) for i, m in self.history if i != index]
                     if failures_in_a_row >= 3:
                         self.events.emit("error", error="three pages failed in a row; stopping the run")
+                        ended = "failed"
                         break
+        except (AgentStopped, asyncio.CancelledError):
+            ended = "stopped"  # also between two pages
+            raise
         finally:
             pending = list(self._recall_tasks.values())
             self._recall_tasks.clear()
@@ -518,7 +529,7 @@ class AgentRunner:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            self.events.emit("run_end", pages=len(outcomes), total=len(self.pages),
+            self.events.emit("run_end", pages=len(outcomes), total=len(self.pages), reason=ended,
                              done=sum(1 for o in outcomes if o.get("status") == "done"),
                              flagged=sum(o.get("flags", 0) for o in outcomes), totals=self.totals,
                              memory=self.memory.counts())

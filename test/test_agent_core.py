@@ -221,7 +221,7 @@ class ScriptedClient:
             return _calls(("report_unboxed_text", {"items": items}))
         self.requests.append(messages)
         step = self.script.pop(0)
-        if isinstance(step, Exception):
+        if isinstance(step, BaseException):  # also asyncio.CancelledError: the stop button
             raise step
         return step
 
