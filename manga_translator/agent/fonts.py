@@ -67,6 +67,15 @@ SHEET_LIMIT = 20
 SHEET_PER_FAMILY = 2
 """A regular and a clearly heavier (or lighter) weight at most; hairline weights are left out."""
 SHEET_MIN_WEIGHT = 300
+MIN_STROKE = 0.065
+"""No thin fonts (the user, chapter 36): a font whose strokes are on average thinner than this share
+of the em is left off the font sheet, a style from an earlier chapter moves off it, and it does not
+draw characters another font lacks. Measured on the installed CJK fonts (median of 2 x ink area /
+outline length): Yu Mincho Light 0.037, MingLiU 0.041, SimSun 0.043, Yu Mincho 0.046, Kai faces
+0.054-0.059, Microsoft JhengHei 0.054, Hiragino Sans GB W3 0.064 are thin; STZhongsong 0.066 (a
+medium Ming), SimHei 0.077, Microsoft YaHei 0.079, Source Han Serif CN Bold 0.081 and the user's
+A-OTF Shin Go Pr6N DeBold 0.125 are not. The usWeightClass a font declares says little: MingLiU says 400."""
+STROKE_SIZE = 96
 SAME_DESIGN = 0.85
 """Glyph shapes this similar (weight aside) are one design, like Noto Sans TC and Noto Sans HK."""
 CANDIDATES = 6
@@ -389,6 +398,7 @@ class FontCatalog:
                     else:
                         self.addressable.discard(id(face))
         self._features: Dict[Tuple[int, str], Dict[str, Tuple[np.ndarray, float]]] = {}
+        self._strokes: Dict[Tuple[int, str], Optional[float]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -450,6 +460,47 @@ class FontCatalog:
             self._features[key] = out
         return out
 
+    def stroke(self, face: FontFace, kind: str) -> Optional[float]:
+        """Median stroke width of the probe characters as a share of the em (2 x ink area / outline
+        length); None when the font cannot be drawn."""
+        key = (id(face), kind)
+        with self._lock:
+            if key in self._strokes:
+                return self._strokes[key]
+        value: Optional[float] = None
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            font = ImageFont.truetype(face.path, STROKE_SIZE, index=face.index)
+            if face.instance:
+                font.set_variation_by_axes([float(face.instance.get(a, 0)) for a in face.axes])
+            widths = []
+            for ch in CJK_PROBE if kind == "cjk" else LATIN_PROBE:
+                if not face.has(ch):
+                    continue
+                img = Image.new("L", (2 * STROKE_SIZE, 2 * STROKE_SIZE), 0)
+                ImageDraw.Draw(img).text((STROKE_SIZE // 2, STROKE_SIZE // 2), ch, font=font, fill=255)
+                ink = np.asarray(img) > 127
+                area = int(ink.sum())
+                if not area:
+                    continue
+                inside = ink[1:-1, 1:-1] & ink[:-2, 1:-1] & ink[2:, 1:-1] & ink[1:-1, :-2] & ink[1:-1, 2:]
+                widths.append(2.0 * area / max(1, area - int(inside.sum())) / STROKE_SIZE)
+            if len(widths) >= 8:
+                value = float(np.median(widths))
+        except Exception as exc:
+            logger.debug(f"fonts: cannot measure {face.path}#{face.index}: {exc}")
+        with self._lock:
+            self._strokes[key] = value
+        return value
+
+    def thin(self, face: Optional[FontFace], kind: str) -> bool:
+        """A font the user does not want (see ``MIN_STROKE``); one that cannot be measured is not thin."""
+        if face is None:
+            return False
+        value = self.stroke(face, kind)
+        return value is not None and value < MIN_STROKE
+
     def compare(self, a: FontFace, b: FontFace, kind: str) -> Optional[Tuple[float, float]]:
         """(shape, weight): 1 for the same glyph shapes, and the relative difference in ink."""
         fa, fb = self.features(a, kind), self.features(b, kind)
@@ -468,11 +519,15 @@ class FontCatalog:
 
     def similar(self, ref: FontFace, chars: str, target_lang: str, limit: int = CANDIDATES
                 ) -> List[Tuple[float, FontFace]]:
-        """Usable faces that have every character in ``chars``, most like ``ref`` first."""
+        """Usable faces that have every character in ``chars``, most like ``ref`` first. Thin fonts
+        only stand in for a thin font (the user's own choice)."""
         kind = probe_kind(target_lang)
+        thin_ok = self.thin(ref, kind)
         ranked = []
         for face in self.faces:
             if face is ref or not self.usable(face) or face.missing(chars):
+                continue
+            if not thin_ok and self.thin(face, kind):
                 continue
             score = self.similarity(ref, face, kind)
             if score is not None:
@@ -491,7 +546,7 @@ class FontCatalog:
                                  abs(f.weight - 400), f.family.casefold()))
         chosen: List[FontFace] = []
         for face in pool:
-            if face.weight < SHEET_MIN_WEIGHT or not self.features(face, kind):
+            if face.weight < SHEET_MIN_WEIGHT or self.thin(face, kind) or not self.features(face, kind):
                 continue
             looks = [(other, self.compare(face, other, kind)) for other in chosen + ([default] if default else [])]
             if any(c is not None and c[0] - c[1] >= SHEET_SIMILAR for _, c in looks):
@@ -979,6 +1034,21 @@ class FontService:
         best = ranked[0][1]
         chosen.append(best)
         return best
+
+    def stand_in(self, value: str) -> Optional[str]:
+        """For a thin style font (kept from a chapter before thin fonts were left out): the sheet font
+        that looks most like it, or "" (the user's font) when none compares; None when the font is not
+        thin, or when the user's own font is thin too (then thin is the user's choice)."""
+        kind = probe_kind(self.target_lang)
+        face = self.catalog.find(value) if value else None
+        if face is None or not self.catalog.thin(face, kind) or self.catalog.thin(self.default_face(), kind):
+            return None
+        ranked = []
+        for other in self.choices:
+            score = self.catalog.similarity(face, other, kind)
+            if score is not None:
+                ranked.append((score + class_term(face, other), other))
+        return max(ranked, key=lambda item: item[0])[1].value if ranked else ""
 
 
 async def build_font_service(translator, config, target_lang: str) -> FontService:

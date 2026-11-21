@@ -163,6 +163,11 @@ class AgentMemory:
         write_json_atomic(self._styles_path, self.font_styles)
         return status
 
+    def font_style_font(self, name: str, font: str) -> None:
+        """Give a style another font and keep the rest of its entry (where it came from, its reason)."""
+        self.font_styles[name] = {**self.font_styles[name], "font": font}
+        write_json_atomic(self._styles_path, self.font_styles)
+
     def font_styles_seed(self, styles: Dict[str, Dict[str, str]]) -> List[str]:
         """Styles of earlier chapters that this chapter does not have yet; returns their names."""
         added = [name for name in styles if name not in self.font_styles]

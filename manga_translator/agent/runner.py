@@ -196,6 +196,7 @@ class AgentRunner:
         self.memory = store.memory()
         if font_styles and self.fonts is not None:  # the work's styles from earlier chapters
             self.memory.font_styles_seed(font_styles)
+        self._replace_thin_styles()
         self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
         self.session.work_terms = list(work_prompt.terms) if work_prompt else []
         self.session.font_choices = [face.value for face in self.fonts.choices] if self.fonts else []
@@ -244,6 +245,19 @@ class AgentRunner:
                                                                    "detail": self.settings.image_detail}})
         self.preamble = [{"role": "system", "content": self.system_prompt()},
                          {"role": "user", "content": content}]
+
+    def _replace_thin_styles(self) -> None:
+        """Styles kept from chapters before thin fonts were left out move to the sheet font that looks
+        most like their font; the work's styles file takes the new font at the end of the run."""
+        stand_in = getattr(self.fonts, "stand_in", None)
+        if stand_in is None:
+            return
+        for name, entry in list(self.memory.font_styles.items()):
+            old = entry.get("font", "")
+            new = stand_in(old)
+            if new is not None and new != old:
+                self.memory.font_style_font(name, new)
+                logger.info(f"[Agent] Font style {name}: {old} is a thin font, now {new or 'the user font'}")
 
     def _font_number(self, font: str) -> str:
         """``3 (MingLiU)`` for a style's font on this run's font sheet, the font name otherwise."""
