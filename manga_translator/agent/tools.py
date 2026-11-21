@@ -489,7 +489,7 @@ def mark_page_done(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
             text=("Not finished yet. The program checks found:\n" + listed + "\nFix what is really wrong "
                   "(zoom, set_text, ...); leave what is fine as it is. Then call mark_page_done again: the second "
                   "call finishes the page, and anything still listed lowers its confidence."),
-            ok=False, summary=checks.summary(lang, issues))
+            ok=False, summary=checks.codes(issues))
     score = checks.page_score(s, issues)
     doc = s.doc
     doc.status = "done"
@@ -622,7 +622,8 @@ TOOLS: List[Tool] = [
                "note": {"type": "string", "description": "Anything the human should know about this page"}},
               ["confidence"]), mark_page_done, writes=True),
     Tool("budget_status", "Context size and steps used on this page.", _obj({}, []), budget_status),
-    Tool("undo", "Undo the last change on this page.", _obj({}, []), undo, writes=True),
+    Tool("undo", "Undo the last change of the regions on this page (flag_for_review entries stay).", _obj({}, []), undo,
+         writes=True),
 ]
 
 

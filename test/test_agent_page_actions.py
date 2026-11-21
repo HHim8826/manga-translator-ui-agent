@@ -187,3 +187,22 @@ def test_an_agent_run_shows_its_page(app):  # noqa: F811
     MainWindow._show_agents_page_on_start(window(False, True), True)  # not an AI Agent run
     MainWindow._show_agents_page_on_start(window(True, False), True)  # the option is off
     assert switched == ["agents"]
+
+
+def test_flag_rows_number_regions_the_way_each_agent_does(app):  # noqa: F811
+    page = _page()
+    page.replay([
+        _start(pages=("001.jpg",)),
+        {"type": "flag", "run": "r1", "page": "001", "region": 4, "flag": "uncertain_ocr", "reason": "a"},
+        {"type": "flag", "run": "r1", "page": "001", "agent": "proofread", "region": 4,
+         "flag": "uncertain_translation", "reason": "b"},
+        {"type": "flag", "run": "r1", "page": "001", "agent": "fonts", "region": 2, "flag": "layout", "reason": "c"},
+        {"type": "flag", "run": "r1", "page": "001", "agent": "inpaint", "region": 3, "flag": "inpaint", "reason": "d"},
+    ])
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(3) for r in rows if r.text(2) == "Agents Flag"] == [
+        "Agent Result With Kind id=#4 kind=Agent Flag uncertain_ocr",  # the translator's own ids: the preview's boxes
+        "Agent Result With Kind id=Agent Result Editor Box n=4 kind=Agent Flag uncertain_translation",
+        "Agent Result With Kind id=Agent Result Editor Box n=2 kind=Agent Flag layout",
+        "Agent Result With Kind id=Agent Review Area id=3 kind=Agent Flag inpaint",
+    ]

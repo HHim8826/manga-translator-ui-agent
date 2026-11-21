@@ -1612,7 +1612,7 @@
   "Agents Preview Compare": "Compare",
   "Agents Preview Follow": "Follow progress",
   "Agents Preview Boxes": "Region boxes",
-  "Agents Preview Boxes Tip": "Region boxes on the original: green = translated, gray = pending, dashed = skipped, orange = flagged",
+  "Agents Preview Boxes Tip": "Region boxes on the original: red = pending, green = translated, gray dashed = skipped, orange = flagged",
   "Agents Preview Empty": "The page being worked on appears here once a run starts",
   "Agents Preview Missing": "Image not found: {file}",
   "Agents Preview Hint": "Wheel to zoom; drag to move a zoomed image (right-drag when comparing); right-click to fit the page; drag the divider to compare; double-click to open this image",
@@ -1780,5 +1780,15 @@
   "Agent Review Use Attempt": "Use this attempt",
   "Agent Review Save First": "Save your changes first, then switch the inpaint attempt.",
   "Agent Review Attempt Failed": "Could not use this attempt: {error}",
-  "Agent Review Attempt Used": "Now using attempt {n}"
+  "Agent Review Attempt Used": "Now using attempt {n}",
+  "Agent Result Checks": "Program checks: {found}",
+  "Agent Check Count": "{check} ({count})",
+  "Agent Check untranslated_kana": "kana left",
+  "Agent Check glossary_mismatch": "glossary not used",
+  "Agent Check character_mismatch": "character name not used",
+  "Agent Check empty_source": "no source text",
+  "Agent Check overflow": "translation too long",
+  "Agent Check needs_second_read": "not zoomed",
+  "Agent Check missing_line_break": "no line break",
+  "Agent Result Editor Box": "box {n}"
 }

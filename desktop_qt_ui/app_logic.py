@@ -2405,6 +2405,21 @@ class TranslationWorker(QObject):
     _AGENT_PROGRESS_KEYS = {"preprocess": "Agent Progress Preprocess", "translate": "Agent Progress Translate",
                             "proofread": "Agent Progress Proofread", "render": "Agent Progress Render"}
 
+    @staticmethod
+    def _agent_bar(state: dict, stage: str, done: int, total: int, now: float | None = None):
+        """(bar value, bar maximum, start of the time estimate or None) during the AI Agent workflow.
+        The bar counts the agent's translated pages and stays there during the preprocess (a later
+        chapter's too) and the proofreading; the render shows its own pages (the bar used to stay
+        full there). The estimate is for the translation and the render, each from its first report."""
+        total = max(int(total or 0), 0)
+        done = max(0, min(int(done or 0), total))
+        if stage not in ("translate", "render"):
+            return min(state.get("translated", 0), total), total, None
+        if stage == "translate":
+            state["translated"] = done
+        started = state.setdefault(f"{stage} started", time.perf_counter() if now is None else now)
+        return done, total, started
+
     def _agent_progress_text(self, stage: str, done: int, total: int) -> str:
         """What the progress bar says during the AI Agent workflow: the stage and its pages."""
         key = self._AGENT_PROGRESS_KEYS.get(stage)
@@ -3109,14 +3124,18 @@ class TranslationWorker(QObject):
                 if cli_config.get('agent_workflow', False):
                     from manga_translator.agent.workflow import run_agent_workflow
 
-                    # the bar counts the pages the agent has finished; the text names the stage
+                    # the bar counts the translated pages, then the rendered ones; the text names the stage
                     progress_context["agent"] = True
-                    agent_pages = [0]
+                    agent_bar: dict = {}
 
                     def agent_progress(stage: str, done: int, total: int):
-                        if stage == "translate":
-                            agent_pages[0] = done
-                        emit_eta_progress(agent_pages[0], total_images, self._agent_progress_text(stage, done, total))
+                        value, maximum, started = self._agent_bar(agent_bar, stage, done, total)
+                        text = self._agent_progress_text(stage, done, total)
+                        if started is None:  # the preprocess and the proofreading: no time per page
+                            progress_signal.emit(value, maximum, text)
+                            return
+                        progress_context["processing_started_at"] = started
+                        emit_eta_progress(value, maximum, text)
 
                     contexts = await run_agent_workflow(
                         translator,

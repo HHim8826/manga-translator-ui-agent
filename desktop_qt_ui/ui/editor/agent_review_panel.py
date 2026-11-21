@@ -193,13 +193,13 @@ class AgentReviewPanel(QWidget):
             self._update_buttons()
 
     def _flag_text(self, flag) -> str:
-        """``翻譯 · #4：原文不確定``, numbered like the editor's boxes (each agent numbers its own way)."""
+        """``翻譯 · 第 4 框：原文不確定``, numbered like the editor's boxes (each agent numbers its own way)."""
         from ui.main_page.pages.agent_results import flag_text
 
         agent = self._t("Agent Review Agent " + (flag.agent if flag.agent in AGENTS else "translator"))
         found = agent_review.flag_region(flag, self.regions)
         if found is not None:
-            what = flag_text(self._t, found + 1, flag.type)
+            what = flag_text(self._t, found + 1, flag.type, "editor")  # 第 4 框, like proofreading on the timeline
         elif flag.agent == "inpaint" and flag.number is not None:
             area = self._t("Agent Review Area", id=flag.number)
             what = area if flag.type == "inpaint" else f"{flag_text(self._t, None, flag.type)} · {area}"

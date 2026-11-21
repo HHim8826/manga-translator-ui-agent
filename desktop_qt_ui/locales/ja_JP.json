@@ -1601,7 +1601,7 @@
   "Agents Preview Compare": "比較",
   "Agents Preview Follow": "進行に追従",
   "Agents Preview Boxes": "領域枠",
-  "Agents Preview Boxes Tip": "原画像の領域枠：緑＝翻訳済み、灰＝未処理、破線＝スキップ、橙＝要確認",
+  "Agents Preview Boxes Tip": "原画像の領域枠：赤＝未処理、緑＝翻訳済み、灰色の破線＝スキップ、橙＝要確認",
   "Agents Preview Empty": "翻訳を始めると、処理中のページがここに表示されます",
   "Agents Preview Missing": "画像が見つかりません：{file}",
   "Agents Preview Hint": "ホイールで拡大縮小、拡大中はドラッグで移動（比較中は右ドラッグ）、右クリックでページ全体に戻す。比較中は区切り線をドラッグ。ダブルクリックで既定のアプリで開く",
@@ -1769,5 +1769,15 @@
   "Agent Review Use Attempt": "この案を使う",
   "Agent Review Save First": "先に変更を保存してから、修復案を切り替えてください。",
   "Agent Review Attempt Failed": "この案に切り替えられません：{error}",
-  "Agent Review Attempt Used": "第 {n} 案に切り替えました"
+  "Agent Review Attempt Used": "第 {n} 案に切り替えました",
+  "Agent Result Checks": "プログラムチェック：{found}",
+  "Agent Check Count": "{check}（{count} 枠）",
+  "Agent Check untranslated_kana": "仮名が残っている",
+  "Agent Check glossary_mismatch": "用語集の訳を使っていない",
+  "Agent Check character_mismatch": "キャラ名の訳を使っていない",
+  "Agent Check empty_source": "原文なし",
+  "Agent Check overflow": "訳文が長すぎる",
+  "Agent Check needs_second_read": "拡大確認なし",
+  "Agent Check missing_line_break": "改行なし",
+  "Agent Result Editor Box": "{n} 番目の枠"
 }

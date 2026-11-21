@@ -26,7 +26,7 @@ STAGE_KEYS = {
     COMPARE: "Agents Preview Compare",
 }
 BOX_COLORS = {
-    "pending": QColor(150, 150, 150),
+    "pending": QColor(220, 50, 50),  # red, like the boxes the agent sees
     "done": QColor(40, 170, 90),
     "skipped": QColor(130, 130, 130),
     "flagged": QColor(214, 140, 0),

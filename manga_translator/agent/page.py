@@ -276,7 +276,9 @@ class PageDoc:
 
     # --- history ------------------------------------------------------------
     def _checkpoint(self, label: str) -> None:
-        self._history.append((label, copy.deepcopy(self.regions), list(self.order), copy.deepcopy(self.flags)))
+        # Flags are notes for the human, not edits: undo leaves them (one on a region that undo
+        # removes goes with it).
+        self._history.append((label, copy.deepcopy(self.regions), list(self.order)))
 
     def clear_history(self) -> None:
         self._history.clear()
@@ -284,7 +286,8 @@ class PageDoc:
     def undo(self) -> str:
         if not self._history:
             raise RegionError("nothing to undo on this page")
-        label, self.regions, self.order, self.flags = self._history.pop()
+        label, self.regions, self.order = self._history.pop()
+        self.flags = [f for f in self.flags if f.get("region") is None or f.get("region") in self.regions]
         return label
 
     # --- edits --------------------------------------------------------------
@@ -394,7 +397,6 @@ class PageDoc:
         if type not in FLAG_TYPES:
             type = "other"
         entry = {"region": region_id, "type": type, "reason": reason, "agent": "translator"}
-        self._checkpoint("flag")
         self.flags.append(entry)
         return entry
 

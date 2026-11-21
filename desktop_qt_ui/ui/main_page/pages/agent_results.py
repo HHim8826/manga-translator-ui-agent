@@ -17,6 +17,11 @@ SKIP_KINDS = ("sign", "sfx", "credit", "not_text", "duplicate", "other")
 FLAG_KINDS = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "missing_text", "low_confidence",
               "step_limit", "error", "other")
 ISSUES = ("residual_text", "broken_lines")
+CHECKS = ("untranslated_kana", "glossary_mismatch", "character_mismatch", "empty_source", "overflow",
+          "needs_second_read", "missing_line_break")
+EDITOR_ORDER = ("proofread", "fonts", "editor")
+"""Who numbers regions like the editor (the JSON order): the proofreader, the font check, and the
+editor's AI Agent tab. The translator's own numbers (#4) are the preview's boxes."""
 
 # the first word of a translator undo label (page.py _checkpoint) → the tool it undid
 _UNDO_TOOLS = {"set_text": "set_text", "skip": "skip_region", "merge": "merge_regions",
@@ -34,10 +39,19 @@ def flag_kind(t: Translate, kind: str) -> str:
     return _known(t, "Agent Flag", kind, FLAG_KINDS)
 
 
-def flag_text(t: Translate, region, kind: str) -> str:
-    """``#4 原文不確定`` for a flag on region 4; the kind alone for a page flag."""
+def region_label(t: Translate, region, agent: str = "translator") -> str:
+    """``#4`` (the translator's region), ``第 4 框`` (the editor's box) or ``區域 4`` (an inpaint area)."""
+    if agent in EDITOR_ORDER:
+        return t("Agent Result Editor Box", n=region)
+    if agent == "inpaint":
+        return t("Agent Review Area", id=region)
+    return f"#{region}"
+
+
+def flag_text(t: Translate, region, kind: str, agent: str = "translator") -> str:
+    """``#4：原文不確定`` for a flag on region 4 (numbered the agent's way); the kind alone for a page flag."""
     name = flag_kind(t, str(kind or ""))
-    return t("Agent Result With Kind", id=f"#{region}", kind=name) if region else name
+    return t("Agent Result With Kind", id=region_label(t, region, agent), kind=name) if region else name
 
 
 def method_name(t: Translate, method: str) -> str:
@@ -92,8 +106,14 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
         m = re.fullmatch(r"residual (#\d+(?:, #\d+)*)", s)
         if tool == "finish_review" and m:
             return t("Agent Result Residual", ids=_ids(t, m[1]))
+        m = re.fullmatch(r"checks (\w+:\d+(?:, \w+:\d+)*)", s)
+        if tool == "mark_page_done" and m:  # the review round of the program checks
+            found = t("Agent Result Separator").join(
+                t("Agent Check Count", count=n, check=_known(t, "Agent Check", code, CHECKS))
+                for code, n in re.findall(r"(\w+):(\d+)", m[1]))
+            return t("Agent Result Checks", found=found)
         if tool == "mark_page_done" and s:
-            return s  # the review round of the program checks, summarized in the target language
+            return s  # an older run log: summarized in the target language
         m = re.match(_ID + r" used its (\d+) operations", s)
         if m:  # the inpaint review's per-area limit
             return t("Agent Result Out Of Operations", id=m[1], n=m[2])
@@ -131,7 +151,8 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
         return t("Agent Result Chars", count=m[1]) if m else s
     if tool == "flag_for_review":
         m = re.fullmatch(r"(?:" + _ID + r" )?([a-z_]+)", s)
-        return flag_text(t, m[1][1:] if m[1] else None, m[2]) if m else s
+        if m:
+            return flag_text(t, m[1][1:] if m[1] else None, m[2])
     if tool == "mark_page_done":
         m = re.fullmatch(r"confidence ([\d.]+)", s)
         return t("Agent Result Confidence", percent=round(float(m[1]) * 100)) if m else s
@@ -164,6 +185,11 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
         return t("Agent Result Done")
     if tool == "revise_text" and s == "unchanged":
         return t("Agent Result Unchanged")
+    if tool in ("revise_text", "flag_for_review"):
+        m = re.fullmatch(r"(\S+) #(\d+)(?:: (.*))?", s, re.S)
+        if m:  # the proofreader's "page #id": numbered like the editor's boxes, not the preview's
+            box = f"{m[1]} {region_label(t, m[2], 'proofread')}"
+            return f"{box}: {m[3]}" if m[3] is not None else box
     if tool == "finish_proofread":
         m = re.fullmatch(r"(\d+) revised", s)
         return t("Agent Result Revised", count=m[1]) if m else s

@@ -100,10 +100,14 @@ def test_every_text_of_the_agent_page_is_in_every_locale():
     ("set_font_style", "旁白 → Yu Mincho Light (added)", True, "Agent Result Added item=旁白 → Yu Mincho Light"),
     ("story_summary_update", "117 chars", True, "Agent Result Chars count=117"),
     ("flag_for_review", "#6 inpaint", True, "Agent Result With Kind id=#6 kind=Agent Flag inpaint"),
-    ("flag_for_review", "001 #4", True, "001 #4"),  # the proofreader's: page and region
+    ("flag_for_review", "001 #4", True, "001 Agent Result Editor Box n=4"),  # the proofreader's: JSON order
+    ("revise_text", "003 #4: 譯2 → 改二", True, "003 Agent Result Editor Box n=4: 譯2 → 改二"),
     ("mark_page_done", "confidence 0.99", True, "Agent Result Confidence percent=99"),
     ("mark_page_done", "missing #4, #5", False, "Agent Result Missing ids=#4Agent Result Separator#5"),
-    ("mark_page_done", "1 個框譯文過長", False, "1 個框譯文過長"),
+    ("mark_page_done", "checks overflow:1, needs_second_read:2", False,
+     "Agent Result Checks found=Agent Check Count check=Agent Check overflow count=1Agent Result Separator"
+     "Agent Check Count check=Agent Check needs_second_read count=2"),
+    ("mark_page_done", "1 個框譯文過長", False, "1 個框譯文過長"),  # an older run log
     ("budget_status", "91000 tokens", True, "Agent Result Tokens count=91000"),
     ("undo", "set_text #3", True, "Agent Result Undid what=Agent Tool set_text #3"),
     ("undo", "#10 erode 3px", True, "Agent Result Undid what=#10 Agent Mask erode px=3"),
@@ -234,3 +238,19 @@ def test_progress_bar_text_names_the_stage():
     assert text(worker, "unknown", 0, 1) == ""
     source = (ROOT / "desktop_qt_ui" / "app_logic.py").read_text(encoding="utf-8")
     assert "progress=agent_progress" in source and 'if progress_context.get("agent"):' in source
+
+
+def test_the_progress_bar_counts_translated_then_rendered_pages():
+    from app_logic import TranslationWorker
+
+    bar = TranslationWorker._agent_bar
+    state: dict = {}
+    assert bar(state, "preprocess", 7, 20, now=0.0) == (0, 20, None)  # no time estimate while preprocessing
+    assert bar(state, "translate", 4, 20, now=10.0) == (4, 20, 10.0)
+    assert bar(state, "translate", 10, 20, now=50.0) == (10, 20, 10.0)  # the estimate counts from the stage start
+    assert bar(state, "preprocess", 3, 20, now=55.0) == (10, 20, None)  # the next chapter: the bar stays
+    assert bar(state, "translate", 14, 20, now=90.0) == (14, 20, 10.0)
+    assert bar(state, "proofread", 20, 20, now=95.0) == (14, 20, None)
+    assert bar(state, "render", 0, 18, now=100.0) == (0, 18, 100.0)  # the render shows its own pages
+    assert bar(state, "render", 3, 18, now=110.0) == (3, 18, 100.0)
+    assert bar(state, "render", 30, 18, now=120.0) == (18, 18, 100.0)

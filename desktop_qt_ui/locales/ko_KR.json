@@ -1601,7 +1601,7 @@
   "Agents Preview Compare": "비교",
   "Agents Preview Follow": "진행 따라가기",
   "Agents Preview Boxes": "영역 상자",
-  "Agents Preview Boxes Tip": "원본의 영역 상자: 초록 = 번역됨, 회색 = 대기, 점선 = 건너뜀, 주황 = 확인 필요",
+  "Agents Preview Boxes Tip": "원본의 영역 상자: 빨강 = 대기, 초록 = 번역됨, 회색 점선 = 건너뜀, 주황 = 확인 필요",
   "Agents Preview Empty": "번역을 시작하면 처리 중인 페이지가 여기에 표시됩니다",
   "Agents Preview Missing": "이미지를 찾을 수 없음: {file}",
   "Agents Preview Hint": "휠로 확대/축소, 확대한 뒤 드래그로 이동(비교 중에는 오른쪽 드래그), 오른쪽 클릭으로 페이지 전체 보기. 비교할 때 구분선을 드래그하고, 두 번 클릭하면 기본 프로그램으로 엽니다",
@@ -1769,5 +1769,15 @@
   "Agent Review Use Attempt": "이 버전 사용",
   "Agent Review Save First": "먼저 변경 사항을 저장한 뒤 복원 버전을 바꾸세요.",
   "Agent Review Attempt Failed": "이 버전으로 바꿀 수 없습니다: {error}",
-  "Agent Review Attempt Used": "{n}번째 버전으로 바꿨습니다"
+  "Agent Review Attempt Used": "{n}번째 버전으로 바꿨습니다",
+  "Agent Result Checks": "프로그램 검사: {found}",
+  "Agent Check Count": "{check} ({count}개)",
+  "Agent Check untranslated_kana": "가나가 남음",
+  "Agent Check glossary_mismatch": "용어집 번역 미사용",
+  "Agent Check character_mismatch": "캐릭터 번역명 미사용",
+  "Agent Check empty_source": "원문 없음",
+  "Agent Check overflow": "번역이 너무 김",
+  "Agent Check needs_second_read": "확대 확인 안 함",
+  "Agent Check missing_line_break": "줄바꿈 없음",
+  "Agent Result Editor Box": "{n}번째 박스"
 }

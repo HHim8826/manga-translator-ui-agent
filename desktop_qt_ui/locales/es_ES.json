@@ -1601,7 +1601,7 @@
   "Agents Preview Compare": "Comparar",
   "Agents Preview Follow": "Seguir el progreso",
   "Agents Preview Boxes": "Cuadros",
-  "Agents Preview Boxes Tip": "Cuadros sobre el original: verde = traducido, gris = pendiente, discontinuo = omitido, naranja = marcado",
+  "Agents Preview Boxes Tip": "Cuadros sobre el original: rojo = pendiente, verde = traducido, gris discontinuo = omitido, naranja = marcado",
   "Agents Preview Empty": "La página en curso aparece aquí cuando empieza la traducción",
   "Agents Preview Missing": "No se encuentra la imagen: {file}",
   "Agents Preview Hint": "Rueda para ampliar; arrastra para mover la imagen ampliada (clic derecho y arrastrar al comparar); clic derecho para ver la página entera; arrastra el divisor para comparar; doble clic para abrir la imagen",
@@ -1769,5 +1769,15 @@
   "Agent Review Use Attempt": "Usar este intento",
   "Agent Review Save First": "Guarda primero los cambios y luego cambia el intento de inpaint.",
   "Agent Review Attempt Failed": "No se pudo usar este intento: {error}",
-  "Agent Review Attempt Used": "Ahora se usa el intento {n}"
+  "Agent Review Attempt Used": "Ahora se usa el intento {n}",
+  "Agent Result Checks": "Comprobaciones: {found}",
+  "Agent Check Count": "{check} ({count})",
+  "Agent Check untranslated_kana": "quedan kana",
+  "Agent Check glossary_mismatch": "glosario no usado",
+  "Agent Check character_mismatch": "nombre de personaje no usado",
+  "Agent Check empty_source": "sin texto original",
+  "Agent Check overflow": "traducción demasiado larga",
+  "Agent Check needs_second_read": "sin ampliar",
+  "Agent Check missing_line_break": "sin salto de línea",
+  "Agent Result Editor Box": "cuadro {n}"
 }

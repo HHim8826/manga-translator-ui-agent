@@ -154,7 +154,7 @@ def test_mark_page_done_lists_a_missing_break_once(tmp_path):
                                       "confidence": 0.95})
     first = registry.execute("mark_page_done", {"confidence": 0.9})
     assert not first.ok and "#1: the source has 2 lines but the translation has no [BR]" in first.text
-    assert first.summary == "1 個框沒有換行"
+    assert first.summary == "checks missing_line_break:1"
     done = registry.execute("mark_page_done", {"confidence": 0.9})
     assert done.ok and session.doc.confidence == pytest.approx(0.9)  # a light weight: 1 * (1 - 0.1)
     assert [c["code"] for c in session.doc.checks] == ["missing_line_break"]

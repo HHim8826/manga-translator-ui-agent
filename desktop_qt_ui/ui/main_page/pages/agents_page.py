@@ -387,7 +387,7 @@ class AgentsPage(QWidget):
                 self._apply_filter_to(row)
         elif kind == "flag":
             region = event.get("region")
-            detail = flag_text(self._t, region, event.get("flag", ""))
+            detail = flag_text(self._t, region, event.get("flag", ""), event.get("agent") or "translator")
             pending = self._pending_rows.get(f"{page}|flag_for_review")
             if pending:  # the flag_for_review call already has a row: highlight it instead of adding a duplicate
                 row = pending[0]

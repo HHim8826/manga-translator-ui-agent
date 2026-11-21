@@ -113,6 +113,20 @@ def test_page_doc_keeps_unfinished_regions_and_undo(tmp_path):
     assert page["mask_raw"] == next(iter(json.load(open(json_path, encoding="utf-8")).values()))["mask_raw"]
 
 
+def test_undo_leaves_the_flags(tmp_path):
+    image_path, json_path = make_page(tmp_path)
+    doc = PageDoc.load(image_path, json_path)
+    doc.set_text(1, "a", "甲", "dialogue", 1.0)
+    doc.flag(1, "uncertain_ocr", "handwritten")
+    doc.set_text(2, "b", "乙", "dialogue", 1.0)
+    doc.flags.append({"region": 99, "type": "layout", "reason": "a region undo takes away", "agent": "translator"})
+    assert doc.undo() == "set_text #2"  # the flag is not an edit: undo takes back set_text #2, not the flag
+    assert doc.regions[2].translation is None and doc.regions[1].translation == "甲"
+    assert [f["region"] for f in doc.flags] == [1]
+    doc.flag(None, "other", "whole page")
+    assert doc.undo() == "set_text #1" and [f["region"] for f in doc.flags] == [1, None]
+
+
 def test_sidecar_matches_regions_by_center_and_bbox(tmp_path):
     image_path, json_path = make_page(tmp_path)
     doc = PageDoc.load(image_path, json_path)
@@ -662,8 +676,9 @@ def test_program_checks_are_shown_once_then_set_the_confidence(tmp_path):
     _say(tools, 3, "全然違う", "這是一段非常非常非常長的翻譯文字")    # reading differs from local OCR, too long
     first = tools.execute("mark_page_done", {"confidence": 0.97})
     assert not first.ok and not first.page_done
-    assert first.summary.startswith("1 個框留有假名；1 個框沒用術語表譯法；1 個框沒用角色譯名")
-    assert first.summary.endswith("2 個框沒有放大確認；1 個框譯文過長")
+    # the run log keeps the check codes; the AI Agent page says them in the language of the app
+    assert first.summary.startswith("checks untranslated_kana:1, glossary_mismatch:1, character_mismatch:1")
+    assert first.summary.endswith("needs_second_read:2, overflow:1")
     for expected in ("#1: the translation still contains Japanese kana 「っち」", "glossary translates it as 「即死拳」",
                      "the character list says 「小迪梅（暱稱）」", "#3: your reading differs from the local OCR 「text3」",
                      "#3: the translation has 16 characters"):

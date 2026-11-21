@@ -210,7 +210,7 @@ def test_the_panel_lists_what_the_agents_left(app, tmp_path):  # noqa: F811
     image_path, _, _, regions = _agent_page(tmp_path)
     panel = _panel(image_path, regions)
     assert panel.summary_label.text() == "Agent Review Summary state=Agent Page Incomplete"
-    kind = "Agent Result With Kind id=#{} kind=Agent Flag {}".format
+    kind = "Agent Result With Kind id=Agent Result Editor Box n={} kind=Agent Flag {}".format  # the editor's boxes
     assert _rows(panel) == [
         ("Agent Review Flags count=4", [
             f"Agent Review Agent translator · {kind(1, 'uncertain_ocr')}",

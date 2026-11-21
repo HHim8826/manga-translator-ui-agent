@@ -309,12 +309,23 @@ def page_score(session: "AgentSession", issues: List[Issue]) -> float:
     return round(max(0.0, min(1.0, score)), 3)
 
 
-def summary(lang: str, issues: List[Issue]) -> str:
-    table = HUMAN_TEXT.get(lang) or HUMAN_TEXT["ENG"]
+def _counts(issues: List[Issue]) -> Dict[str, int]:
+    """Regions per check, in the order the checks were found."""
     counts: Dict[str, set] = {}
     for issue in issues:
         counts.setdefault(issue.code, set()).add(issue.region)
-    parts = [table["count"].format(count=len(regions), label=table["short"][code]) for code, regions in counts.items()]
+    return {code: len(regions) for code, regions in counts.items()}
+
+
+def codes(issues: List[Issue]) -> str:
+    """``checks untranslated_kana:1, overflow:2`` for the run log; the AI Agent page says it in the
+    language of the app (the review list uses ``summary``, in the target language)."""
+    return "checks " + ", ".join(f"{code}:{count}" for code, count in _counts(issues).items())
+
+
+def summary(lang: str, issues: List[Issue]) -> str:
+    table = HUMAN_TEXT.get(lang) or HUMAN_TEXT["ENG"]
+    parts = [table["count"].format(count=count, label=table["short"][code]) for code, count in _counts(issues).items()]
     if not parts:
         return table["none"]
     return "；".join(parts) if lang in ("CHT", "CHS") else "; ".join(parts)
