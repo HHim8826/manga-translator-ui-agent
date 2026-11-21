@@ -81,6 +81,7 @@ PAGE_STATE_KEYS = {
     "incomplete": "Agent Page Incomplete",
     "error": "Agent Page Error",
     "stopped": "Agent Page Stopped",
+    "not_reached": "Agent Page Not Reached",
 }
 WARN = QColor(214, 140, 0)
 ERROR = QColor(210, 50, 50)
@@ -128,6 +129,8 @@ class AgentsPage(QWidget):
         self._requests = 0
         """Model requests of every agent: translator and recall, inpaint review, proofreading."""
         self._rendering: Dict[str, int] = {}
+        self._unrendered = 0
+        """Pages of the run the render left out: they have no agent translation."""
         self._build()
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
@@ -224,6 +227,7 @@ class AgentsPage(QWidget):
             self._proofreading = False
             self._finished = None
             self._requests = 0
+            self._unrendered = 0
             self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
             self._update_memory(event.get("memory"))
         elif kind == "page_start":
@@ -361,10 +365,25 @@ class AgentsPage(QWidget):
                 self._paint(row, MUTED)
         elif kind == "render_start":
             run = str(event.get("run") or "")
-            self._rendering[run] = int(event.get("pages") or 0)
-            text = self._t("Agents Render Start", pages=event.get("pages", 0))
-            self.status_label.setText(text)
-            self._add_row(event, self._t("Agents Render"), text, "")
+            pages = int(event.get("pages") or 0)
+            skipped = event.get("skipped") or {}
+            self._unrendered += len(skipped)
+            text = self._t("Agents Render Start", pages=pages)
+            reason = ""
+            if skipped:  # pages without an agent translation are not typeset
+                for stem, status in skipped.items():
+                    self._set_page(stem, state=status if status in PAGE_STATE_KEYS else "not_reached")
+                reason = self._t("Agents Render Skipped", pages=self._t("Agent Result Separator").join(
+                    f"{stem}（{self._t(PAGE_STATE_KEYS.get(status, 'Agent Page Not Reached'))}）"
+                    for stem, status in skipped.items()))
+            row = self._add_row(event, self._t("Agents Render"), text, reason, problem=bool(skipped))
+            if skipped:
+                self._paint(row, WARN)
+            if pages:
+                self._rendering[run] = pages
+                self.status_label.setText(text)
+            elif self._finished is not None:
+                self.status_label.setText(self._finished_status())
         elif kind == "render_done":
             self.preview.follow(page)
             output = event.get("output") or ""
@@ -399,7 +418,11 @@ class AgentsPage(QWidget):
             totals = event.get("totals") or {}
             self._translating = False
             self._requests += int(totals.get("requests") or 0) + int(totals.get("recall_requests") or 0)
-            self._finished = {"done": event.get("done", 0), "pages": event.get("pages", 0)}
+            # ``total``: every page of the run, also the ones a stopped run never reached
+            self._finished = {"done": event.get("done", 0), "pages": event.get("total", event.get("pages", 0))}
+            for stem in self._order:
+                if self._pages.get(stem, {}).get("state") == "waiting":
+                    self._set_page(stem, state="not_reached")
             reviewing = [p for p in self._order if self._pages.get(p, {}).get("state") == "inpainting"]
             if reviewing:  # the inpaint review of the last page(s) is still running
                 self.status_label.setText(self._t("Agents Inpaint Progress", page=reviewing[0]))
@@ -410,8 +433,11 @@ class AgentsPage(QWidget):
     def _finished_status(self) -> str:
         """Pages done by the translator, flags as the page list counts them (every agent's), requests."""
         flagged = sum(int(info.get("flags") or 0) for info in self._pages.values())
-        return self._t("Agents Finished", done=self._finished["done"], pages=self._finished["pages"],
+        text = self._t("Agents Finished", done=self._finished["done"], pages=self._finished["pages"],
                        flagged=flagged, requests=self._requests)
+        if self._unrendered:
+            text += self._t("Agents Finished Unrendered", count=self._unrendered)
+        return text
 
     def _show_finished_if_idle(self) -> None:
         if self._translating or self._proofreading or self._finished is None:

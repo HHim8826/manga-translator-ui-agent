@@ -3848,7 +3848,11 @@ class MangaTranslator:
                             if not loaded_regions:
                                 logger.info(f"No text regions found in JSON for {os.path.basename(image_name)}, will render original image")
 
-                            self._prepare_loaded_regions(loaded_regions, use_text_as_translation=True)
+                            # AI Agent 渲染：未翻译的框保持空白译文（原图保留），不用原文代替
+                            self._prepare_loaded_regions(
+                                loaded_regions,
+                                use_text_as_translation=not getattr(self, 'keep_empty_translations', False),
+                            )
 
                             ctx.text_regions = loaded_regions
                             ctx.skip_font_scaling = skip_font_scaling

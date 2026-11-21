@@ -474,12 +474,19 @@ class PageDoc:
 
         Mask components that only touch skipped text are cleared. Components
         shared with kept text are cleared only near the skipped text and away
-        from the kept text.
+        from the kept text. On an incomplete page the regions the agent did not
+        translate are left the same way, so the typeset page keeps their
+        original text (they stay in the JSON with an empty translation).
         """
-        skipped = [r for r in self.active_regions() if r.skipped]
+        unfinished = self.status == "incomplete"
+
+        def left(region: Region) -> bool:
+            return region.skipped or (unfinished and not region.translation)
+
+        skipped = [r for r in self.active_regions() if left(r)]
         # An added region merged into another one keeps its strokes in the
         # mask as long as the region it went into is kept.
-        added = [r for r in self.regions.values() if r.erase is not None and not self._final(r).skipped]
+        added = [r for r in self.regions.values() if r.erase is not None and not left(self._final(r))]
         encoded = self.page_data.get("mask_raw")
         if not (skipped or added) or not isinstance(encoded, str):
             return None
@@ -511,7 +518,7 @@ class PageDoc:
                     cv2.fillPoly(canvas, polys, 1)
                 return canvas
 
-            kept = [r for r in self.active_regions() if not r.skipped]
+            kept = [r for r in self.active_regions() if not left(r)]
             keep_zone = cv2.dilate(fill(kept), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * keep_margin + 1,) * 2))
             skip_seed = fill(skipped)
             skip_touch = cv2.dilate(skip_seed, np.ones((7, 7), np.uint8))

@@ -1732,5 +1732,8 @@
   "Agents Fonts Fallback": "{chars} from {font}",
   "Agents Fonts Detail Borrowed": "{changed} region(s) changed, missing characters of {borrowed} drawn from a similar font, {unfixed} still missing characters",
   "Agents Font Styles": "Font styles",
-  "Agents Font Styles Detail": "{count} style(s) saved to {file} for the next chapters"
+  "Agents Font Styles Detail": "{count} style(s) saved to {file} for the next chapters",
+  "Agent Page Not Reached": "Not reached",
+  "Agents Render Skipped": "Not rendered, no translation: {pages}",
+  "Agents Finished Unrendered": ", {count} page(s) not rendered (no translation)"
 }

@@ -3,6 +3,7 @@ rotation (``OPENAI_API_KEY`` / ``OPENAI_API_BASE`` / ``OPENAI_MODEL`` and their
 numbered candidates), so the agent uses the same endpoints as the OpenAI translators."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Dict, List, Optional, Set
 
@@ -107,3 +108,44 @@ def build_client(config, settings: AgentSettings) -> OpenAIChatClient:
         raise RuntimeError("The agent workflow needs an OpenAI-compatible API: set OPENAI_API_KEY and "
                            "OPENAI_API_BASE in API Management.")
     return OpenAIChatClient(resolved.candidates, resolved.strategy, settings, config)
+
+
+class APICheckError(RuntimeError):
+    """The API cannot run the agents; the message says what to fix."""
+
+
+PROBE_TOOL = {"type": "function", "function": {
+    "name": "report_shape", "description": "Report the shape in the picture.",
+    "parameters": {"type": "object", "properties": {"shape": {"type": "string"}}, "required": ["shape"]}}}
+
+
+def _probe_image() -> str:
+    from PIL import Image, ImageDraw
+
+    from .images import data_url
+
+    image = Image.new("RGB", (96, 64), "white")
+    ImageDraw.Draw(image).ellipse((28, 12, 68, 52), fill="black")
+    return data_url(image)
+
+
+async def check_api(client) -> None:
+    """One small request the way the agents call the model (an image, a tool, tool_choice
+    "required"), so a wrong key, address or model stops the run before the slow preprocess."""
+    messages = [{"role": "system", "content": "Answer by calling the tool."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Which shape is in the picture?"},
+                    {"type": "image_url", "image_url": {"url": _probe_image(), "detail": "low"}}]}]
+    model = getattr(client, "model_label", "") or "?"
+    fix = ("The agents need an OpenAI-compatible model that takes images and tool calls: check "
+           "OPENAI_API_KEY, OPENAI_API_BASE and OPENAI_MODEL in API Management.")
+    try:
+        reply = await client.complete(messages, [PROBE_TOOL], "required")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise APICheckError(f"AI Agent API check failed (model {model}): {type(exc).__name__}: "
+                            f"{str(exc)[:300]}. {fix}") from exc
+    if not reply.tool_calls:
+        raise APICheckError(f"AI Agent API check failed (model {model}): the model answered without calling "
+                            f"the tool. {fix}")

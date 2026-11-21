@@ -1721,5 +1721,8 @@
   "Agents Fonts Fallback": "「{chars}」は {font}",
   "Agents Fonts Detail Borrowed": "{changed} 領域を変更、{borrowed} 領域の不足字形を近いフォントで補完、{unfixed} 領域で字形不足",
   "Agents Font Styles": "フォントスタイル",
-  "Agents Font Styles Detail": "{count} 個のスタイルを {file} に保存（次の話でも使用）"
+  "Agents Font Styles Detail": "{count} 個のスタイルを {file} に保存（次の話でも使用）",
+  "Agent Page Not Reached": "未処理",
+  "Agents Render Skipped": "訳文がないためレンダリングしない：{pages}",
+  "Agents Finished Unrendered": "、訳文のない {count} ページはレンダリングしていません"
 }

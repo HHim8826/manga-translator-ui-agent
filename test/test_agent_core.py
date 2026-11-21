@@ -736,7 +736,7 @@ def test_workflow_reviews_inpainting_and_render_reuses_it(tmp_path):
             target_lang = "CHT"
 
     translator = FakeTranslator(tmp_path)
-    # page 002 fails in the agent stage: it is not reviewed and must not reuse an old inpainted image
+    # page 002 fails in the agent stage: it is not reviewed, and not rendered either (no translation)
     client = ScriptedClient(_finish_page() + [RuntimeError("refused")] * 3)
     backend = FakeBackend()
     result = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client,
@@ -744,8 +744,8 @@ def test_workflow_reviews_inpainting_and_render_reuses_it(tmp_path):
                                             agent_settings={"retry_attempts": 1}))
     assert len(client.review_requests) == 1 and list(backend.saved) == [paths[0]]
     renders = translator.calls[1:]
-    assert [c["ignore_existing_inpainted"] for c in renders] == [False, True]
-    assert result == ["ctx:001.png", "ctx:002.png"]
+    assert [c["ignore_existing_inpainted"] for c in renders] == [False]  # 001 reuses its reviewed image
+    assert result[0] == "ctx:001.png" and result[1].skip_reason == "agent_error"
     store = AgentStore(str(folder / "manga_translator_work"))
     assert store.load_sidecar("001")["inpaint"]["finished"]
     assert "inpaint" not in store.load_sidecar("002")

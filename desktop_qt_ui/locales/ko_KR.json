@@ -1721,5 +1721,8 @@
   "Agents Fonts Fallback": "「{chars}」는 {font}",
   "Agents Fonts Detail Borrowed": "{changed}개 영역 변경, {borrowed}개 영역의 없는 글자를 비슷한 글꼴로 보충, {unfixed}개 글자 누락",
   "Agents Font Styles": "글꼴 스타일",
-  "Agents Font Styles Detail": "{count}개 스타일을 {file}에 저장 (다음 화에서도 사용)"
+  "Agents Font Styles Detail": "{count}개 스타일을 {file}에 저장 (다음 화에서도 사용)",
+  "Agent Page Not Reached": "미처리",
+  "Agents Render Skipped": "번역이 없어 렌더링 안 함: {pages}",
+  "Agents Finished Unrendered": ", 번역이 없는 {count}페이지는 렌더링하지 않음"
 }

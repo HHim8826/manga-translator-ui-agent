@@ -445,8 +445,11 @@ class AgentRunner:
                 break
         if not done and doc.status != "done":
             doc.status = "incomplete"
+            missing = doc.missing()
             reason = f"stopped after {self.session.page_steps} steps; missing " + \
-                     (", ".join(f"#{i}" for i in doc.missing()) or "nothing")
+                     (", ".join(f"#{i}" for i in missing) or "nothing")
+            if missing:
+                reason += " (kept as in the original: their text is not erased)"
             doc.flag(None, "step_limit", reason)
             self.events.emit("flag", page=page, region=None, flag="step_limit", reason=reason)
         return self._finish_page(doc)
@@ -515,7 +518,7 @@ class AgentRunner:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            self.events.emit("run_end", pages=len(outcomes),
+            self.events.emit("run_end", pages=len(outcomes), total=len(self.pages),
                              done=sum(1 for o in outcomes if o.get("status") == "done"),
                              flagged=sum(o.get("flags", 0) for o in outcomes), totals=self.totals,
                              memory=self.memory.counts())

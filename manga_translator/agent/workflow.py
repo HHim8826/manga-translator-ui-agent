@@ -41,7 +41,9 @@ logger = logging.getLogger("manga_translator.agent")
 
 MODE_FLAGS = ("template", "save_text", "load_text", "translate_json_only", "generate_and_export",
               "colorize_only", "upscale_only", "inpaint_only", "replace_translation", "export_from_local_json",
-              "skip_txt_import", "ignore_existing_inpainted")
+              "skip_txt_import", "ignore_existing_inpainted", "keep_empty_translations")
+RENDERED = ("done", "incomplete")
+"""Page statuses that are typeset; the other pages have no agent translation."""
 
 
 def _image_path(image: Any) -> str:
@@ -263,11 +265,18 @@ class _RenderEvents:
             self.logs[work_dir] = EventLog(path, run_id)
         return self.logs[work_dir]
 
-    def start(self, paths: Sequence[str]) -> None:
-        for work_dir, pages in group_by_chapter(paths):
+    def start(self, paths: Sequence[str], left_out: Optional[Dict[str, str]] = None) -> None:
+        """``left_out``: pages that are not typeset → their agent status (``error``, ``stopped``,
+        ``not_reached`` ...), listed in their chapter's ``render_start``."""
+        left_out = left_out or {}
+        rendered = {_key(p) for p in paths}
+        for work_dir, pages in group_by_chapter(list(paths) + list(left_out)):
             log = self._log(pages[0])
             if log is not None:
-                log.emit("render_start", agent="render", pages=len(pages))
+                skipped = {os.path.splitext(os.path.basename(p))[0]: left_out[p]
+                           for p in pages if _key(p) not in rendered and p in left_out}
+                log.emit("render_start", agent="render", pages=sum(1 for p in pages if _key(p) in rendered),
+                         **({"skipped": skipped} if skipped else {}))
 
     def saved(self, ctx) -> None:  # the translator's on_result_saved hook
         from ..utils.path_manager import find_inpainted_path
@@ -294,6 +303,18 @@ async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> Li
         if path is None:
             return outcomes
         outcomes.extend(await reviewer.run([path]))
+
+
+def _left_out_context(path: str, status: str):
+    """A skipped result for a page the render left out, so the batch summary names it."""
+    from ..utils import Context
+
+    ctx = Context()
+    ctx.image_name = path
+    ctx.skipped = True
+    ctx.skip_reason = f"agent_{status}"
+    ctx.skip_message = f"AI Agent: no translation ({status}), not rendered"
+    return ctx
 
 
 def group_by_chapter(paths: Sequence[str]) -> List[Tuple[str, List[str]]]:
@@ -367,6 +388,11 @@ async def run_agent_workflow(
     try:
         if fonts is None:  # scanning the installed fonts takes seconds: do it while the pages are preprocessed
             font_task = asyncio.ensure_future(_font_service(translator, config, settings, target_lang, log))
+        if client is None:  # before the preprocess: a wrong API setting should not wait for it
+            from .client import build_client, check_api
+            client = build_client(config, settings)
+            log(f"[Agent] API check: model {getattr(client, 'model_label', '')}")
+            await check_api(client)
         if preprocess:
             log("[Agent] 1/4 Preprocess: detection, local OCR and masks")
             _set_mode(translator, template=True, save_text=True)
@@ -377,9 +403,6 @@ async def run_agent_workflow(
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
-        if client is None:
-            from .client import build_client
-            client = build_client(config, settings)
         log(f"[Agent] 2/4 Agent: {len(paths)} page(s), model {getattr(client, 'model_label', '')}, "
             f"reasoning effort {settings.reasoning_effort or 'default'} "
             f"(recall and inpaint review: {settings.review_reasoning_effort or 'default'})")
@@ -500,8 +523,21 @@ async def run_agent_workflow(
             return []
         from ..utils.path_manager import find_json_path
 
-        render_items = [(image, cfg) for image, cfg in images_with_configs if find_json_path(_image_path(image))]
+        # Only pages the agent translated: a failed page, or one the run never reached, has only the
+        # preprocess JSON, and the render would typeset its original text again.
+        statuses = {_key(o["image"]): o.get("status") for o in outcomes if o.get("image")}
+        render_items, left_out = [], {}
+        for image, cfg in images_with_configs:
+            path = _image_path(image)
+            status = statuses.get(_key(path)) or "not_reached"
+            if status in RENDERED and find_json_path(path):
+                render_items.append((image, cfg))
+            else:
+                left_out[path] = "no_json" if status in RENDERED else status
         log(f"[Agent] 4/4 Render: typesetting {len(render_items)} page(s)")
+        if left_out:
+            log("[Agent] Not rendered (no agent translation): " + ", ".join(
+                f"{os.path.basename(p)} ({s})" for p, s in left_out.items()))
         results: list = []
         render_events = _RenderEvents(chapter_logs)
         batch_progress.stage, batch_progress.total = "render", len(render_items)
@@ -509,20 +545,20 @@ async def run_agent_workflow(
         saved_hook = getattr(translator, "on_result_saved", None)
         translator.on_result_saved = render_events.saved
         try:
-            render_events.start([_image_path(image) for image, _ in render_items])
+            render_events.start([_image_path(image) for image, _ in render_items], left_out)
             # Reviewed pages reuse the inpainted image the review saved; the others
             # must not pick up an older one made before the agent changed the mask.
             for reuse in (True, False):
                 batch = [item for item in render_items if (_key(_image_path(item[0])) in reviewed) == reuse]
                 if batch:
                     _set_mode(translator, load_text=True, save_text=True, skip_txt_import=True,
-                              ignore_existing_inpainted=not reuse)
+                              ignore_existing_inpainted=not reuse, keep_empty_translations=True)
                     results.extend(await translator.translate_batch(batch, save_info=save_info))
                     batch_progress.offset += len(batch)
         finally:
             translator.on_result_saved = saved_hook
             render_events.close()
-        return results
+        return results + [_left_out_context(path, status) for path, status in left_out.items()]
     finally:
         if isinstance(hooks, list) and batch_progress in hooks:
             hooks.remove(batch_progress)

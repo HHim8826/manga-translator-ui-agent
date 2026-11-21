@@ -55,7 +55,7 @@ def test_events_fill_timeline_and_pages(app):
     items = [page.page_list.item(i).text() for i in range(page.page_list.count())]
     assert items[0] == "Agents All Pages"
     assert items[1] == "001 · Agent Page Done · Agents Flag Count count=1"
-    assert items[2] == "002 · Agent Page Waiting"
+    assert items[2] == "002 · Agent Page Not Reached"  # the run ended without it
     assert page.context_bar.value() == 250
     assert "glossary=2" in page.memory_label.text()
     assert "done=1" in page.status_label.text()

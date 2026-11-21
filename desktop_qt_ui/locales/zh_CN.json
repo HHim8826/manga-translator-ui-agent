@@ -1731,5 +1731,8 @@
   "Agents Fonts Fallback": "「{chars}」改用 {font}",
   "Agents Fonts Detail Borrowed": "更换 {changed} 个区域，{borrowed} 个区域的缺字改用相近字体，仍缺字 {unfixed} 个",
   "Agents Font Styles": "字体样式",
-  "Agents Font Styles Detail": "{count} 个样式存到 {file}，后面的话数沿用"
+  "Agents Font Styles Detail": "{count} 个样式存到 {file}，后面的话数沿用",
+  "Agent Page Not Reached": "未处理",
+  "Agents Render Skipped": "没有译文，不渲染：{pages}",
+  "Agents Finished Unrendered": "，{count} 页没有译文所以没有渲染"
 }
