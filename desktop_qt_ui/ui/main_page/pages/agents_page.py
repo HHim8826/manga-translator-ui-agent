@@ -34,6 +34,7 @@ from qfluentwidgets import (
 from manga_translator.agent import events as agent_events
 
 from .agent_preview import PagePreview
+from .agent_results import flag_text, result_text
 
 TOOL_KEYS = {
     "get_candidates": "Agent Tool get_candidates",
@@ -100,6 +101,14 @@ def _own_region(event: dict, value) -> Optional[int]:
     return _region_id(value) if (event.get("agent") or "translator") == "translator" else None
 
 
+def _requests(event: dict) -> int:
+    usage = event.get("usage")
+    try:
+        return int(usage.get("requests") or 0) if isinstance(usage, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 class AgentsPage(QWidget):
     event_received = pyqtSignal(dict)
 
@@ -113,7 +122,10 @@ class AgentsPage(QWidget):
         self._limit = 400_000
         self._translating = False
         self._proofreading = False
-        self._finished_text = ""
+        self._finished: Optional[dict] = None
+        """``done`` and ``pages`` of the translator's run_end; the status is built from it and the totals."""
+        self._requests = 0
+        """Model requests of every agent: translator and recall, inpaint review, proofreading."""
         self._rendering: Dict[str, int] = {}
         self._build()
         self.event_received.connect(self.handle_event, Qt.ConnectionType.QueuedConnection)
@@ -159,7 +171,7 @@ class AgentsPage(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.page_list = ListWidget(splitter)
-        self.page_list.setMinimumWidth(170)
+        self.page_list.setMinimumWidth(200)
         self.page_list.currentItemChanged.connect(self._on_page_selected)
         self.timeline = TreeWidget(splitter)
         self.timeline.setColumnCount(5)
@@ -174,7 +186,7 @@ class AgentsPage(QWidget):
         splitter.addWidget(self.timeline)
         splitter.addWidget(self.preview)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([190, 620, 420])
+        splitter.setSizes([250, 560, 420])
         root.addWidget(splitter, 1)
 
         self.memory_label = CaptionLabel(self)
@@ -209,7 +221,8 @@ class AgentsPage(QWidget):
             self._reset([os.path.splitext(p)[0] for p in event.get("pages", [])])
             self._translating = True
             self._proofreading = False
-            self._finished_text = ""
+            self._finished = None
+            self._requests = 0
             self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
             self._update_memory(event.get("memory"))
         elif kind == "page_start":
@@ -229,15 +242,17 @@ class AgentsPage(QWidget):
             queue = self._pending_rows.get(f"{page}|{event.get('tool', '')}")
             row = queue.pop(0) if queue else None
             if row is not None:
-                row.setText(3, event.get("summary", ""))
-                row.setToolTip(3, event.get("summary", ""))
+                text, tip = result_text(self._t, event.get("tool", ""), event.get("summary", ""),
+                                        event.get("ok", True), TOOL_KEYS)
+                row.setText(3, text)
+                row.setToolTip(3, tip)
                 if not event.get("ok", True):
                     row.setData(0, Qt.ItemDataRole.UserRole + 1, True)
                     self._paint(row, WARN)
                 self._apply_filter_to(row)
         elif kind == "flag":
             region = event.get("region")
-            detail = (f"#{region} " if region else "") + str(event.get("flag", ""))
+            detail = flag_text(self._t, region, event.get("flag", ""))
             pending = self._pending_rows.get(f"{page}|flag_for_review")
             if pending:  # the flag_for_review call already has a row: highlight it instead of adding a duplicate
                 row = pending[0]
@@ -277,6 +292,7 @@ class AgentsPage(QWidget):
                           self._t("Agents Inpaint Start", units=event.get("units", 0), issues=event.get("issues", 0)),
                           "")
         elif kind == "inpaint_done":
+            self._requests += _requests(event)
             flagged = int(event.get("flagged") or 0)
             filled = int(event.get("filled") or 0)
             counts = {"units": event.get("units", 0), "retried": event.get("retried", 0), "flagged": flagged}
@@ -297,6 +313,7 @@ class AgentsPage(QWidget):
                           self._t("Agents Proofread Start", pages=event.get("pages", 0),
                                   regions=event.get("regions", 0)), "")
         elif kind == "proofread_done":
+            self._requests += _requests(event)
             self._proofreading = False
             flagged = int(event.get("flagged") or 0)
             row = self._add_row(event, self._t("Agents Proofread"),
@@ -350,8 +367,8 @@ class AgentsPage(QWidget):
                 self.status_label.setText(self._t("Agents Render Progress", page=page))
             else:
                 self._rendering.pop(run, None)
-                if self._finished_text and not self._rendering:
-                    self.status_label.setText(self._finished_text)
+                if self._finished is not None and not self._rendering:
+                    self.status_label.setText(self._finished_status())
         elif kind == "error":
             row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
             self._paint(row, ERROR)
@@ -369,21 +386,26 @@ class AgentsPage(QWidget):
         elif kind == "run_end":
             totals = event.get("totals") or {}
             self._translating = False
-            self._finished_text = self._t("Agents Finished", done=event.get("done", 0),
-                                          pages=event.get("pages", 0), flagged=event.get("flagged", 0),
-                                          requests=totals.get("requests", 0))
+            self._requests += int(totals.get("requests") or 0) + int(totals.get("recall_requests") or 0)
+            self._finished = {"done": event.get("done", 0), "pages": event.get("pages", 0)}
             reviewing = [p for p in self._order if self._pages.get(p, {}).get("state") == "inpainting"]
             if reviewing:  # the inpaint review of the last page(s) is still running
                 self.status_label.setText(self._t("Agents Inpaint Progress", page=reviewing[0]))
             else:
-                self.status_label.setText(self._finished_text)
+                self.status_label.setText(self._finished_status())
             self._update_memory(event.get("memory"))
 
+    def _finished_status(self) -> str:
+        """Pages done by the translator, flags as the page list counts them (every agent's), requests."""
+        flagged = sum(int(info.get("flags") or 0) for info in self._pages.values())
+        return self._t("Agents Finished", done=self._finished["done"], pages=self._finished["pages"],
+                       flagged=flagged, requests=self._requests)
+
     def _show_finished_if_idle(self) -> None:
-        if self._translating or self._proofreading or not self._finished_text:
+        if self._translating or self._proofreading or self._finished is None:
             return
         if not any(info.get("state") == "inpainting" for info in self._pages.values()):
-            self.status_label.setText(self._finished_text)
+            self.status_label.setText(self._finished_status())
 
     def replay(self, events: List[dict]) -> None:
         for event in events:
@@ -457,7 +479,7 @@ class AgentsPage(QWidget):
                 state = self._t(PAGE_STATE_KEYS.get(info.get("state", "waiting"), "Agent Page Waiting"))
                 text = f"{page} · {state}"
                 if info.get("confidence") is not None:
-                    text += f" · {round(info['confidence'] * 100)}%"
+                    text += " · " + self._t("Agents Page Confidence", percent=round(info["confidence"] * 100))
                 if info.get("flags"):
                     text += " · " + self._t("Agents Flag Count", count=info["flags"])
                 item = QListWidgetItem(text)

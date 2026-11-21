@@ -258,6 +258,35 @@ def group_by_chapter(paths: Sequence[str]) -> List[Tuple[str, List[str]]]:
     return list(groups.items())
 
 
+def _report(progress, stage: str, done: int, total: int) -> None:
+    if progress is not None:
+        try:
+            progress(stage, done, total)
+        except Exception:
+            logger.exception("agent progress callback failed")
+
+
+class _BatchProgress:
+    """The translator's ``batch:<start>:<end>:<total>`` reports during the preprocess and the render,
+    as progress of that stage. ``offset`` adds the pages of an earlier render batch."""
+
+    def __init__(self, progress, total: int):
+        self.progress = progress
+        self.total = total
+        self.stage: Optional[str] = None
+        self.offset = 0
+
+    async def __call__(self, state, finished=False) -> None:
+        if self.stage is None or not isinstance(state, str) or not state.startswith("batch:"):
+            return
+        parts = state.split(":")
+        try:
+            done = int(parts[2])
+        except (IndexError, ValueError):
+            return
+        _report(self.progress, self.stage, min(self.offset + done, self.total), self.total)
+
+
 async def run_agent_workflow(
     translator,
     images_with_configs: List[tuple],
@@ -266,6 +295,7 @@ async def run_agent_workflow(
     agent_settings: Union[AgentSettings, dict, None] = None,
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], Any] = logger.info,
+    progress: Optional[Callable[[str, int, int], Any]] = None,
     client=None,
     preprocess: bool = True,
     render: bool = True,
@@ -280,13 +310,22 @@ async def run_agent_workflow(
     saved = {name: getattr(translator, name, False) for name in MODE_FLAGS}
     target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
     font_task: Optional[asyncio.Future] = None
+    # progress(stage, done, total): ``preprocess`` and ``render`` count the translator's pages,
+    # ``translate`` the pages the agent finished, ``proofread`` starts a chapter's proofreading
+    batch_progress = _BatchProgress(progress, len(paths))
+    hooks = getattr(translator, "_progress_hooks", None)
+    if progress is not None and isinstance(hooks, list):
+        hooks.append(batch_progress)
     try:
         if fonts is None:  # scanning the installed fonts takes seconds: do it while the pages are preprocessed
             font_task = asyncio.ensure_future(_font_service(translator, config, settings, target_lang, log))
         if preprocess:
             log("[Agent] 1/4 Preprocess: detection, local OCR and masks")
             _set_mode(translator, template=True, save_text=True)
+            batch_progress.stage = "preprocess"
+            _report(progress, "preprocess", 0, len(paths))
             await translator.translate_batch(images_with_configs, save_info=save_info)
+            batch_progress.stage = None
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
@@ -304,6 +343,8 @@ async def run_agent_workflow(
                 log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
         font_service = fonts if font_task is None else await font_task
         outcomes: List[dict] = []
+        translated = [0]
+        _report(progress, "translate", 0, len(paths))
         reviewed: set = set()
         chapter_logs: Dict[str, Tuple[str, str]] = {}
         for work_dir, pages in group_by_chapter(paths):
@@ -327,6 +368,8 @@ async def run_agent_workflow(
                     review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
 
                 def page_done(outcome: dict) -> None:
+                    translated[0] += 1
+                    _report(progress, "translate", translated[0], len(paths))
                     if review_task is not None and outcome.get("status") in ("done", "incomplete"):
                         queue.put_nowait(outcome["image"])
 
@@ -342,6 +385,7 @@ async def run_agent_workflow(
                         if settings.proofread and finished:
                             # text only, so it runs while the review is still busy with the last pages
                             log(f"[Agent] Proofread: {len(finished)} page(s)")
+                            _report(progress, "proofread", translated[0], len(paths))
                             proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
                                                       work_prompt, should_stop)
                             proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
@@ -392,6 +436,9 @@ async def run_agent_workflow(
                     # otherwise be imported over the agent's JSON later.
                     translator._delete_original_txt_after_json_translation(outcome["image"])
             outcomes.extend(chapter)
+            if translated[0] != len(outcomes):  # pages that failed count as handled too
+                translated[0] = len(outcomes)
+                _report(progress, "translate", translated[0], len(paths))
 
         if not render:
             return []
@@ -401,6 +448,8 @@ async def run_agent_workflow(
         log(f"[Agent] 4/4 Render: typesetting {len(render_items)} page(s)")
         results: list = []
         render_events = _RenderEvents(chapter_logs)
+        batch_progress.stage, batch_progress.total = "render", len(render_items)
+        _report(progress, "render", 0, len(render_items))
         saved_hook = getattr(translator, "on_result_saved", None)
         translator.on_result_saved = render_events.saved
         try:
@@ -413,11 +462,14 @@ async def run_agent_workflow(
                     _set_mode(translator, load_text=True, save_text=True, skip_txt_import=True,
                               ignore_existing_inpainted=not reuse)
                     results.extend(await translator.translate_batch(batch, save_info=save_info))
+                    batch_progress.offset += len(batch)
         finally:
             translator.on_result_saved = saved_hook
             render_events.close()
         return results
     finally:
+        if isinstance(hooks, list) and batch_progress in hooks:
+            hooks.remove(batch_progress)
         if font_task is not None and not font_task.done():  # stopped during the preprocess
             font_task.cancel()
         for name, value in saved.items():

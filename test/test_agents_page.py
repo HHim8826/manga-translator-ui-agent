@@ -51,7 +51,7 @@ def test_events_fill_timeline_and_pages(app):
     rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
     assert [r.text(2) for r in rows] == ["Agent Tool zoom", "Agent Tool mark_page_done", "Agents Flag"]
     assert rows[0].text(3) == "#3 ×3" and rows[0].text(4) == "small text" and rows[0].text(0) == "21:14:09"
-    assert rows[1].text(3) == "missing #4"
+    assert rows[1].text(3) == "Agent Result Missing ids=#4" and rows[1].toolTip(3) == "missing #4"
     items = [page.page_list.item(i).text() for i in range(page.page_list.count())]
     assert items[0] == "Agents All Pages"
     assert items[1] == "001 · Agent Page Done · Agents Flag Count count=1"
@@ -105,7 +105,7 @@ def test_recall_events_show_added_regions_and_failures(app):
     page.problems_only.setChecked(True)
     assert [r.isHidden() for r in rows] == [True, False, True]
     page.handle_event({"type": "page_done", "page": "004", "status": "done", "confidence": 0.846, "flags": 0})
-    assert page.page_list.item(1).text() == "004 · Agent Page Done · 85%"
+    assert page.page_list.item(1).text() == "004 · Agent Page Done · Agents Page Confidence percent=85"
 
 
 def test_live_events_arrive_through_the_listener(app, tmp_path):
@@ -136,7 +136,7 @@ def test_inpaint_review_events(app):
         {"type": "tool_result", "page": "005", "agent": "inpaint", "tool": "protect_lines", "ok": True,
          "summary": "#3 protect lines 2px"},
     ])
-    assert page.page_list.item(1).text() == "005 · Agent Page Inpainting · 99%"
+    assert page.page_list.item(1).text() == "005 · Agent Page Inpainting · Agents Page Confidence percent=99"
     page.handle_event({"type": "inpaint_done", "page": "005", "agent": "inpaint", "status": "done", "units": 9,
                        "retried": 1, "flagged": 1, "confidence": 0.731, "flags": 1})
     rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
@@ -149,7 +149,7 @@ def test_inpaint_review_events(app):
                        "filled": 9, "retried": 0, "flagged": 0, "confidence": 0.99, "flags": 0})
     row = page.timeline.topLevelItem(page.timeline.topLevelItemCount() - 1)
     assert row.text(3) == "Agents Inpaint Detail Filled filled=9 flagged=0 retried=0 units=12" and row.isHidden()
-    assert page.page_list.item(1).text() == "005 · Agent Page Done · 73% · Agents Flag Count count=1"
+    assert page.page_list.item(1).text() == "005 · Agent Page Done · Agents Page Confidence percent=73 · Agents Flag Count count=1"
 
 
 def test_status_follows_the_agent_while_pages_are_reviewed_alongside(app):

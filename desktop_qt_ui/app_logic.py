@@ -2385,6 +2385,14 @@ class TranslationWorker(QObject):
             return self.i18n.translate(key, **kwargs)
         return key
 
+    _AGENT_PROGRESS_KEYS = {"preprocess": "Agent Progress Preprocess", "translate": "Agent Progress Translate",
+                            "proofread": "Agent Progress Proofread", "render": "Agent Progress Render"}
+
+    def _agent_progress_text(self, stage: str, done: int, total: int) -> str:
+        """What the progress bar says during the AI Agent workflow: the stage and its pages."""
+        key = self._AGENT_PROGRESS_KEYS.get(stage)
+        return self._t(key, done=done, total=total) if key else ""
+
     def _log(self, level: int, message: str):
         message = str(message).rstrip()
         if not message:
@@ -2926,6 +2934,8 @@ class TranslationWorker(QObject):
             
             async def progress_hook(state: str, finished: bool):
                 try:
+                    if progress_context.get("agent"):
+                        return  # the AI Agent workflow reports its own stages (agent_progress below)
                     if state.startswith("batch:"):
                         # 后端统一报告绝对进度: batch:start:end:total[:failed][:skipped]
                         parts = state.split(":")
@@ -3081,6 +3091,16 @@ class TranslationWorker(QObject):
                 images_with_configs = [(file_path, config) for file_path in self.files]
                 if cli_config.get('agent_workflow', False):
                     from manga_translator.agent.workflow import run_agent_workflow
+
+                    # the bar counts the pages the agent has finished; the text names the stage
+                    progress_context["agent"] = True
+                    agent_pages = [0]
+
+                    def agent_progress(stage: str, done: int, total: int):
+                        if stage == "translate":
+                            agent_pages[0] = done
+                        emit_eta_progress(agent_pages[0], total_images, self._agent_progress_text(stage, done, total))
+
                     contexts = await run_agent_workflow(
                         translator,
                         images_with_configs,
@@ -3088,6 +3108,7 @@ class TranslationWorker(QObject):
                         agent_settings=self.config_dict.get('agent'),
                         should_stop=lambda: not self._is_running,
                         log=self._log_info,
+                        progress=agent_progress,
                     )
                 else:
                     contexts = await translator.translate_batch(
