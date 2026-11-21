@@ -247,6 +247,11 @@ class AgentsPage(QWidget):
         self.timeline.setUniformRowHeights(True)
         self.timeline.setWordWrap(False)
         self.timeline.currentItemChanged.connect(self._on_row_selected)
+        # at the bottom it stays there, also when the timeline gets shorter (the status wraps ...)
+        self._timeline_follows = True
+        bar = self.timeline.verticalScrollBar()
+        bar.valueChanged.connect(lambda *_: setattr(self, "_timeline_follows", self._at_bottom()))
+        bar.rangeChanged.connect(lambda _low, high: bar.setValue(high) if self._timeline_follows else None)
         self.row_detail = CaptionLabel(timeline_box)
         """The picked row in full: its action and result, and the agent's reason, wrapped."""
         self.row_detail.setWordWrap(True)
