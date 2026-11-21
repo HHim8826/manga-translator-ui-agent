@@ -157,8 +157,12 @@ class AgentRunner:
                  should_stop: Callable[[], bool] = lambda: False,
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
                  work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
-                 font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None):
+                 font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None,
+                 preprocess_failed: Optional[Dict[str, str]] = None):
         self.settings = settings
+        self.preprocess_failed = {os.path.normcase(os.path.abspath(k)): v for k, v in (preprocess_failed or {}).items()}
+        """Image path -> why the preprocess did not write the page again: the agent leaves it alone
+        (its JSON is the one from before the run)."""
         self.run_info = dict(run_info or {})
         """Extra ``run_start`` fields from the workflow: ``chapter`` (folder name) and ``batch`` (one id
         for all chapters of a run, so the AI Agent page keeps the earlier chapters)."""
@@ -426,6 +430,11 @@ class AgentRunner:
                     args = {"_raw": call.arguments}
                 self.events.emit("tool_call", page=page, tool=call.name, args=_compact_args(args),
                                  reason=args.get("reason", "") if isinstance(args, dict) else "")
+                if done:  # mark_page_done ended the page: a change after it would come after the checks
+                    self.events.emit("tool_result", page=page, tool=call.name, ok=False, summary=NOT_RUN, images=0)
+                    self.history.append((index, {"role": "tool", "tool_call_id": call.id,
+                                                 "content": "Not run: mark_page_done already finished the page."}))
+                    continue
                 result = self.registry.execute(call.name, call.arguments)
                 if not result.ok and call.name != "mark_page_done":
                     self.session.page_tool_errors += 1
@@ -458,6 +467,13 @@ class AgentRunner:
         return self._finish_page(doc)
 
     def _finish_page(self, doc: PageDoc) -> Dict[str, Any]:
+        missing = doc.missing()
+        if doc.status == "done" and missing:  # a done page has nothing left without a translation
+            doc.status = "incomplete"
+            reason = ("marked done with " + ", ".join(f"#{i}" for i in missing) + " still without a translation "
+                      "(kept as in the original: their text is not erased)")
+            doc.flag(None, "other", reason)
+            self.events.emit("flag", page=doc.stem, region=None, flag="other", reason=reason)
         doc.save()
         self.store.save_sidecar(doc.stem, doc.sidecar())
         self.session.finish_page()
@@ -485,6 +501,12 @@ class AgentRunner:
                 if self.should_stop():
                     raise AgentStopped()
                 stem = os.path.splitext(os.path.basename(path))[0]
+                failed = self.preprocess_failed.get(os.path.normcase(os.path.abspath(path)))
+                if failed:  # its JSON is the one from before the run: no model call for it
+                    error = f"preprocess failed: {failed}"
+                    self.events.emit("error", page=stem, error=error, stage="preprocess", image=path)
+                    outcomes.append({"page": stem, "image": path, "status": "error", "error": error})
+                    continue
                 try:
                     doc = PageDoc.load(path)
                 except Exception as exc:
@@ -510,9 +532,10 @@ class AgentRunner:
                     logger.exception(f"agent page {stem} failed")
                     failures_in_a_row += 1
                     doc.status = "error"
-                    doc.flag(None, "error", f"{type(exc).__name__}: {str(exc)[:300]}")
-                    self.events.emit("error", page=stem, error=f"{type(exc).__name__}: {str(exc)[:300]}")
-                    outcomes.append(self._finish_page(doc))
+                    error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                    doc.flag(None, "error", error)
+                    self.events.emit("error", page=stem, error=error)
+                    outcomes.append({**self._finish_page(doc), "error": error})
                     # The failed page's half-finished turn must not leak into the next page.
                     self.history = [(i, m) for i, m in self.history if i != index]
                     if failures_in_a_row >= 3:
@@ -534,6 +557,10 @@ class AgentRunner:
                              flagged=sum(o.get("flags", 0) for o in outcomes), totals=self.totals,
                              memory=self.memory.counts())
         return outcomes
+
+
+NOT_RUN = "not run: the page was already done"
+"""The timeline's result of a call that came after mark_page_done in the same response."""
 
 
 def _compact_args(args: Any, limit: int = 300) -> Any:

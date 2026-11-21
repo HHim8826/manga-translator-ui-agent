@@ -100,6 +100,8 @@ def result_text(t: Translate, tool: str, summary: str, ok: bool = True,
 
 def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
     if not ok:
+        if s == "not run: the page was already done":  # after mark_page_done in the same response
+            return t("Agent Result Not Run")
         m = re.fullmatch(r"missing (#\d+(?:, #\d+)*)", s)
         if tool == "mark_page_done" and m:
             return t("Agent Result Missing", ids=_ids(t, m[1]))

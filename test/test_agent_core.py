@@ -287,6 +287,40 @@ def test_runner_finishes_pages_and_strips_old_images(tmp_path):
         assert not pending
 
 
+def test_nothing_runs_after_mark_page_done_in_the_same_response(tmp_path):
+    from manga_translator.agent.runner import NOT_RUN
+
+    pages = [make_page(tmp_path, "001")]
+    script = _finish_page()
+    script[1] = _calls(("mark_page_done", {"confidence": 0.9}), ("undo", {}))
+    runner, client, store, events = _runner(tmp_path, pages, script)
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert outcomes[0]["status"] == "done"
+    saved = next(iter(json.load(open(pages[0][1], encoding="utf-8")).values()))
+    assert [r["translation"] for r in saved["regions"]] == ["譯1", "譯2", "譯3"]
+    last = [e for e in read_events(events.path) if e["type"] == "tool_result"][-1]
+    assert (last["tool"], last["ok"], last["summary"]) == ("undo", False, NOT_RUN)
+
+
+def test_a_done_page_with_an_empty_region_is_saved_as_incomplete(tmp_path):
+    pages = [make_page(tmp_path, "001")]
+    runner, client, store, events = _runner(tmp_path, pages, [])
+    doc = PageDoc.load(*pages[0])
+    runner.session.start_page(0, doc)
+    doc.set_text(1, "s", "t", "dialogue", 0.9, reason="r")
+    doc.skip(2, "sfx", "drawn")
+    doc.status = "done"
+    outcome = runner._finish_page(doc)
+    events.close()
+    assert outcome["status"] == "incomplete" and outcome["missing"] == [3]
+    assert store.load_sidecar("001")["review_flags"][-1]["type"] == "other"
+    saved = next(iter(json.load(open(pages[0][1], encoding="utf-8")).values()))
+    mask = _decode(saved["mask_raw"])
+    assert mask[165, 240] == 0  # the empty region keeps its original text: not erased
+    assert mask[70, 40] == 255
+
+
 def test_runner_flags_failed_page_and_continues(tmp_path):
     pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
     script = [_calls(("set_text", {"id": 1, "source_text": "s", "translation": "t", "category": "dialogue",
@@ -760,7 +794,9 @@ def test_workflow_reviews_inpainting_and_render_reuses_it(tmp_path):
     assert len(client.review_requests) == 1 and list(backend.saved) == [paths[0]]
     renders = translator.calls[1:]
     assert [c["ignore_existing_inpainted"] for c in renders] == [False]  # 001 reuses its reviewed image
-    assert result[0] == "ctx:001.png" and result[1].skip_reason == "agent_error"
+    # a failed page is a failure with the agent's error, not a skip (review 06)
+    assert result[0] == "ctx:001.png" and result[1].success is False
+    assert result[1].translation_error == "AI Agent: RuntimeError: refused"
     store = AgentStore(str(folder / "manga_translator_work"))
     assert store.load_sidecar("001")["inpaint"]["finished"]
     assert "inpaint" not in store.load_sidecar("002")

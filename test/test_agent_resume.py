@@ -9,7 +9,7 @@ import pytest
 from manga_translator.agent import resume
 from manga_translator.agent.resume import PageState, previous_states
 
-from test_agent_core import FakeTranslator, ScriptedClient, _finish_page, run_agent_workflow
+from test_agent_core import FakeTranslator, ScriptedClient, _calls, _finish_page, make_page, run_agent_workflow
 from test_agents_page import _t, app  # noqa: F401  (one QApplication for the session)
 
 
@@ -18,9 +18,9 @@ class Cfg:
         target_lang = "CHT"
 
 
-def _run(tmp_path, paths, script):
-    return asyncio.run(run_agent_workflow(FakeTranslator(tmp_path), [(p, Cfg) for p in paths], {},
-                                          client=ScriptedClient(script), log=lambda m: None,
+def _run(tmp_path, paths, script, translator=None, client=None):
+    return asyncio.run(run_agent_workflow(translator or FakeTranslator(tmp_path), [(p, Cfg) for p in paths], {},
+                                          client=client or ScriptedClient(script), log=lambda m: None,
                                           agent_settings={"inpaint_review": False, "recall_pass": False}))
 
 
@@ -89,7 +89,7 @@ def test_the_question_names_the_edited_pages():
     states = _states(__import__("pathlib").Path("x"))
     question = rerun_question(_t, states)
     assert question["text"] == ("Agent Rerun Text done=2 pages=4 seen=3\n\n"
-                                "Agent Rerun Edited count=1 pages=002")
+                                "Agent Rerun Edited count=1 pages=002\n\nAgent Rerun Stop Note")
     assert [os.path.basename(p) for p in question["unfinished"]] == ["003.png", "004.png"]
     assert rerun_question(_t, [PageState("a/001.png", "")]) is None
 
@@ -130,3 +130,112 @@ def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app): 
     states = [PageState(files[0], "done")]
     monkeypatch.setattr(QMessageBox, "exec", lambda box: [b for b in box.buttons() if "All" in b.text()][0].click())
     assert ask_rerun(None, _t, files, states) == files
+
+
+def _translations(folder, stem):
+    raw = json.loads(_json(folder, stem).read_text(encoding="utf-8"))
+    return [r.get("translation") for r in next(iter(raw.values()))["regions"]]
+
+
+def _agent_dir(folder):
+    return folder / "manga_translator_work" / "agent"
+
+
+def test_a_first_run_asks_about_translations_made_elsewhere_and_keeps_a_copy(tmp_path):
+    from ui.main_page.pages.agent_rerun import rerun_question
+
+    folder = tmp_path / "chapter"
+    path, json_path = make_page(tmp_path, "001")
+    paths = [path, str(folder / "002.png")]  # 002 has no JSON yet
+    _edit(_json(folder, "001"))  # translated outside the AI Agent: no sidecar
+    states = previous_states(paths)
+    assert [(s.status, s.translated) for s in states] == [("", True), ("", False)]
+    question = rerun_question(_t, states)
+    assert question["text"] == "Agent Rerun Translated count=1 pages=001\n\nAgent Rerun Stop Note"
+    assert [os.path.basename(p) for p in question["unfinished"]] == ["002.png"]  # 001 counts as done
+    mine = _json(folder, "001").read_bytes()
+    _run(tmp_path, paths, _finish_page() + _finish_page())  # the user picked "redo all"
+    backups = _agent_dir(folder) / "backups"
+    assert [(backups / name).read_bytes() for name in os.listdir(backups)] == [mine]
+    assert not (_agent_dir(folder) / "run_journal.json").exists()
+
+
+def _set_texts(word):
+    calls = [("set_text", {"id": i, "source_text": f"text{i}", "translation": f"{word}{i}", "category": "dialogue",
+                           "confidence": 0.9, "reason": "讀圖"}) for i in (1, 2, 3)]
+    return [_calls(*calls), _calls(("mark_page_done", {"confidence": 0.9}))]
+
+
+def test_a_stopped_rerun_gives_the_unfinished_pages_their_translations_back(tmp_path):
+    from ui.main_page.pages.agent_rerun import rerun_question
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png"), str(folder / "003.png")]
+    _run(tmp_path, paths, _finish_page() * 3)
+    before = {stem: _json(folder, stem).read_bytes() for stem in ("001", "002", "003")}
+    # redo all: 001 is redone, the stop comes at 002's first model turn, 003 is never reached
+    with pytest.raises(asyncio.CancelledError):
+        _run(tmp_path, paths, _set_texts("新") + [asyncio.CancelledError()])
+    assert _translations(folder, "001") == ["新1", "新2", "新3"]
+    assert _json(folder, "002").read_bytes() == before["002"]  # stopped in the middle: as before the run
+    assert _json(folder, "003").read_bytes() == before["003"]
+    states = previous_states(paths)
+    assert [(s.stem, s.status, s.edited) for s in states] == [("001", "done", False), ("002", "done", False),
+                                                              ("003", "done", False)]
+    assert rerun_question(_t, states)["unfinished"] == []
+    assert not (_agent_dir(folder) / "run_journal.json").exists()
+    assert not os.listdir(_agent_dir(folder) / "backups")  # the agent's own copies are not kept
+
+
+class _FailingPreprocess(FakeTranslator):
+    """The preprocess fails on 002: no JSON written, the translator's context says why."""
+
+    async def translate_batch(self, images_with_configs, save_info=None):
+        if not self.template:
+            return await super().translate_batch(images_with_configs, save_info)
+        from types import SimpleNamespace
+
+        ok = [(p, c) for p, c in images_with_configs if not p.endswith("002.png")]
+        failed = [SimpleNamespace(image_name=p, success=False, translation_error="detection failed")
+                  for p, _ in images_with_configs if p.endswith("002.png")]
+        return await super().translate_batch(ok, save_info) + failed
+
+
+def test_a_page_the_preprocess_failed_on_is_left_alone(tmp_path):
+    from manga_translator.agent.events import read_events
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    before = _json(folder, "002").read_bytes()
+    client = ScriptedClient(_finish_page())  # only 001 gets model calls
+    results = _run(tmp_path, paths, None, translator=_FailingPreprocess(tmp_path), client=client)
+    assert len(client.requests) == 2
+    assert _json(folder, "002").read_bytes() == before
+    assert previous_states(paths)[1].status == "done"
+    failed = results[-1]
+    assert failed.success is False and "preprocess failed: detection failed" in failed.translation_error
+    runs = _agent_dir(folder) / "runs"
+    events = read_events(str(runs / sorted(os.listdir(runs))[-1]))
+    assert any(e["type"] == "error" and e.get("page") == "002" and e.get("stage") == "preprocess" for e in events)
+
+
+def test_a_run_that_was_killed_is_put_back_before_the_next_one(tmp_path):
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    before = {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")}
+    guard = resume.RunGuard.begin(paths)
+    for stem in ("001", "002"):  # the preprocess wrote both again
+        make_page(tmp_path, stem)
+    guard.page_finished(paths[0])
+    assert (_agent_dir(folder) / "run_journal.json").exists()
+    # the app was killed here: no guard.finish()
+    states = previous_states(paths)
+    assert _json(folder, "002").read_bytes() == before["002"]
+    assert _json(folder, "001").read_bytes() != before["001"]  # the run finished 001
+    assert [s.status for s in states] == ["done", "done"]
+    assert not (_agent_dir(folder) / "run_journal.json").exists()

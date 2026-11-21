@@ -1,8 +1,9 @@
 """Asks before an AI Agent run redoes pages an earlier run already did (``manga_translator.agent.resume``).
 
 The preprocess writes every page's JSON again, so a rerun replaces the agent's translations and the
-changes made in the editor. When pages of the run already have an agent result, the user chooses:
-only the pages that are not done, every page, or nothing.
+changes made in the editor. When pages of the run already have a translation (an agent result, or
+one from another mode or the editor), the user chooses: only the pages that are not done, every
+page, or nothing.
 """
 from __future__ import annotations
 
@@ -19,18 +20,27 @@ def _names(stems: Sequence[str], separator: str) -> str:
 
 
 def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
-    """Texts and page lists of the question; None when no page has an agent result."""
+    """Texts and page lists of the question; None when no page has a translation yet. A page
+    translated outside the AI Agent (another mode, the editor) counts as done: processing only the
+    pages not done leaves it alone."""
     seen = [s for s in states if s.status]
-    if not seen:
+    others = [s for s in states if not s.status and getattr(s, "translated", False)]
+    if not seen and not others:
         return None
     done = [s for s in seen if s.status == "done"]
     edited = [s for s in seen if s.edited]
-    text = t("Agent Rerun Text", seen=len(seen), pages=len(states), done=len(done))
+    separator = t("Agent Result Separator")
+    parts = []
+    if seen:
+        parts.append(t("Agent Rerun Text", seen=len(seen), pages=len(states), done=len(done)))
+    if others:
+        parts.append(t("Agent Rerun Translated", count=len(others), pages=_names([s.stem for s in others], separator)))
     if edited:
-        text += "\n\n" + t("Agent Rerun Edited", count=len(edited),
-                           pages=_names([s.stem for s in edited], t("Agent Result Separator")))
-    return {"text": text, "unfinished": [s.path for s in states if s.status != "done"],
-            "all": [s.path for s in states], "edited": len(edited)}
+        parts.append(t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)))
+    parts.append(t("Agent Rerun Stop Note"))
+    keep = {id(s) for s in done + others}
+    return {"text": "\n\n".join(parts), "unfinished": [s.path for s in states if id(s) not in keep],
+            "all": [s.path for s in states], "edited": len(edited), "translated": len(others)}
 
 
 def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],

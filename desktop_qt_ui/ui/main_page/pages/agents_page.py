@@ -534,7 +534,12 @@ class AgentsPage(QWidget):
                 if self._finished is not None and not self._rendering:
                     self.status_label.setText(self._finished_status())
         elif kind == "error":
-            row = self._add_row(event, self._t("Agents Error"), event.get("error", ""), "", problem=True)
+            error = str(event.get("error", ""))
+            if event.get("stage") == "preprocess":  # the agent left the page as it was before the run
+                error = self._t("Agent Error Preprocess", reason=error.split("preprocess failed: ", 1)[-1])
+                if page:
+                    self._set_page(page, state="error")
+            row = self._add_row(event, self._t("Agents Error"), error, "", problem=True)
             self._paint(row, ERROR)
             if event.get("agent") == "proofread":
                 self._proofreading = False

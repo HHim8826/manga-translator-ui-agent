@@ -1735,7 +1735,7 @@
   "Agent Page Not Reached": "未处理",
   "Agents Render Skipped": "没有译文，不渲染：{pages}",
   "Agents Finished Unrendered": "，{count} 页没有译文所以没有渲染",
-  "Agent Rerun Title": "这些页已经有 AI Agent 的结果",
+  "Agent Rerun Title": "这些页已经有译文",
   "Agent Rerun Text": "这次的 {pages} 页里，有 {seen} 页已经跑过 AI Agent（{done} 页完成）。重跑会重新检测，并覆写这些页的译文和 JSON。",
   "Agent Rerun Edited": "其中 {count} 页在上次执行后改过（多半是在编辑器里）：{pages}。重跑前会把它们的 JSON 备份到 manga_translator_work/agent/backups。",
   "Agent Rerun Unfinished": "只处理没完成的 {count} 页",
@@ -1789,5 +1789,9 @@
   "Agent Check overflow": "译文过长",
   "Agent Check needs_second_read": "没有放大确认",
   "Agent Check missing_line_break": "没有换行",
-  "Agent Result Editor Box": "第 {n} 框"
+  "Agent Result Editor Box": "第 {n} 框",
+  "Agent Rerun Translated": "有 {count} 页已经有不是 AI Agent 做的译文（普通翻译，或在编辑器里写的）：{pages}。重跑会换成 AI Agent 的翻译，换之前会把它们的 JSON 备份到 manga_translator_work/agent/backups；只处理没完成的页时不会动它们。",
+  "Agent Rerun Stop Note": "中途停止或失败时，还没做完的页会还原成运行前的样子。",
+  "Agent Result Not Run": "没执行：这页已经标成完成",
+  "Agent Error Preprocess": "前处理失败，这页保持运行前的样子：{reason}"
 }

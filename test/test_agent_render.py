@@ -55,10 +55,11 @@ def test_only_pages_the_agent_translated_are_rendered(tmp_path):
     assert translator.batches[1:] == [(["001.png"], True)]  # the render: page 1 only, empty boxes stay empty
     assert not getattr(translator, "keep_empty_translations")  # flags restored
     assert result[0] == "ctx:001.png"
-    skipped = {os.path.basename(c.image_name): c.skip_reason for c in result[1:]}
-    assert skipped == {"002.png": "agent_error", "003.png": "agent_error", "004.png": "agent_error",
-                       "005.png": "agent_not_reached"}
-    assert all(c.skipped and "not rendered" in c.skip_message for c in result[1:])
+    # failed pages are failures with the agent's error (review 06); the page never reached is a skip
+    failed = {os.path.basename(c.image_name): c.translation_error for c in result[1:4]}
+    assert failed == {name: "AI Agent: RuntimeError: connection lost" for name in ("002.png", "003.png", "004.png")}
+    assert all(c.success is False and not getattr(c, "skipped", False) for c in result[1:4])
+    assert result[4].skip_reason == "agent_not_reached" and "not rendered" in result[4].skip_message
     assert any("Not rendered (no agent translation): 002.png (error)" in line for line in logs)
     events = _chapter_log(folder)
     start = next(e for e in events if e["type"] == "render_start")
@@ -76,7 +77,7 @@ def test_nothing_is_rendered_when_every_page_failed(tmp_path):
     result = asyncio.run(run_agent_workflow(translator, [(str(folder / "001.png"), Cfg)], {}, client=client,
                                             log=lambda m: None, agent_settings={"inpaint_review": False}))
     assert len(translator.batches) == 1  # the preprocess only
-    assert [c.skip_reason for c in result] == ["agent_error"]
+    assert [c.translation_error for c in result] == ["AI Agent: RuntimeError: bad request"]
     start = next(e for e in _chapter_log(folder) if e["type"] == "render_start")
     assert start["pages"] == 0 and start["skipped"] == {"001": "error"}
 

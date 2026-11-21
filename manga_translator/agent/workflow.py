@@ -31,7 +31,7 @@ from .events import EventLog, new_run_id
 from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
-from .resume import back_up_edited, previous_states, record_saved
+from .resume import RunGuard, record_saved
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
@@ -364,12 +364,19 @@ async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> Li
         outcomes.extend(await reviewer.run([path]))
 
 
-def _left_out_context(path: str, status: str):
-    """A skipped result for a page the render left out, so the batch summary names it."""
+def _left_out_context(path: str, status: str, error: str = ""):
+    """A result for a page the render left out, so the batch summary names it: a failure with its
+    reason when the agent failed on it, else a skipped page (stopped, not reached)."""
     from ..utils import Context
 
     ctx = Context()
     ctx.image_name = path
+    if status in ("error", "no_json"):
+        ctx.success = False
+        ctx.translation_error = ctx.error = (f"AI Agent: {error}" if error else
+                                             "AI Agent: the page has no JSON after the agent" if status == "no_json"
+                                             else "AI Agent: the agent failed on this page")
+        return ctx
     ctx.skipped = True
     ctx.skip_reason = f"agent_{status}"
     ctx.skip_message = f"AI Agent: no translation ({status}), not rendered"
@@ -438,6 +445,9 @@ async def run_agent_workflow(
     saved = {name: getattr(translator, name, False) for name in MODE_FLAGS}
     target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
     font_task: Optional[asyncio.Future] = None
+    guard: Optional[RunGuard] = None
+    """Copies of the pages from before the run: the pages it does not finish get them back."""
+    preprocess_failed: Dict[str, str] = {}
     # progress(stage, done, total): ``preprocess`` and ``render`` count the translator's pages,
     # ``translate`` the pages the agent finished, ``proofread`` starts a chapter's proofreading
     batch_progress = _BatchProgress(progress, len(paths))
@@ -453,17 +463,23 @@ async def run_agent_workflow(
             log(f"[Agent] API check: model {getattr(client, 'model_label', '')}")
             await check_api(client)
         if preprocess:
-            # the preprocess writes every page's JSON again: keep the ones changed in the editor
-            copies = back_up_edited(previous_states(paths))
-            if copies:
-                log(f"[Agent] {len(copies)} JSON file(s) changed after the last run, copied before the "
-                    f"preprocess replaces them: {', '.join(os.path.basename(c) for c in copies)}")
+            # the preprocess writes every page's JSON again: copies first, and the pages the run does
+            # not finish get theirs back (resume.RunGuard)
+            guard = RunGuard.begin(paths)
+            if guard.users_copies:
+                log(f"[Agent] {len(guard.users_copies)} JSON file(s) with your own changes or translations, "
+                    f"copied before the preprocess replaces them: "
+                    f"{', '.join(os.path.basename(c) for c in guard.users_copies)}")
             log("[Agent] 1/4 Preprocess: detection, local OCR and masks")
             _set_mode(translator, template=True, save_text=True)
             batch_progress.stage = "preprocess"
             _report(progress, "preprocess", 0, len(paths))
-            await translator.translate_batch(images_with_configs, save_info=save_info)
+            preprocessed = await translator.translate_batch(images_with_configs, save_info=save_info)
             batch_progress.stage = None
+            preprocess_failed = guard.preprocess_failures(preprocessed)
+            if preprocess_failed:
+                log("[Agent] Preprocess failed, the agent leaves these pages as they were: " + "; ".join(
+                    f"{os.path.basename(p)} ({why})" for p, why in preprocess_failed.items()))
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
@@ -514,6 +530,8 @@ async def run_agent_workflow(
                     review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
 
                 def page_done(outcome: dict) -> None:
+                    if guard is not None:
+                        guard.page_finished(outcome["image"])
                     translated[0] += 1
                     _report(progress, "translate", translated[0], len(paths))
                     if review_task is not None and outcome.get("status") in ("done", "incomplete"):
@@ -526,7 +544,8 @@ async def run_agent_workflow(
                                      fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
                                      font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
                                      run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
-                                               **({"work_memory": seeded} if seeded else {})})
+                                               **({"work_memory": seeded} if seeded else {})},
+                                     preprocess_failed=preprocess_failed)
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -599,13 +618,15 @@ async def run_agent_workflow(
                 _report(progress, "translate", translated[0], len(paths))
 
         if not render:
-            record_saved(paths)
+            if guard is None:
+                record_saved(paths)
             return []
         from ..utils.path_manager import find_json_path
 
         # Only pages the agent translated: a failed page, or one the run never reached, has only the
         # preprocess JSON, and the render would typeset its original text again.
         statuses = {_key(o["image"]): o.get("status") for o in outcomes if o.get("image")}
+        errors = {_key(o["image"]): str(o.get("error") or "") for o in outcomes if o.get("image")}
         render_items, left_out = [], {}
         for image, cfg in images_with_configs:
             path = _image_path(image)
@@ -641,9 +662,20 @@ async def run_agent_workflow(
         finally:
             translator.on_result_saved = saved_hook
             render_events.close()
-        record_saved(paths)  # what the run leaves, so the next run sees changes made in the editor
-        return results + [_left_out_context(path, status) for path, status in left_out.items()]
+        if guard is None:  # what the run leaves, so the next run sees changes made in the editor
+            record_saved(paths)
+        return results + [_left_out_context(path, status, errors.get(_key(path), ""))
+                          for path, status in left_out.items()]
     finally:
+        if guard is not None:  # also when stopped or failed: unfinished pages get their copies back
+            try:
+                restored = guard.finish(getattr(translator, "_delete_original_txt_after_json_translation", None))
+            except Exception:
+                logger.exception("restoring the pages the run did not finish failed")
+            else:
+                if restored:
+                    log(f"[Agent] {len(restored)} page(s) not finished: their translations from before the run "
+                        f"are back: {', '.join(os.path.basename(p) for p in restored)}")
         if isinstance(hooks, list) and batch_progress in hooks:
             hooks.remove(batch_progress)
         if font_task is not None and not font_task.done():  # stopped during the preprocess

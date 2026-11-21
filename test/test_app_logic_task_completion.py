@@ -99,6 +99,28 @@ def test_all_existing_outputs_use_dedicated_overwrite_disabled_message(
     assert completed_signal.values == [([],)]
 
 
+def test_ai_agent_pages_left_out_do_not_get_the_existing_output_advice(monkeypatch):
+    """A stopped AI Agent run leaves pages out: that is not "delete the output or turn on overwrite"."""
+    warning_signal = _Signal()
+    state_manager = _StateManager()
+    logic = SimpleNamespace(
+        current_task_id=7, current_worker=object(), saved_files_count=0, completed_output_sources={},
+        _task_failures=[], _path_key=MainAppLogic._path_key,
+        _record_task_failure_from_result=lambda _result: None, _record_task_failure=lambda *_args: None,
+        _ui_log=lambda *_args: None, _t=lambda key, **kw: key, state_manager=state_manager,
+        warning_dialog_requested=warning_signal, error_dialog_requested=_Signal(), task_completed=_Signal(),
+        _cleanup_after_task=lambda: None,
+    )
+    monkeypatch.setattr(app_logic_module.QTimer, "singleShot", lambda *_args: None)
+    results = [{"skipped": True, "original_path": rf"C:\batch\{name}.png", "skip_reason": "agent_stopped",
+                "skip_message": "AI Agent: no translation (stopped), not rendered"} for name in ("01", "02")]
+
+    MainAppLogic.on_task_finished(logic, results, 7)
+
+    assert warning_signal.values == []
+    assert "all_existing_outputs_skipped_status" not in str(state_manager.status_message)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 

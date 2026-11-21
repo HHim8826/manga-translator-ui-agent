@@ -1725,7 +1725,7 @@
   "Agent Page Not Reached": "Sin procesar",
   "Agents Render Skipped": "Sin traducción, no se renderizan: {pages}",
   "Agents Finished Unrendered": ", {count} página(s) sin renderizar (sin traducción)",
-  "Agent Rerun Title": "Estas páginas ya tienen resultados del AI Agent",
+  "Agent Rerun Title": "Estas páginas ya tienen traducciones",
   "Agent Rerun Text": "{seen} de las {pages} páginas ya pasaron por el AI Agent ({done} terminadas). Volver a ejecutarlo detecta el texto de nuevo y reemplaza sus traducciones y su JSON.",
   "Agent Rerun Edited": "{count} de ellas cambiaron después de la última ejecución (seguramente en el editor): {pages}. Su JSON se copia en manga_translator_work/agent/backups antes de volver a ejecutar.",
   "Agent Rerun Unfinished": "Solo las {count} páginas sin terminar",
@@ -1779,5 +1779,9 @@
   "Agent Check overflow": "traducción demasiado larga",
   "Agent Check needs_second_read": "sin ampliar",
   "Agent Check missing_line_break": "sin salto de línea",
-  "Agent Result Editor Box": "cuadro {n}"
+  "Agent Result Editor Box": "cuadro {n}",
+  "Agent Rerun Translated": "{count} página(s) tienen traducciones que no hizo el AI Agent (otro modo de traducción, o escritas en el editor): {pages}. Volver a ejecutar las reemplaza por las del AI Agent, tras copiar su JSON en manga_translator_work/agent/backups; procesar solo las páginas sin terminar no las toca.",
+  "Agent Rerun Stop Note": "Si la ejecución se detiene o falla, las páginas que no terminó vuelven a como estaban antes.",
+  "Agent Result Not Run": "No se ejecutó: la página ya estaba terminada",
+  "Agent Error Preprocess": "El preprocesamiento falló; la página queda como estaba antes: {reason}"
 }

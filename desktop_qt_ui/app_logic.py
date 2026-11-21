@@ -2081,7 +2081,11 @@ class MainAppLogic(QObject):
         self.saved_files_count = len(saved_files)
 
         failed_count = len(self._task_failures)
-        all_skipped = skipped_count > 0 and self.saved_files_count == 0 and failed_count == 0
+        # only files skipped because their output exists get the "delete it or turn on overwrite"
+        # advice: an AI Agent page left out (stopped, not reached) has another reason
+        output_skips = [r for r in skipped_results if not str(r.get('skip_reason') or '').startswith('agent_')]
+        all_skipped = (skipped_count > 0 and len(output_skips) == skipped_count
+                       and self.saved_files_count == 0 and failed_count == 0)
         all_skipped_message = self._t(
             "all_existing_outputs_skipped_dialog",
             count=skipped_count,
