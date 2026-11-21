@@ -208,7 +208,8 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
         reason = str(args.get("reason") or "").strip()
         if not reason:
             raise ProofError("reason is required")
-        s.flags.append({"page": page.stem, "region": rid, "type": "uncertain_translation", "reason": reason})
+        s.flags.append({"page": page.stem, "region": rid, "type": "uncertain_translation", "reason": reason,
+                        "agent": "proofread"})
         return "Added to the review list.", f"{page.stem}" + (f" #{rid}" if rid else ""), []
     if name == "finish_proofread":
         s.note = str(args.get("note") or "")

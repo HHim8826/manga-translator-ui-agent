@@ -891,7 +891,7 @@ class FontService:
                 if not ok:
                     changes.append({"region": index + 1, "from": current, "to": self.default_font,
                                     "reason": "layout", "detail": why})
-                    flags.append({"region": index + 1, "type": "layout", "reason": _human(
+                    flags.append({"region": index + 1, "type": "layout", "agent": "fonts", "reason": _human(
                         self.target_lang, "layout", font=_font_label(current), default=self.default_font)})
                     current = self.default_font
             if current != original:
@@ -914,7 +914,7 @@ class FontService:
                 kept.append({"region": index + 1, "font": current, "missing": missing, "tried": []})
             else:  # only missing letters go on the review list
                 unfixed.append({"region": index + 1, "font": current, "missing": missing, "tried": []})
-                flags.append({"region": index + 1, "type": "layout",
+                flags.append({"region": index + 1, "type": "layout", "agent": "fonts",
                               "reason": _human(self.target_lang, "missing", font=current, chars=missing)})
         if hasattr(self.backend, "done"):
             self.backend.done(image_path)

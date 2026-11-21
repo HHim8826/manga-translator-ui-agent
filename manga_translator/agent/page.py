@@ -393,7 +393,7 @@ class PageDoc:
         region_id = self.get(rid).id if rid not in (None, "", 0, "0") else None
         if type not in FLAG_TYPES:
             type = "other"
-        entry = {"region": region_id, "type": type, "reason": reason}
+        entry = {"region": region_id, "type": type, "reason": reason, "agent": "translator"}
         self._checkpoint("flag")
         self.flags.append(entry)
         return entry
@@ -573,6 +573,8 @@ class PageDoc:
                     "font": r.font,
                     "style": r.style,
                     "checks": [c["code"] for c in self.checks if c.get("region") == r.id],
+                    # a skipped region is not in the JSON: the editor can put it back as it was
+                    **({"json": r.data} if r.skipped else {}),
                 }
                 for r in (self.regions[i] for i in self.order)
             ],

@@ -240,7 +240,7 @@ class ReviewSession:
         return unit
 
     def flag(self, unit: Optional[Unit], reason: str, source: str = "agent") -> Dict[str, Any]:
-        entry = {"region": unit.id if unit else None, "type": "inpaint", "reason": reason}
+        entry = {"region": unit.id if unit else None, "type": "inpaint", "reason": reason, "agent": "inpaint"}
         if unit:
             unit.flagged = True
         self.flags.append(entry)
@@ -415,7 +415,7 @@ def review_tools(methods: List[str]) -> List[Tool]:
         Tool("undo", "Undo the last mask edit of an area that was not inpainted yet.", _obj({"id": uid}, ["id"]),
              undo, writes=True),
         Tool("flag_for_review", "Put an area (or the whole page, without id) on the human review list; its chosen "
-             "attempt is kept and all attempts stay available in the editor.",
+             "attempt is kept, and the human can switch to another attempt in the editor.",
              _obj({"id": uid, "reason": REASON}, ["reason"]), flag_for_review, writes=True),
         Tool("finish_review", "Finish the review of this page.",
              _obj({"note": {"type": "string", "description": "Anything the human should know"}}, []),
@@ -580,7 +580,8 @@ class InpaintReviewer:
         before = side.get("confidence")
         confidence = round(min(score, before), 3) if isinstance(before, (int, float)) else score
         if confidence < self.settings.low_confidence_threshold and not flags:
-            low = {"region": None, "type": "low_confidence", "reason": _human(session.lang, "low", score=confidence)}
+            low = {"region": None, "type": "low_confidence", "reason": _human(session.lang, "low", score=confidence),
+                   "agent": "inpaint"}
             flags.append(low)
             self.events.emit("flag", page=stem, agent="inpaint", region=None, flag="low_confidence",
                              reason=low["reason"], source="check")

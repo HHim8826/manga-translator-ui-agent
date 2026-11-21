@@ -51,7 +51,8 @@ def test_proofreader_revises_flags_and_records_the_old_text(tmp_path):
                                                "reason": "語氣太硬"}]
     assert side["proofread"]["note"] == "整體通順"
     assert side["regions"][1]["translation"] == "改二" and side["regions"][1]["reasons"][-1] == "proofread: 語氣太硬"
-    assert side["review_flags"][-1] == {"region": 3, "type": "uncertain_translation", "reason": "雙關沒翻出來"}
+    assert side["review_flags"][-1] == {"region": 3, "type": "uncertain_translation", "reason": "雙關沒翻出來",
+                                       "agent": "proofread"}
     assert "proofread" not in store.load_sidecar("001")
     logged = [e for e in read_events(events.path) if e.get("agent") == "proofread"]
     kinds = [e["type"] for e in logged]

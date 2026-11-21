@@ -35,6 +35,7 @@ from ui.widgets.property_panel import PropertyPanel
 from ui.widgets.region_list_view import RegionListView
 from ui.widgets.rich_text_floating_editor import RichTextFloatingEditor
 
+from .agent_review_panel import AgentReviewPanel
 from .graphics_view import GraphicsView
 from .original_compare_view import OriginalCompareView
 from .shortcut_manager import EditorShortcutManager
@@ -115,6 +116,7 @@ class EditorView(QWidget):
 
     LEFT_TRANSLATION_ROUTE = "editor_left_translation"
     LEFT_PROPERTY_ROUTE = "editor_left_property"
+    LEFT_AGENT_ROUTE = "editor_left_agent"
     EDITOR_SETTING_DEFAULTS = {
         "editor_snap_enabled": False,
         "editor_center_scale_enabled": False,
@@ -162,6 +164,7 @@ class EditorView(QWidget):
         self.apply_translations_button: PrimaryPushButton | None = None
         self.region_list_view: RegionListView | None = None
         self.property_panel: PropertyPanel | None = None
+        self.agent_review_panel: AgentReviewPanel | None = None
         self.compare_preview_container: QWidget | None = None
         self.original_compare_view: OriginalCompareView | None = None
         self.edit_canvas_container: QWidget | None = None
@@ -427,14 +430,18 @@ class EditorView(QWidget):
 
         self.property_panel = PropertyPanel(self.model, self.app_logic, self)
 
+        self.agent_review_panel = AgentReviewPanel(self._t, left_panel)
+
         self.left_stack.addWidget(translation_widget)
         self.left_stack.addWidget(self.property_panel)
+        self.left_stack.addWidget(self.agent_review_panel)
         self.left_segmented_widget.addItem(
             self.LEFT_TRANSLATION_ROUTE, self._t("Translation List")
         )
         self.left_segmented_widget.addItem(
             self.LEFT_PROPERTY_ROUTE, self._t("Property Editor")
         )
+        self.left_segmented_widget.addItem(self.LEFT_AGENT_ROUTE, self._t("AI Agent"))
         self.left_segmented_widget.currentItemChanged.connect(self._set_left_route)
 
         # 设置默认显示"属性编辑"标签页
@@ -449,6 +456,8 @@ class EditorView(QWidget):
             index = 0
         elif route_key == self.LEFT_PROPERTY_ROUTE:
             index = 1
+        elif route_key == self.LEFT_AGENT_ROUTE:
+            index = 2
         else:
             return
         changed = self.left_stack.currentIndex() != index
@@ -476,6 +485,7 @@ class EditorView(QWidget):
         self.left_segmented_widget.setItemText(
             self.LEFT_PROPERTY_ROUTE, self._t("Property Editor")
         )
+        self.left_segmented_widget.setItemText(self.LEFT_AGENT_ROUTE, self._t("AI Agent"))
 
     def refresh_ui_texts(self):
         """刷新所有UI文本（用于语言切换）"""
@@ -495,6 +505,8 @@ class EditorView(QWidget):
             )
         if self.region_list_view is not None:
             self.region_list_view.refresh_ui_texts()
+        if self.agent_review_panel is not None:
+            self.agent_review_panel.refresh_ui_texts()
         graphics_view = getattr(self, "graphics_view", None)
         if graphics_view is not None:
             graphics_view.viewport().update()  # empty-canvas hint text
@@ -693,6 +705,64 @@ class EditorView(QWidget):
         finally:
             self._selection_from_translation_list = False
 
+    # --- the AI Agent tab ---------------------------------------------------------
+    def _on_regions_changed_for_agent_review(self, change=None):
+        panel = self.agent_review_panel
+        if panel is None:
+            return
+        path = self.model.get_source_image_path()
+        regions = self.model.get_regions()
+        if path != panel.image_path or getattr(change, "kind", None) == "reset":
+            panel.set_page(path, regions)
+        else:
+            panel.set_regions(regions)
+
+    def _select_agent_region(self, index: int) -> None:
+        if 0 <= index < len(self.model.get_regions()):
+            self.controller.set_selection_from_list([index])
+
+    def _show_agent_area(self, box: list) -> None:
+        item = getattr(self.graphics_view, "_image_item", None)
+        if item is None or len(box) < 4:
+            return
+        x1, y1, x2, y2 = (float(v) for v in box[:4])
+        self.graphics_view.centerOn(item.mapToScene(QPointF((x1 + x2) / 2, (y1 + y2) / 2)))
+
+    def _toast(self, method: str, text: str) -> None:
+        toasts = self.controller.get_toast_manager()
+        if toasts is not None:
+            getattr(toasts, method)(text)
+
+    def _restore_agent_region(self, data: dict) -> None:
+        from editor.commands import AddRegionCommand
+
+        self.controller.execute_command(
+            AddRegionCommand(self.model, data, description="Restore Skipped Region")
+        )
+        count = len(self.model.get_regions())
+        if count:
+            self.controller.set_selection_from_list([count - 1])
+        self._toast("show_info", self._t("Agent Review Restored Hint"))
+
+    def _use_agent_attempt(self, unit_id: str, attempt: int) -> None:
+        from manga_translator.agent import review as agent_review
+
+        panel = self.agent_review_panel
+        if panel is None or panel.review is None:
+            return
+        if self.controller.export_service.has_unsaved_changes():
+            self._toast("show_info", self._t("Agent Review Save First"))
+            return
+        try:
+            agent_review.use_attempt(panel.review, unit_id, attempt)
+        except Exception as exc:  # a missing or changed file: say so, keep the page as it is
+            self._toast("show_error", self._t("Agent Review Attempt Failed", error=str(exc)))
+            return
+        documents = self.controller.document_service
+        documents._take_prefetched_document(panel.review.image_path)  # a copy from before the change
+        documents.do_load_image(panel.review.image_path)
+        self._toast("show_success", self._t("Agent Review Attempt Used", n=attempt))
+
     def _on_regions_changed_for_rich_editor(self, change=None):
         """Refresh a visible bound document without feeding its own write-back around."""
         editor = self.rich_text_editor
@@ -871,6 +941,7 @@ class EditorView(QWidget):
         for signal, slot in (
             (self.model.regions_changed, self.region_list_view.on_regions_changed),
             (self.model.regions_changed, self._on_regions_changed_for_rich_editor),
+            (self.model.regions_changed, self._on_regions_changed_for_agent_review),
             (
                 self.model.brush_size_changed,
                 self.property_panel.sync_brush_size_from_model,
@@ -898,6 +969,10 @@ class EditorView(QWidget):
                 self._on_region_move_requested_from_list,
             ),
             (self.apply_translations_button.clicked, self._on_apply_changes_clicked),
+            (self.agent_review_panel.region_selected, self._select_agent_region),
+            (self.agent_review_panel.area_requested, self._show_agent_area),
+            (self.agent_review_panel.restore_requested, self._restore_agent_region),
+            (self.agent_review_panel.attempt_requested, self._use_agent_attempt),
             (self.replace_all_button.clicked, self._on_replace_all_clicked),
             (self.add_files_button.clicked, self.logic.open_and_add_files),
             (self.add_folder_button.clicked, self.logic.open_and_add_folder),

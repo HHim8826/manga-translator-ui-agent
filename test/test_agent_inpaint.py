@@ -255,7 +255,8 @@ def test_review_warns_once_then_flags_what_is_left(tmp_path):
     tool_messages = [m for m in client.requests[1] if m.get("role") == "tool"]
     assert "residual text is still detected in #1" in tool_messages[0]["content"]
     side = store.load_sidecar("001")
-    assert side["review_flags"] == [{"region": 1, "type": "inpaint", "reason": "修圖後仍偵測到殘留文字"}]
+    assert side["review_flags"] == [{"region": 1, "type": "inpaint", "reason": "修圖後仍偵測到殘留文字",
+                                     "agent": "inpaint"}]
     assert side["inpaint_score"] == round(0.65 * 0.75, 3) and side["confidence"] == side["inpaint_score"]
     assert outcome["flagged"] == 1
 

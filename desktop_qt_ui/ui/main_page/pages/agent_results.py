@@ -40,6 +40,11 @@ def flag_text(t: Translate, region, kind: str) -> str:
     return t("Agent Result With Kind", id=f"#{region}", kind=name) if region else name
 
 
+def method_name(t: Translate, method: str) -> str:
+    """An inpaint method as the human reads it: the model's name, or "fill" (flat colour)."""
+    return t("Agent Method fill") if method == "fill" else (method or "-")
+
+
 def mask_op(t: Translate, label: str) -> str:
     """A mask edit of the inpaint review (inpaint.py labels)."""
     m = re.fullmatch(r"(dilate|erode) (\d+)px( \(residual\))?", label)
@@ -150,7 +155,7 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
             return s
         issues = t("Agent Result No Issues") if m[4] == "ok" else t("Agent Result Separator").join(
             _known(t, "Agent Issue", issue.strip(), ISSUES) for issue in m[4].split(","))
-        method = t("Agent Method fill") if m[3] == "fill" else m[3]
+        method = method_name(t, m[3])
         return t("Agent Result Inpainted", id=m[1], n=m[2], method=method, issues=issues)
     if tool == "pick_candidate":
         m = re.fullmatch(_ID + r" a(\d+)", s)
