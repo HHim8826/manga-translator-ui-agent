@@ -49,6 +49,7 @@ TOOL_KEYS = {
     "link_regions": "Agent Tool link_regions",
     "set_text": "Agent Tool set_text",
     "set_line_breaks": "Agent Tool set_line_breaks",
+    "set_font_style": "Agent Tool set_font_style",
     "glossary_search": "Agent Tool glossary_search",
     "glossary_upsert": "Agent Tool glossary_upsert",
     "character_get": "Agent Tool character_get",
@@ -326,14 +327,25 @@ class AgentsPage(QWidget):
             unfixed = int(event.get("unfixed") or 0)
             reasons = []
             for change in event.get("changes") or []:
+                if change.get("reason") == "fallback":  # the box keeps its font, a few characters come from another
+                    reasons.append(f"#{change.get('region')} " + self._t(
+                        "Agents Fonts Fallback", chars=change.get("missing", ""),
+                        font=str(change.get("fallback") or "").replace("::", " ")))
+                    continue
                 why = self._t("Agents Fonts Missing", chars=change["missing"]) if change.get("missing") else \
                     self._t("Agents Fonts Layout") if change.get("reason") == "layout" else ""
                 reasons.append(f"#{change.get('region')} → {change.get('to')}" + (f" ({why})" if why else ""))
-            row = self._add_row(event, self._t("Agents Fonts"),
-                                self._t("Agents Fonts Detail", changed=event.get("changed", 0), unfixed=unfixed),
-                                "; ".join(reasons), problem=unfixed > 0)
+            counts = {"changed": event.get("changed", 0), "unfixed": unfixed}
+            detail = self._t("Agents Fonts Detail Borrowed", borrowed=event["borrowed"], **counts) \
+                if event.get("borrowed") else self._t("Agents Fonts Detail", **counts)
+            row = self._add_row(event, self._t("Agents Fonts"), detail, "; ".join(reasons), problem=unfixed > 0)
             if unfixed:
                 self._paint(row, WARN)
+        elif kind == "font_styles":
+            styles = event.get("styles") or {}
+            self._add_row(event, self._t("Agents Font Styles"),
+                          self._t("Agents Font Styles Detail", count=len(styles), file=event.get("file", "")),
+                          "; ".join(f"{name} → {str(font).replace('::', ' ')}" for name, font in styles.items()))
         elif kind == "work_glossary":
             added = event.get("added") or []
             skipped = event.get("skipped") or {}

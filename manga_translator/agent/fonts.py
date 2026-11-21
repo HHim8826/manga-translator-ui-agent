@@ -1,20 +1,22 @@
 """Fonts for the agent workflow (design doc, "字體").
 
 ``fix_missing_glyphs``: when a region's font has no glyph for a character, Qt draws that one
-character from some other font, so the line mixes two designs (``A-OTF Shin Go Pr6N`` has no
-值, 嗯, 啥 ... for Traditional Chinese). After the agents, every translated region is checked
-against its font with the characters the renderer will draw (after the vertical-text
-replacements). A region with missing glyphs gets the installed font that looks most like its
-font, among the fonts that have all of them: the same characters are drawn in both fonts and
-compared (shape and stroke weight), and fonts made for the target language come first.
+character from whatever font it finds (``A-OTF Shin Go Pr6N`` has no 值, 嗯, 啥 ... for
+Traditional Chinese, MingLiU no vertical ︐︒︙). After the agents, every translated region is
+checked against its font with the characters the renderer will draw (after the vertical-text
+replacements). The region keeps its font; only the characters it lacks are drawn from a fallback
+font, written as rich text runs. The fallback is the installed font that looks most like the
+region's font among the fonts that have those characters (the same characters are drawn in both
+fonts and compared by shape and stroke weight, fonts made for the target language first), and a
+font keeps its first fallback for the whole run, so every box in it borrows from one design.
 
 ``choose_fonts``: the translation agent sees a sheet of installed fonts that have every common
-character of the target language and may give a region one of them when its original lettering
-is clearly not normal dialogue (a narration box in a serif face, handwriting, a sign).
+character of the target language and defines font styles from it for lettering that is clearly not
+normal dialogue (a narration box in a serif face, handwriting, a sign); see ``font_styles.py``.
 
-Every change is checked by rendering the region alone with the real renderer, once with the font
-it had and once with the new one: the text has to stay in the same place at about the same size,
-or the next candidate is tried (an agent's choice that fails goes back to the user's font).
+A style's font is checked by rendering the region alone with the real renderer, once with the
+user's font and once with the style's: the text has to stay in the same place at about the same
+size, or the region goes back to the user's font and onto the review list.
 """
 from __future__ import annotations
 
@@ -67,10 +69,7 @@ SHEET_MIN_WEIGHT = 300
 SAME_DESIGN = 0.85
 """Glyph shapes this similar (weight aside) are one design, like Noto Sans TC and Noto Sans HK."""
 CANDIDATES = 6
-"""Similar fonts tried (each with a layout check) for a region with missing glyphs."""
-PUNCT_MIN_SCORE = 0.3
-"""When only punctuation is missing (a Ming face without vertical forms), a font must score at least
-this in ``similar`` to replace it; otherwise the region keeps its font and borrows the punctuation."""
+"""Similar fonts ranked for a fallback."""
 
 
 # --- languages ----------------------------------------------------------------
@@ -131,6 +130,14 @@ def _replacements():
     except Exception:
         logger.warning("fonts: could not load the text replacement rules", exc_info=True)
         return None
+
+
+_PUNCTUATION = "。、，．…‥：；！？「」『』（）【】〈〉《》〔〕—―～"
+
+
+def vertical_marks() -> str:
+    """The punctuation that only vertical text draws (。 → ︒ ...), from the replacement rules."""
+    return "".join(sorted(set(rendered_chars(_PUNCTUATION, "v")) - set(rendered_chars(_PUNCTUATION, "h"))))
 
 
 def rendered_chars(text: str, direction: Any = "auto") -> str:
@@ -695,16 +702,104 @@ class PipelineFontBackend:
 
 # --- the service ------------------------------------------------------------------
 _HUMAN = {
-    "zh": "字型「{font}」沒有「{chars}」，也找不到有這些字、又能排在同一位置的相似字型",
-    "zh_cn": "字体「{font}」没有「{chars}」，也找不到有这些字、又能排在同一位置的相似字体",
-    "en": "The font {font} has no {chars}, and no similar font with them fits the same place",
+    "zh": {"missing": "字型「{font}」沒有「{chars}」，也沒有其他字型有這些字",
+           "layout": "Agent 選的字型「{font}」在這個框會跑位，改用預設字型「{default}」，和同類文字不同"},
+    "zh_cn": {"missing": "字体「{font}」没有「{chars}」，也没有其他字体有这些字",
+              "layout": "Agent 选的字体「{font}」在这个框会跑位，改用默认字体「{default}」，和同类文字不同"},
+    "en": {"missing": "The font {font} has no {chars}, and no other font has them",
+           "layout": "The agent's font {font} would move the text in this box, so it uses the default font "
+                     "{default}, unlike the same kind of text elsewhere"},
 }
 
 
-def _human(target_lang: str, **kw) -> str:
+def _human(target_lang: str, key: str, **kw) -> str:
     target = (target_lang or "").upper()
-    key = "zh" if target == "CHT" else "zh_cn" if target == "CHS" else "en"
-    return _HUMAN[key].format(**kw)
+    lang = "zh" if target == "CHT" else "zh_cn" if target == "CHS" else "en"
+    return _HUMAN[lang][key].format(**kw)
+
+
+def _font_label(value: str) -> str:
+    """``Yu Mincho::Light`` → ``Yu Mincho Light`` for review texts."""
+    return str(value or "").replace(STYLE_SEP, " ")
+
+
+def _direction_code(region: dict) -> int:
+    """Replacement direction of a JSON region (0 horizontal, 1 vertical); ``auto`` follows the shape
+    of its lines like the renderer."""
+    direction = str(region.get("direction") or "auto").lower()
+    if direction in ("h", "horizontal", "hr"):
+        return 0
+    if direction in ("v", "vertical", "vr"):
+        return 1
+    points = [p for quad in region.get("lines") or [] for p in quad]
+    if not points:
+        return 1
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return 0 if (max(xs) - min(xs)) >= (max(ys) - min(ys)) else 1
+
+
+def own_font_chars(region: dict) -> Optional[str]:
+    """Significant characters of a region's rich text that are drawn in the region's font (the
+    runs without a font of their own, already replaced); None without rich text."""
+    if not region.get("translation_rich"):
+        return None
+    from ..rendering.rich_text import ensure_rich_text_document
+    try:
+        document = ensure_rich_text_document(copy.deepcopy(region["translation_rich"]))
+    except (TypeError, ValueError):
+        return None
+    chars = {c for block in document.blocks for span in block.spans if not span.style.font_family
+             for c in _BREAKS.sub("", span.text) if _significant(c)}
+    return "".join(sorted(chars))
+
+
+def borrow_glyphs(region: dict, face: "FontFace", fallback: str) -> Optional[Dict[str, Any]]:
+    """JSON fields for a region whose font lacks some characters: ``translation_rich`` with those
+    characters (as the renderer draws them, after the replacements of its direction) in ``fallback``
+    and the rest in the region's font, plus ``translation``/``translation_raw`` the way the renderer
+    saves rich text. None when nothing needs it."""
+    from ..rendering.rich_text import TextRun, ensure_rich_text_document, legacy_line_breaks_to_document
+    from ..rendering.rich_text_sync import apply_replacements_to_document
+
+    raw_text = str(region.get("translation") or "")
+    if region.get("translation_rich"):
+        document = ensure_rich_text_document(copy.deepcopy(region["translation_rich"]))
+    else:
+        document = legacy_line_breaks_to_document(raw_text)
+        replacements = _replacements()
+        if replacements is not None:
+            # it takes the region's direction value ("h"/"v"), not the 0/1 code
+            direction = "h" if _direction_code(region) == 0 else "v"
+            document = apply_replacements_to_document(document, direction, replacements)
+    changed = False
+    for block in document.blocks:
+        inlines = []
+        for inline in block.inlines:
+            if not isinstance(inline, TextRun) or inline.style.font_family:
+                inlines.append(inline)
+                continue
+            start = 0
+            text = inline.text
+            while start < len(text):
+                lacks = _significant(text[start]) and not face.has(text[start])
+                end = start + 1
+                while end < len(text) and (_significant(text[end]) and not face.has(text[end])) == lacks:
+                    end += 1
+                style = inline.style.copy()
+                if lacks:
+                    style.font_family = fallback
+                    changed = True
+                inlines.append(TextRun(text[start:end], style))
+                start = end
+        block.inlines = inlines
+        block.__dict__.pop("_spans", None)
+    if not changed:
+        return None
+    fields: Dict[str, Any] = {"translation_rich": document.to_dict()}
+    if not region.get("translation_rich"):
+        fields["translation"] = "[BR]".join(block.plain_text() for block in document.blocks)
+        fields["translation_raw"] = str(region.get("translation_raw") or raw_text)
+    return fields
 
 
 class FontService:
@@ -715,6 +810,7 @@ class FontService:
         self.target_lang = target_lang
         self.choices: List[FontFace] = []
         self.sheet_url = ""
+        self._fallbacks: Dict[str, List[FontFace]] = {}
 
     def default_face(self) -> Optional[FontFace]:
         return self.catalog.find(self.default_font) or self.catalog.find(RENDER_DEFAULT)
@@ -733,8 +829,14 @@ class FontService:
         self.sheet_url = images.data_url(sheet_image(faces, labels, self.target_lang))
 
     def sheet_text(self) -> str:
-        lines = [f"0: {self.default_font} (the user's font, for normal dialogue)"]
-        lines += [f"{i}: {face.label}" for i, face in enumerate(self.choices, start=1)]
+        marks = vertical_marks()
+
+        def note(face: Optional[FontFace]) -> str:
+            lacks = face.missing(marks) if face is not None and marks else ""
+            return f" (no vertical {lacks})" if lacks else ""
+
+        lines = [f"0: {self.default_font} (the user's font, for normal dialogue){note(self.default_face())}"]
+        lines += [f"{i}: {face.label}{note(face)}" for i, face in enumerate(self.choices, start=1)]
         return "\n".join(lines)
 
     def _same(self, a: str, b: str) -> bool:
@@ -769,9 +871,14 @@ class FontService:
         entry = raw[next(iter(raw))]
         regions = entry.get("regions", []) if isinstance(entry, dict) else entry
         changes: List[Dict[str, Any]] = []
+        """Font changes of a whole region: an agent's font that moves the text goes back to the user's."""
+        borrowed: List[Dict[str, Any]] = []
+        """Regions that keep their font and draw only the characters it lacks from a fallback font."""
         unfixed: List[Dict[str, Any]] = []
-        kept: List[Dict[str, Any]] = []  # only punctuation missing and no close font: it is borrowed
+        kept: List[Dict[str, Any]] = []  # only punctuation missing and no font has it: Qt borrows it
+        flags: List[Dict[str, Any]] = []
         new_fonts: Dict[int, str] = {}
+        new_texts: Dict[int, Dict[str, Any]] = {}
         for index, region in enumerate(regions):
             text = str(region.get("translation") or "")
             if not text.strip():
@@ -784,58 +891,76 @@ class FontService:
                 if not ok:
                     changes.append({"region": index + 1, "from": current, "to": self.default_font,
                                     "reason": "layout", "detail": why})
+                    flags.append({"region": index + 1, "type": "layout", "reason": _human(
+                        self.target_lang, "layout", font=_font_label(current), default=self.default_font)})
                     current = self.default_font
-            chars = rendered_chars(text, region.get("direction"))
-            face = self.catalog.find(current) or self.catalog.find(RENDER_DEFAULT)
-            missing = face.missing(chars) if face is not None else ""
-            if missing and fix_missing:
-                fixed = False
-                tried = []
-                ranked = await asyncio.to_thread(self.catalog.similar, face, chars, self.target_lang)
-                punctuation = all(unicodedata.category(c)[0] in "PSZ" for c in missing)
-                if punctuation:  # borrowed punctuation is a small blemish; a font of another kind is not
-                    ranked = [(s, f) for s, f in ranked if s >= PUNCT_MIN_SCORE]
-                for _score, candidate in ranked:
-                    ok, why = await self._fits(image_path, index, current, candidate.value, cache)
-                    if ok:
-                        changes.append({"region": index + 1, "from": current, "to": candidate.value,
-                                        "reason": "missing", "missing": missing})
-                        current = candidate.value
-                        fixed = True
-                        break
-                    tried.append(f"{candidate.label}: {why}")
-                if not fixed:  # only missing letters go on the review list
-                    (kept if punctuation else unfixed).append(
-                        {"region": index + 1, "font": current, "missing": missing, "tried": tried})
             if current != original:
                 new_fonts[index] = current
+            # characters already drawn from another font (an earlier check, the editor) do not count
+            chars = own_font_chars(region)
+            if chars is None:
+                chars = rendered_chars(text, region.get("direction"))
+            face = self.catalog.find(current) or self.catalog.find(RENDER_DEFAULT)
+            missing = face.missing(chars) if face is not None else ""
+            if not (missing and fix_missing):
+                continue
+            fallback = await asyncio.to_thread(self.fallback_for, face, missing)
+            fields = borrow_glyphs(region, face, fallback.value) if fallback is not None else None
+            if fields is not None:
+                new_texts[index] = fields
+                borrowed.append({"region": index + 1, "font": current, "fallback": fallback.value,
+                                 "reason": "fallback", "missing": missing})
+            elif all(unicodedata.category(c)[0] in "PSZ" for c in missing):
+                kept.append({"region": index + 1, "font": current, "missing": missing, "tried": []})
+            else:  # only missing letters go on the review list
+                unfixed.append({"region": index + 1, "font": current, "missing": missing, "tried": []})
+                flags.append({"region": index + 1, "type": "layout",
+                              "reason": _human(self.target_lang, "missing", font=current, chars=missing)})
         if hasattr(self.backend, "done"):
             self.backend.done(image_path)
-        if new_fonts:
-            with open(json_path, "r", encoding="utf-8") as fh:  # re-read: write only the font names
+        if new_fonts or new_texts:
+            with open(json_path, "r", encoding="utf-8") as fh:  # re-read: write only these fields
                 raw = json.load(fh)
             entry = raw[next(iter(raw))]
             saved = entry.get("regions", []) if isinstance(entry, dict) else entry
             for index, font in new_fonts.items():
                 if index < len(saved):
                     saved[index]["font_family"] = font
+            for index, fields in new_texts.items():
+                if index < len(saved):
+                    saved[index].update(fields)
             write_json_atomic(json_path, raw)
-        if changes or unfixed or kept:
+        if changes or borrowed or unfixed or kept:
             side = store.load_sidecar(stem) or {}
             side.pop("version", None)
-            flags = [{"region": u["region"], "type": "layout",
-                      "reason": _human(self.target_lang, font=u["font"], chars=u["missing"])} for u in unfixed]
             side["review_flags"] = list(side.get("review_flags") or []) + flags
-            side["fonts"] = {"changes": changes, "unfixed": unfixed, "kept": kept}
+            side["fonts"] = {"changes": changes, "borrowed": borrowed, "unfixed": unfixed, "kept": kept}
             store.save_sidecar(stem, side)
             for flag in flags:
                 events.emit("flag", page=stem, agent="fonts", region=flag["region"], flag="layout",
                             reason=flag["reason"], source="check")
-        if changes or unfixed:
-            events.emit("fonts", page=stem, agent="fonts", changed=len(changes), unfixed=len(unfixed),
-                        changes=[{k: c[k] for k in ("region", "from", "to", "reason", "missing") if k in c}
-                                 for c in changes])
-        return {"page": stem, "changed": len(changes), "unfixed": len(unfixed), "changes": changes}
+        if changes or borrowed or unfixed:
+            keys = ("region", "from", "to", "font", "fallback", "reason", "missing")
+            events.emit("fonts", page=stem, agent="fonts", changed=len(changes), borrowed=len(borrowed),
+                        unfixed=len(unfixed),
+                        changes=[{k: c[k] for k in keys if k in c} for c in changes + borrowed])
+        return {"page": stem, "changed": len(changes), "borrowed": len(borrowed), "unfixed": len(unfixed),
+                "changes": changes + borrowed}
+
+    def fallback_for(self, face: "FontFace", missing: str) -> Optional["FontFace"]:
+        """The font that draws the characters ``face`` lacks. A font keeps the fallback it got first
+        for the whole run while that one has the characters, so every box in it borrows from the
+        same design; otherwise the most similar font with all of them is added."""
+        chosen = self._fallbacks.setdefault(face.value or face.family, [])
+        for other in chosen:
+            if not other.missing(missing):
+                return other
+        ranked = self.catalog.similar(face, missing, self.target_lang)
+        if not ranked:
+            return None
+        best = ranked[0][1]
+        chosen.append(best)
+        return best
 
 
 async def build_font_service(translator, config, target_lang: str) -> FontService:

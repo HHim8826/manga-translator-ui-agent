@@ -93,8 +93,11 @@ class AgentMemory:
         self._glossary_path = os.path.join(memory_dir, "glossary.json")
         self._characters_path = os.path.join(memory_dir, "characters.json")
         self._story_path = os.path.join(memory_dir, "story.md")
+        self._styles_path = os.path.join(memory_dir, "font_styles.json")
         self.glossary: List[Dict[str, str]] = _read_json(self._glossary_path, [])
         self.characters: Dict[str, Dict[str, str]] = _read_json(self._characters_path, {})
+        self.font_styles: Dict[str, Dict[str, str]] = _read_json(self._styles_path, {})
+        """Style name → {"font", "reason", "page"} (``font_styles.py``)."""
         try:
             with open(self._story_path, "r", encoding="utf-8") as fh:
                 self.story = fh.read()
@@ -152,6 +155,24 @@ class AgentMemory:
             entry["updated_page"] = page
         write_json_atomic(self._characters_path, self.characters)
         return status
+
+    # font styles
+    def font_style_set(self, name: str, font: str, reason: str, page: str = "") -> str:
+        status = "updated" if name in self.font_styles else "added"
+        self.font_styles[name] = {"font": font, "reason": reason.strip(), "page": page}
+        write_json_atomic(self._styles_path, self.font_styles)
+        return status
+
+    def font_styles_seed(self, styles: Dict[str, Dict[str, str]]) -> List[str]:
+        """Styles of earlier chapters that this chapter does not have yet; returns their names."""
+        added = [name for name in styles if name not in self.font_styles]
+        for name in added:
+            entry = styles[name]
+            self.font_styles[name] = {"font": entry.get("font", ""), "reason": entry.get("reason", ""),
+                                      "page": "", "from": entry.get("chapter", "") or "work"}
+        if added:
+            write_json_atomic(self._styles_path, self.font_styles)
+        return added
 
     # story
     def story_update(self, summary: str) -> None:

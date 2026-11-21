@@ -1726,5 +1726,10 @@
   "Agent Flag other": "其他",
   "Agent Result Out Of Operations": "{id} 已用完 {n} 次操作",
   "Agent Method fill": "填底色",
-  "Agents Page Confidence": "信心 {percent}%"
+  "Agents Page Confidence": "信心 {percent}%",
+  "Agent Tool set_font_style": "设置字体样式",
+  "Agents Fonts Fallback": "「{chars}」改用 {font}",
+  "Agents Fonts Detail Borrowed": "更换 {changed} 个区域，{borrowed} 个区域的缺字改用相近字体，仍缺字 {unfixed} 个",
+  "Agents Font Styles": "字体样式",
+  "Agents Font Styles Detail": "{count} 个样式存到 {file}，后面的话数沿用"
 }

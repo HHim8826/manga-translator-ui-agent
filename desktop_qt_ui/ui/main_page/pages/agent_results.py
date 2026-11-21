@@ -118,7 +118,7 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
             return s
         query = t("Agent Result All") if tool == "character_get" and m[1] == "all" else m[1]
         return t("Agent Result Found", query=query, count=m[2])
-    if tool in ("glossary_upsert", "character_upsert"):
+    if tool in ("glossary_upsert", "character_upsert", "set_font_style"):
         m = re.fullmatch(r"(.*) \((added|updated)\)", s, re.S)
         return t("Agent Result Added" if m[2] == "added" else "Agent Result Updated", item=m[1]) if m else s
     if tool in ("story_summary_get", "story_summary_update"):

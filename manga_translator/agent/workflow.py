@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .events import EventLog, new_run_id
+from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
 from .runner import AgentRunner, AgentStopped, language_name
@@ -152,10 +153,36 @@ def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events:
     return bool(result["added"])
 
 
+def _work_styles(path: str, service, log) -> Dict[str, dict]:
+    """The work's font styles whose font is installed; the others are left out with a note."""
+    styles = load_work_styles(path)
+    usable = {name: entry for name, entry in styles.items() if service.catalog.find(entry["font"]) is not None}
+    for name in styles.keys() - usable.keys():
+        log(f"[Agent] Font style {name}: {styles[name]['font']} is not installed, left out")
+    if usable:
+        log(f"[Agent] Font styles of the work: " + ", ".join(f"{n} → {e['font']}" for n, e in usable.items()))
+    return usable
+
+
+def _save_work_styles(path: str, memory, work_dir: str, events: EventLog, log) -> None:
+    """Keep the chapter's font styles for the next chapters; a failure is logged and the chapter goes on."""
+    chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
+    try:
+        saved = save_work_styles(path, memory.font_styles, chapter)
+    except Exception as exc:
+        logger.exception("saving the work's font styles failed")
+        events.emit("error", agent="memory", error=f"font styles not saved: {type(exc).__name__}: {str(exc)[:300]}")
+        return
+    if saved:
+        events.emit("font_styles", agent="memory", file=os.path.basename(path),
+                    styles={name: memory.font_styles[name]["font"] for name in saved})
+        log(f"[Agent] Font styles saved for the work: {', '.join(saved)}")
+
+
 async def _check_fonts(service, pages: List[str], store: AgentStore, events: EventLog, settings: AgentSettings,
                        log) -> None:
     """The font check of each finished page; a failure leaves that page's fonts as they are."""
-    changed = unfixed = 0
+    changed = borrowed = unfixed = 0
     for path in pages:
         try:
             result = await service.fix_page(path, store, events, fix_missing=settings.fix_missing_glyphs)
@@ -167,8 +194,10 @@ async def _check_fonts(service, pages: List[str], store: AgentStore, events: Eve
                         error=f"font check failed: {type(exc).__name__}: {str(exc)[:300]}")
             continue
         changed += result.get("changed", 0)
+        borrowed += result.get("borrowed", 0)
         unfixed += result.get("unfixed", 0)
-    log(f"[Agent] Fonts: {changed} region(s) changed, {unfixed} left with characters their font lacks")
+    log(f"[Agent] Fonts: {changed} region(s) back to the user's font, {borrowed} draw missing characters from "
+        f"a similar font, {unfixed} left with characters no font has")
 
 
 def line_break_rules(config) -> str:
@@ -395,9 +424,12 @@ async def run_agent_workflow(
                     if review_task is not None and outcome.get("status") in ("done", "incomplete"):
                         queue.put_nowait(outcome["image"])
 
+                use_styles = work_prompt is not None and settings.choose_fonts and font_service is not None
+                styles_path = work_fonts_path(work_prompt.path) if use_styles else ""
                 runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
                                      on_page_done=page_done, work_prompt=work_prompt,
-                                     fonts=font_service if settings.choose_fonts else None, line_breaks=breaks)
+                                     fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
+                                     font_styles=_work_styles(styles_path, font_service, log) if styles_path else None)
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -422,6 +454,8 @@ async def run_agent_workflow(
                         if font_service is not None and finished:
                             # after the proofreading: it may change the text
                             await _check_fonts(font_service, finished, store, events, settings, log)
+                        if styles_path and finished:
+                            _save_work_styles(styles_path, runner.memory, work_dir, events, log)
                         if settings.update_work_glossary and work_prompt is not None and work_prompt.path \
                                 and finished and _save_work_terms(work_prompt.path, runner.memory, finished,
                                                                   work_dir, events, log):

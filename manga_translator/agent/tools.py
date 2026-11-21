@@ -2,7 +2,7 @@
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
 Structure: add_region, merge_regions, skip_region, set_reading_order, link_regions
-Text: set_text, set_line_breaks
+Text: set_text, set_line_breaks, set_font_style
 Memory: glossary_search, glossary_upsert, character_get, character_upsert,
         story_summary_get, story_summary_update, search_past_translations
 Flow: flag_for_review, mark_page_done, budget_status, undo
@@ -27,6 +27,7 @@ from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, n
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
+from .font_styles import style_name
 from .work_glossary import WORK_CATEGORIES
 
 logger = logging.getLogger("manga_translator.agent")
@@ -64,7 +65,9 @@ class AgentSession:
         self.work_terms: List[Any] = []
         """Glossary terms of the work's prompt file (``work_prompt.WorkTerm``), for the checks."""
         self.font_choices: List[str] = []
-        """Fonts on the font sheet (font_family values); set_text font n picks font_choices[n - 1]."""
+        """Fonts on the font sheet (font_family values); set_font_style font n picks font_choices[n - 1]."""
+        self.styles_used: Dict[str, set] = {}
+        """Font style → pages of this run with a region in it (a used style keeps its font)."""
         self.line_breaks = False
         """AI line breaks (render setting disable_auto_wrap): the renderer breaks lines only at [BR], so
         translations of multi-line sources need them."""
@@ -336,17 +339,65 @@ def _font_choice(s: AgentSession, value: Any) -> Optional[str]:
     return s.font_choices[number - 1]
 
 
-def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+NO_STYLE = ("none", "default")
+
+
+def _style_choice(s: AgentSession, value: Any, category: str, reason: str) -> Optional[tuple]:
+    """(style, font) for set_text; None leaves the region's style as it is, ("", "") is the user's font."""
+    if value is None or str(value).strip() == "":
+        return None
+    name = style_name(value)
+    if name in NO_STYLE:
+        return "", ""
+    if not s.font_choices:
+        raise RegionError("this run has no font styles; leave style out")
+    styles = s.memory.font_styles
+    if name not in styles:
+        raise RegionError(f"there is no font style {name!r} (styles: {', '.join(styles) or 'none yet'}); "
+                          "define it with set_font_style first")
+    if category == "dialogue" and not str(reason or "").strip():
+        raise RegionError("normal dialogue keeps the user's font: give dialogue a style only when its lettering "
+                          "clearly differs from the dialogue around it, and say how in reason")
+    return name, styles[name]["font"]
+
+
+def set_font_style(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    if not s.font_choices:
+        raise RegionError("this run has no font sheet, so there are no font styles")
+    name = style_name(a.get("name"))
+    if name in NO_STYLE:
+        raise RegionError(f"{name!r} means the user's font; pick another name")
     font = _font_choice(s, a.get("font"))
+    if not font:
+        raise RegionError(f"give the number of a font on the font sheet (1-{len(s.font_choices)}); text without a "
+                          "style already uses the user's font")
+    reason = str(a.get("reason") or "").strip()
+    if not reason:
+        raise RegionError("reason is required: what the original lettering of this kind of text looks like")
+    old = s.memory.font_styles.get(name)
+    used = sorted(s.styles_used.get(name, ()))
+    if old and old.get("font") != font and used:
+        raise RegionError(f"style {name!r} already sets {old['font']} on page(s) {', '.join(used)}; keep it so the "
+                          "chapter stays consistent, or define another style for a different lettering")
+    status = s.memory.font_style_set(name, font, reason, s.page_name)
+    return ToolResult(text=(f"Font style {name!r} = {font} ({status}). Give style \"{name}\" in set_text for every "
+                            "region with this lettering."),
+                      summary=f"{name} → {font.replace('::', ' ')} ({status})")
+
+
+def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    category = a.get("category") or "dialogue"
+    style = _style_choice(s, a.get("style"), category, a.get("reason", ""))
     region = s.doc.set_text(a["id"], a.get("source_text", ""), a.get("translation", ""),
-                            a.get("category") or "dialogue", a.get("confidence"), a.get("ruby", ""),
-                            a.get("reason", ""))
-    if font is not None:
-        region.font = font
+                            category, a.get("confidence"), a.get("ruby", ""), a.get("reason", ""))
+    if style is not None:
+        region.style, region.font = style
+        if region.style:
+            s.styles_used.setdefault(region.style, set()).add(s.page_name)
     remaining = len(s.doc.missing())
     summary = f"#{region.id}: {_short(region.source_text, 24)} → {_short(region.translation, 30)}"
-    if region.font:
-        summary += f" [{region.font}]"
+    if region.style:
+        summary += f" [{region.style}]"
     text = f"#{region.id} saved. {remaining} region(s) on this page still need a result."
     if s.line_breaks and needs_break(region.line_count, region.translation):
         text += (f" Its source has {region.line_count} lines but the translation has no {BREAK}, so it would be "
@@ -520,11 +571,18 @@ TOOLS: List[Tool] = [
                                "[BR] marks a line break"},
                "category": {"type": "string", "enum": list(CATEGORIES)},
                "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
-               "font": {"type": "integer", "description": "Only when the original lettering is clearly not "
-                        "normal dialogue: number of the closest font on the font sheet (0 = the user's font). "
-                        "Leave out to keep the font as it is."},
+               "style": {"type": "string", "description": "Only for lettering that clearly differs from the "
+                         "normal dialogue: the name of its font style (set_font_style). Leave out for normal "
+                         "dialogue and to keep the region's style; \"none\" goes back to the user's font."},
                "reason": REASON},
               ["id", "source_text", "translation", "category", "confidence"]), set_text, writes=True),
+    Tool("set_font_style", "Define a font style: a kind of lettering that clearly differs from the normal "
+         "dialogue (narration boxes, handwriting, a sign, a title ...) and the font on the font sheet closest to it. "
+         "Then give that style in set_text for every region with that lettering.",
+         _obj({"name": {"type": "string", "description": "Short name of the kind of lettering, like 旁白 or 手寫"},
+               "font": {"type": "integer", "description": "Number of the closest font on the font sheet (1 or more)"},
+               "reason": {"type": "string", "description": "What the original lettering looks like"}},
+              ["name", "font", "reason"]), set_font_style, writes=True),
     Tool("set_line_breaks", "Put line breaks ([BR]) into a region's current translation without changing its words.",
          _obj({"id": ID, "text": {"type": "string", "description": "The current translation with [BR] where the "
                                   "lines break"}, "reason": REASON}, ["id", "text"]), set_line_breaks, writes=True),

@@ -1716,5 +1716,10 @@
   "Agent Flag other": "otro",
   "Agent Result Out Of Operations": "{id} agotó sus {n} operaciones",
   "Agent Method fill": "relleno con el color del papel",
-  "Agents Page Confidence": "confianza {percent}%"
+  "Agents Page Confidence": "confianza {percent}%",
+  "Agent Tool set_font_style": "Fijar estilo de fuente",
+  "Agents Fonts Fallback": "{chars} con {font}",
+  "Agents Fonts Detail Borrowed": "{changed} regiones cambiadas, faltantes de {borrowed} con una fuente parecida, {unfixed} con caracteres que faltan",
+  "Agents Font Styles": "Estilos de fuente",
+  "Agents Font Styles Detail": "{count} estilo(s) guardados en {file} para los próximos capítulos"
 }

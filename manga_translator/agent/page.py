@@ -134,7 +134,9 @@ class Region:
     erase: Optional[tuple] = None
     """Added regions: (x, y, 0/1 patch) of pixels to add to the mask."""
     font: str = ""
-    """The agent's font for this region (from the font sheet); empty keeps the JSON's font."""
+    """The font of the region's style; empty keeps the JSON's font (the user's)."""
+    style: str = ""
+    """The agent's font style for this region (``font_styles.py``); empty for normal dialogue."""
 
     @property
     def polygons(self) -> List[np.ndarray]:
@@ -562,6 +564,7 @@ class PageDoc:
                     "link_group": r.link_group,
                     "reasons": r.reasons,
                     "font": r.font,
+                    "style": r.style,
                     "checks": [c["code"] for c in self.checks if c.get("region") == r.id],
                 }
                 for r in (self.regions[i] for i in self.order)

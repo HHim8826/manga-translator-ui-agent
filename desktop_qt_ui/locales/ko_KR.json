@@ -1716,5 +1716,10 @@
   "Agent Flag other": "기타",
   "Agent Result Out Of Operations": "{id} 작업 {n}회를 모두 사용함",
   "Agent Method fill": "바탕색 채우기",
-  "Agents Page Confidence": "신뢰도 {percent}%"
+  "Agents Page Confidence": "신뢰도 {percent}%",
+  "Agent Tool set_font_style": "글꼴 스타일 설정",
+  "Agents Fonts Fallback": "「{chars}」는 {font}",
+  "Agents Fonts Detail Borrowed": "{changed}개 영역 변경, {borrowed}개 영역의 없는 글자를 비슷한 글꼴로 보충, {unfixed}개 글자 누락",
+  "Agents Font Styles": "글꼴 스타일",
+  "Agents Font Styles Detail": "{count}개 스타일을 {file}에 저장 (다음 화에서도 사용)"
 }

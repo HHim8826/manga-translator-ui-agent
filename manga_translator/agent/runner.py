@@ -28,11 +28,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from .events import EventLog
+from .font_styles import styles_text
 from .page import PageDoc
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentStore
-from .tools import AgentSession, ToolRegistry
+from .tools import TOOLS, AgentSession, ToolRegistry
 from .work_prompt import WorkPrompt
 
 logger = logging.getLogger("manga_translator.agent")
@@ -119,7 +120,7 @@ Do not invent text that is not on the page. Keep translations short enough for t
 
 FONT_PROMPT = """
 
-Fonts: every region is typeset in the user's font ({default}) unless you give set_text a font. The font sheet in the first message shows the other installed fonts that have every {target} character, numbered. Give font only when a region's original lettering is clearly a different style from the normal dialogue around it (a narration box in a serif face, handwriting, cute or pop lettering, brush writing, a sign, title or screen), and pick the listed font that looks most like that lettering. Use the same font for the same kind of text all through the chapter, and leave font out for normal dialogue. The program keeps a font only if the text still fits the same place."""
+Fonts: every region is typeset in the user's font ({default}) unless it has a font style. The font sheet in the first message shows the other installed fonts that have every {target} character, numbered. A font marked "no vertical ..." lacks those marks of vertical text (they are drawn from a similar font): for vertical text, prefer a font that has them when two look alike. A font style is a kind of lettering that clearly differs from the normal dialogue around it: a narration box in a serif face, handwriting, cute or pop lettering, brush writing, a sign, a title or a screen. Define each style once with set_font_style (a short name in {target}, the listed font that looks most like that lettering, and what the lettering looks like), then give that style in set_text for every region with that lettering, all through the chapter. The styles listed in the first message come from earlier chapters of this work: keep using them for the same kinds of text. Normal dialogue has no style, whoever speaks; give dialogue a style only when its lettering clearly differs, and say how in reason. The program keeps a style's font in a region only if the text still fits the same place, and draws characters a font lacks from a similar font."""
 
 LINE_BREAK_PROMPT = """
 
@@ -155,12 +156,13 @@ class AgentRunner:
                  pages: List[str], target_lang: str,
                  should_stop: Callable[[], bool] = lambda: False,
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
-                 work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = ""):
+                 work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
+                 font_styles: Optional[Dict[str, dict]] = None):
         self.settings = settings
         self.work_prompt = work_prompt
         """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
-        """``fonts.FontService`` with a font sheet for set_text font, or None."""
+        """``fonts.FontService`` with a font sheet for set_font_style, or None."""
         self.line_breaks = line_breaks
         """The AI line break rules when the render setting disable_auto_wrap is on, else empty."""
         self.client = client
@@ -172,11 +174,15 @@ class AgentRunner:
         self.on_page_done = on_page_done
         """Called with each page's outcome once its JSON and sidecar are saved (the inpaint review starts there)."""
         self.memory = store.memory()
+        if font_styles and self.fonts is not None:  # the work's styles from earlier chapters
+            self.memory.font_styles_seed(font_styles)
         self.session = AgentSession(settings, self.memory, pages, events, target_lang=target_lang)
         self.session.work_terms = list(work_prompt.terms) if work_prompt else []
         self.session.font_choices = [face.value for face in self.fonts.choices] if self.fonts else []
         self.session.line_breaks = bool(line_breaks)
-        self.registry = ToolRegistry(self.session)
+        # font styles need the font sheet
+        self.registry = ToolRegistry(self.session, None if self.fonts is not None else
+                                     [t for t in TOOLS if t.name != "set_font_style"])
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
         self.done_pages: List[str] = []
@@ -209,12 +215,21 @@ class AgentRunner:
             intro += "\n\n" + recap
         content: Any = intro
         if self.fonts is not None:
-            content = [{"type": "text", "text": intro + "\n\nFont sheet (set_text font):\n" + self.fonts.sheet_text()}]
+            styles = styles_text(self.memory.font_styles, self._font_number)
+            content = [{"type": "text", "text": intro + "\n\nFont sheet (set_font_style font):\n" + self.fonts.sheet_text()
+                        + "\n\nFont styles (set_text style):\n" + styles}]
             if self.fonts.sheet_url:
                 content.append({"type": "image_url", "image_url": {"url": self.fonts.sheet_url,
                                                                    "detail": self.settings.image_detail}})
         self.preamble = [{"role": "system", "content": self.system_prompt()},
                          {"role": "user", "content": content}]
+
+    def _font_number(self, font: str) -> str:
+        """``3 (MingLiU)`` for a style's font on this run's font sheet, the font name otherwise."""
+        for number, value in enumerate(self.session.font_choices, start=1):
+            if value == font:
+                return f"font {number} ({value})"
+        return font
 
     def _load_past(self) -> None:
         """Earlier results of this chapter (previous runs) for search_past_translations."""

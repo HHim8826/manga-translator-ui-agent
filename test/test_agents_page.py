@@ -214,3 +214,22 @@ def test_font_events(app):
     assert row.text(4) == ("#5 → Noto Sans TC::Bold (Agents Fonts Missing chars=值); "
                            "#2 → A (Agents Fonts Layout)")
     assert row.data(0, Qt.ItemDataRole.UserRole + 1) is True
+
+    # this version: only the missing characters come from another font; the styles are kept for the work
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["001.jpg"], "model": "m"},
+        {"type": "fonts", "page": "001", "agent": "fonts", "changed": 1, "borrowed": 1, "unfixed": 0, "changes": [
+            {"region": 2, "from": "B", "to": "A", "reason": "layout"},
+            {"region": 4, "font": "A", "fallback": "Yu Mincho::Light", "reason": "fallback", "missing": "值︒"}]},
+        {"type": "font_styles", "agent": "memory", "file": "作品.fonts.json",
+         "styles": {"旁白": "Noto Serif TC", "手寫": "AR TianniuB5"}},
+    ])
+    row = page.timeline.topLevelItem(0)
+    assert row.text(3) == "Agents Fonts Detail Borrowed borrowed=1 changed=1 unfixed=0"
+    assert row.text(4) == "#2 → A (Agents Fonts Layout); #4 Agents Fonts Fallback chars=值︒ font=Yu Mincho Light"
+    assert row.data(0, Qt.ItemDataRole.UserRole + 1) is not True
+    styles = page.timeline.topLevelItem(1)
+    assert styles.text(2) == "Agents Font Styles"
+    assert styles.text(3) == "Agents Font Styles Detail count=2 file=作品.fonts.json"
+    assert styles.text(4) == "旁白 → Noto Serif TC; 手寫 → AR TianniuB5"

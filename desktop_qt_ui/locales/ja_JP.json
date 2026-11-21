@@ -1716,5 +1716,10 @@
   "Agent Flag other": "その他",
   "Agent Result Out Of Operations": "{id} は操作 {n} 回を使い切りました",
   "Agent Method fill": "地の色で塗りつぶし",
-  "Agents Page Confidence": "信頼度 {percent}%"
+  "Agents Page Confidence": "信頼度 {percent}%",
+  "Agent Tool set_font_style": "フォントスタイルを設定",
+  "Agents Fonts Fallback": "「{chars}」は {font}",
+  "Agents Fonts Detail Borrowed": "{changed} 領域を変更、{borrowed} 領域の不足字形を近いフォントで補完、{unfixed} 領域で字形不足",
+  "Agents Font Styles": "フォントスタイル",
+  "Agents Font Styles Detail": "{count} 個のスタイルを {file} に保存（次の話でも使用）"
 }

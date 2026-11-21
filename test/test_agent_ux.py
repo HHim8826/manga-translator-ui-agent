@@ -70,6 +70,18 @@ def test_every_new_text_is_in_every_locale():
         assert len({frozenset(v) for v in names.values()}) == 1, (key, names)
 
 
+def test_every_text_of_the_agent_page_is_in_every_locale():
+    source = (ROOT / "desktop_qt_ui" / "ui" / "main_page" / "pages" / "agents_page.py").read_text(encoding="utf-8")
+    keys = set(re.findall(r'_t\(\s*"([^"{}]+)"', source)) | set(_tool_keys().values())
+    assert {"Agents Fonts Fallback", "Agents Font Styles", "Agent Tool set_font_style"} <= keys
+    for locale, catalog in CATALOGS.items():
+        missing = sorted(k for k in keys if not catalog.get(k, "").strip())
+        assert not missing, (locale, missing)
+    for key in keys:  # the placeholders are the same in every locale
+        names = {locale: set(re.findall(r"{(\w+)}", CATALOGS[locale][key])) for locale in LOCALES}
+        assert len({frozenset(v) for v in names.values()}) == 1, (key, names)
+
+
 # --- results -------------------------------------------------------------------------------
 @pytest.mark.parametrize("tool,summary,ok,expected", [
     ("get_candidates", "12 regions", True, "Agent Result Regions count=12"),
@@ -84,6 +96,7 @@ def test_every_new_text_is_in_every_locale():
     ("character_get", "all: 4", True, "Agent Result Found count=4 query=Agent Result All"),
     ("glossary_upsert", "くえ → 咕欸 (added)", True, "Agent Result Added item=くえ → 咕欸"),
     ("character_upsert", "りょうた (updated)", True, "Agent Result Updated item=りょうた"),
+    ("set_font_style", "旁白 → Yu Mincho Light (added)", True, "Agent Result Added item=旁白 → Yu Mincho Light"),
     ("story_summary_update", "117 chars", True, "Agent Result Chars count=117"),
     ("flag_for_review", "#6 inpaint", True, "Agent Result With Kind id=#6 kind=Agent Flag inpaint"),
     ("flag_for_review", "001 #4", True, "001 #4"),  # the proofreader's: page and region
