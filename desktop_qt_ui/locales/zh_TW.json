@@ -1733,5 +1733,10 @@
   "Agents Font Styles Detail": "{count} 個樣式存到 {file}，後面的話數沿用",
   "Agent Page Not Reached": "沒處理",
   "Agents Render Skipped": "沒有譯文，不渲染：{pages}",
-  "Agents Finished Unrendered": "，{count} 頁沒有譯文所以沒有渲染"
+  "Agents Finished Unrendered": "，{count} 頁沒有譯文所以沒有渲染",
+  "Agent Rerun Title": "這些頁已經有 AI Agent 的結果",
+  "Agent Rerun Text": "這次的 {pages} 頁裡，有 {seen} 頁已經跑過 AI Agent（{done} 頁完成）。重跑會重新檢測，並覆寫這些頁的譯文和 JSON。",
+  "Agent Rerun Edited": "其中 {count} 頁在上次執行後改過（多半是在編輯器裡）：{pages}。重跑前會把它們的 JSON 備份到 manga_translator_work/agent/backups。",
+  "Agent Rerun Unfinished": "只處理沒完成的 {count} 頁",
+  "Agent Rerun All": "全部重跑（{count} 頁）"
 }

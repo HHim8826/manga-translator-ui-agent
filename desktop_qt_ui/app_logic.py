@@ -1900,6 +1900,20 @@ class MainAppLogic(QObject):
             )
             return
 
+        # AI Agent 流程：这一话已有 Agent 结果时先询问，避免重跑覆盖翻译和编辑器里的修改
+        if (task_config.get("cli") or {}).get("agent_workflow", False):
+            from ui.main_page.pages.agent_rerun import ask_rerun
+
+            chosen = ask_rerun(getattr(self, "main_view", None), self._t, resolved_files)
+            if chosen is None:
+                self._ui_log("AI Agent: the run was cancelled, earlier results stay as they are")
+                self.state_manager.set_translating(False)
+                self.state_manager.set_status_message("就绪")
+                return
+            if len(chosen) != len(resolved_files):
+                self._ui_log(f"AI Agent: processing {len(chosen)} page(s) that are not done yet")
+            resolved_files = chosen
+
         # 启动真正的翻译任务
         self._start_translation_worker(resolved_files, task_config)
 

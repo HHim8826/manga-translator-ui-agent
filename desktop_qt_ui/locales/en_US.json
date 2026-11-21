@@ -1735,5 +1735,10 @@
   "Agents Font Styles Detail": "{count} style(s) saved to {file} for the next chapters",
   "Agent Page Not Reached": "Not reached",
   "Agents Render Skipped": "Not rendered, no translation: {pages}",
-  "Agents Finished Unrendered": ", {count} page(s) not rendered (no translation)"
+  "Agents Finished Unrendered": ", {count} page(s) not rendered (no translation)",
+  "Agent Rerun Title": "These pages already have AI Agent results",
+  "Agent Rerun Text": "{seen} of the {pages} page(s) already went through the AI Agent ({done} done). A rerun detects the text again and replaces their translations and JSON.",
+  "Agent Rerun Edited": "{count} of them changed after the last run (in the editor, most likely): {pages}. Their JSON is copied to manga_translator_work/agent/backups before a rerun.",
+  "Agent Rerun Unfinished": "Only the {count} page(s) not done",
+  "Agent Rerun All": "Redo all {count} page(s)"
 }

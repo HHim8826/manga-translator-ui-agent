@@ -1724,5 +1724,10 @@
   "Agents Font Styles Detail": "{count} 個のスタイルを {file} に保存（次の話でも使用）",
   "Agent Page Not Reached": "未処理",
   "Agents Render Skipped": "訳文がないためレンダリングしない：{pages}",
-  "Agents Finished Unrendered": "、訳文のない {count} ページはレンダリングしていません"
+  "Agents Finished Unrendered": "、訳文のない {count} ページはレンダリングしていません",
+  "Agent Rerun Title": "これらのページには AI Agent の結果があります",
+  "Agent Rerun Text": "今回の {pages} ページのうち {seen} ページは AI Agent 処理済みです（完了 {done} ページ）。再実行すると検出からやり直し、訳文と JSON を上書きします。",
+  "Agent Rerun Edited": "そのうち {count} ページは前回の実行後に変更されています（おそらくエディター）：{pages}。再実行の前に JSON を manga_translator_work/agent/backups に保存します。",
+  "Agent Rerun Unfinished": "未完了の {count} ページだけ処理",
+  "Agent Rerun All": "すべて再実行（{count} ページ）"
 }

@@ -31,6 +31,7 @@ from .events import EventLog, new_run_id
 from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
+from .resume import back_up_edited, previous_states, record_saved
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
@@ -395,6 +396,11 @@ async def run_agent_workflow(
             log(f"[Agent] API check: model {getattr(client, 'model_label', '')}")
             await check_api(client)
         if preprocess:
+            # the preprocess writes every page's JSON again: keep the ones changed in the editor
+            copies = back_up_edited(previous_states(paths))
+            if copies:
+                log(f"[Agent] {len(copies)} JSON file(s) changed after the last run, copied before the "
+                    f"preprocess replaces them: {', '.join(os.path.basename(c) for c in copies)}")
             log("[Agent] 1/4 Preprocess: detection, local OCR and masks")
             _set_mode(translator, template=True, save_text=True)
             batch_progress.stage = "preprocess"
@@ -521,6 +527,7 @@ async def run_agent_workflow(
                 _report(progress, "translate", translated[0], len(paths))
 
         if not render:
+            record_saved(paths)
             return []
         from ..utils.path_manager import find_json_path
 
@@ -559,6 +566,7 @@ async def run_agent_workflow(
         finally:
             translator.on_result_saved = saved_hook
             render_events.close()
+        record_saved(paths)  # what the run leaves, so the next run sees changes made in the editor
         return results + [_left_out_context(path, status) for path, status in left_out.items()]
     finally:
         if isinstance(hooks, list) and batch_progress in hooks:

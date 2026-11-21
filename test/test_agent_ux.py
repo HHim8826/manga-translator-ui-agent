@@ -41,7 +41,8 @@ def test_one_name_and_the_apps_own_words():
     for old in ("修圖", "去字", "嵌字", "偵測", "Agents 頁面"):
         assert not [v for v in agent_texts if old in v], old
     assert tw["Agents Render"] == tw["Render"] == "渲染" and tw["Agent Page Inpainting"] == "修復審查"
-    assert not re.search(r"(?<![A-Za-z])agent(?![A-Za-z])", " ".join(agent_texts))  # always "Agent" in Chinese
+    # always "Agent" in Chinese; a folder name in a path (agent/backups) stays as it is on disk
+    assert not re.search(r"(?<![A-Za-z/_])agent(?![A-Za-z/_])", " ".join(agent_texts))
     # the work prompt file is no longer only read
     assert "只讀不寫" not in tw["desc_agent_use_work_prompt"] and "新詞寫回作品提示詞" in tw["desc_agent_use_work_prompt"]
     assert "only read" not in CATALOGS["en_US"]["desc_agent_use_work_prompt"]
