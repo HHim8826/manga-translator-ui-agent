@@ -358,6 +358,10 @@ class MangaTranslator:
         # The agent workflow's render: image path -> False when the page's JSON must not be written
         # again (the user saved it in the editor during the run).
         self.json_save_guard = None
+        # The agent workflow's render: called with each region dict that load_text reads from a JSON
+        # file, before its TextBlock is made (it places text in the box set in the editor, as the
+        # editor's export does). None: the regions are used as saved.
+        self.load_text_region_hook = None
         self._add_logger_hook()
         
         # 取消检查回调（用于Web服务器等场景）
@@ -1609,8 +1613,14 @@ class MangaTranslator:
 
         regions = []
         parse_failure_count = 0
+        region_hook = getattr(self, 'load_text_region_hook', None) if preloaded is None else None
         for region_data in regions_data:
             try:
+                if region_hook is not None and isinstance(region_data, dict):
+                    try:
+                        region_hook(region_data)
+                    except Exception as hook_err:  # never lose a region to the hook
+                        logger.debug(f"load_text_region_hook failed: {hook_err}")
                 # Convert literal '\\n' to newline characters for the rendering engine
                 if 'text' in region_data and isinstance(region_data['text'], str):
                     region_data['text'] = region_data['text'].replace('\\n', '\n')

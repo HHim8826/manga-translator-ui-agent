@@ -90,6 +90,10 @@ class AgentSettings(BaseModel):
     translations) to that prompt file, so later chapters and the other translators use them. Existing
     entries are never changed; YAML comments and layout stay; the user's own version is kept as
     ``.bak``, and the last versions in ``agent/backups/``."""
+    revise_lock_user_edits: bool = True
+    """When a chapter the AI Agent finished is checked again, the regions the user changed in the
+    editor after that run (their text or place), or drew there, stay as the user left them: the agent,
+    the proofreader and the font check leave them. Off lets the agent change them too."""
     extra_instructions: str = ""
     """Extra instructions appended to the agent's system prompt."""
 

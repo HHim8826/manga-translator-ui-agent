@@ -89,14 +89,18 @@ def test_the_question_names_the_edited_pages():
     states = _states(__import__("pathlib").Path("x"))
     question = rerun_question(_t, states)
     assert question["text"] == ("Agent Rerun Text done=2 pages=4 seen=3\n\n"
-                                "Agent Rerun Edited count=1 pages=002\n\nAgent Rerun Stop Note")
+                                "Agent Rerun Edited count=1 pages=002\n\nAgent Rerun Revise Note\n\n"
+                                "Agent Rerun Stop Note")
     assert [os.path.basename(p) for p in question["unfinished"]] == ["003.png", "004.png"]
+    # a check goes over the finished pages only: 003 failed, 004 was never run
+    assert [os.path.basename(p) for p in question["revise"]] == ["001.png", "002.png"]
     assert rerun_question(_t, [PageState("a/001.png", "")]) is None
 
 
 @pytest.mark.parametrize("button,expected", [
-    ("Agent Rerun Unfinished count=2", ["003.png", "004.png"]),
-    ("Agent Rerun All count=4", ["001.png", "002.png", "003.png", "004.png"]),
+    ("Agent Rerun Unfinished count=2", (["003.png", "004.png"], False)),
+    ("Agent Rerun All count=4", (["001.png", "002.png", "003.png", "004.png"], False)),
+    ("Agent Rerun Revise count=2", (["001.png", "002.png"], True)),
     ("Cancel", None),
 ])
 def test_the_user_picks_the_pages(tmp_path, monkeypatch, app, button, expected):  # noqa: F811
@@ -113,8 +117,9 @@ def test_the_user_picks_the_pages(tmp_path, monkeypatch, app, button, expected):
     monkeypatch.setattr(QMessageBox, "exec", click)
     states = _states(tmp_path)
     chosen = ask_rerun(None, _t, [s.path for s in states], states)
-    assert (None if chosen is None else [os.path.basename(p) for p in chosen]) == expected
-    assert set(seen[0]) == {"Agent Rerun Unfinished count=2", "Agent Rerun All count=4", "Cancel"}
+    assert (None if chosen is None else ([os.path.basename(p) for p in chosen[0]], chosen[1])) == expected
+    assert set(seen[0]) == {"Agent Rerun Unfinished count=2", "Agent Rerun All count=4", "Agent Rerun Revise count=2",
+                            "Cancel"}
 
 
 def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app):  # noqa: F811
@@ -125,11 +130,11 @@ def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app): 
     folder = tmp_path / "chapter"
     folder.mkdir()
     files = [str(folder / "001.png")]
-    assert ask_rerun(None, _t, files) == files
+    assert ask_rerun(None, _t, files) == (files, False)
     # every page done: no "only the pages not done" button
     states = [PageState(files[0], "done")]
     monkeypatch.setattr(QMessageBox, "exec", lambda box: [b for b in box.buttons() if "All" in b.text()][0].click())
-    assert ask_rerun(None, _t, files, states) == files
+    assert ask_rerun(None, _t, files, states) == (files, False)
 
 
 def _translations(folder, stem):

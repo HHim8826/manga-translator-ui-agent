@@ -5,7 +5,8 @@ Context rules (design doc, "上下文與記憶管理"):
 * the system prompt, tool definitions and memory snapshot come first and stay
   fixed until a compaction, so the prefix is cached;
 * pages older than ``keep_images_last_n_pages`` keep their text but lose their images,
-  n pages at a time so the cached prefix changes once every n pages;
+  n pages at a time so the cached prefix changes once every n pages, and not when only a
+  few pages are left (``AgentRunner.drop_images``);
 * at a page boundary, once a request reached ``compact_threshold_tokens``, the
   conversation restarts from the state files (memory + earlier results are
   reachable through tools);
@@ -43,6 +44,10 @@ try:
     from ..translators.common import VALID_LANGUAGES
 except Exception:  # pragma: no cover - keeps the module importable in isolation
     VALID_LANGUAGES = {}
+
+DROP_PAGES_LEFT = 4
+"""Old page images are dropped only while at least this many pages (the current one included) are left
+(``AgentRunner.drop_images``)."""
 
 
 class AgentStopped(Exception):
@@ -138,9 +143,20 @@ Fonts: every region is typeset in the user's font ({default}) unless it has a fo
 LINE_BREAK_PROMPT = """
 
 Line breaks: the user's render setting breaks lines only where a translation has [BR] (AI line breaks), so write the line breaks into every translation. The candidate list gives each region's number of source lines; that is the original_region_count of the rules below. Write the marker [BR] in set_text, never a newline.
+The renderer keeps every line as you break it and does not shrink the text, so each line has to fit the box: the candidate list also says about how many characters fit per line and how many lines fit. Fitting the box comes before the number of source lines: when a line would be longer, break the text into more lines of about even length.
 {rules}"""
 LINE_BREAK_RULES = """Insert [BR] only at natural boundaries (after a sentence or clause, between phrases), never inside a word, name or number. A one-line source gets no [BR]; a source of two or more lines gets at least one, and about one line per source line when natural boundaries allow it. Never put [BR] at the start or the end, or two in a row."""
 """Used when dict/system_prompt_line_break.yaml cannot be read."""
+
+REVISE_PROMPT = """
+
+Checking again: the pages of this run were translated by an earlier run, under older rules than the ones above. The candidate list gives every region's current translation (green boxes); gray boxes are text the earlier run skipped. Go over each page against its image and fix what the earlier run got wrong or missed, with every tool:
+- a box that holds two separate texts (two bubbles, the two parts of a joined bubble, an aside beside the main text, a subtitle in a logo): split_region it and translate each part in its place; the list names the boxes whose lines stand apart, and their one translation may cover both parts or drop one;
+- text without a box: add_region (the recall check adds what it finds, as on a new page);
+- boxes that cut one paragraph apart: merge_regions; text that should stay as drawn: skip_region; skipped text that is dialogue or narration: set_text it (its strokes are then erased);
+- a wrong or stiff translation, invented script written as its reading instead of its meaning, a name that differs from the glossary: set_text again;
+- missing line breaks (set_line_breaks) and lettering that needs a font style (set_text with the style).
+A translation that is right stays: it needs no call. Regions marked LOCKED were changed by the user in the editor after the earlier run: every write tool refuses them, so leave them, and flag_for_review one if it looks wrong. Where the user deleted a box, the text stays without one: add_region refuses it. Finish every page with mark_page_done."""
 
 BATCHED_SAVES = ("set_text", "skip_region")
 BATCH_HINT = (" {left} region(s) are left: save them all in your next response (several set_text / skip_region "
@@ -171,8 +187,15 @@ class AgentRunner:
                  on_page_done: Optional[Callable[[Dict[str, Any]], None]] = None,
                  work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
                  font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None,
-                 preprocess_failed: Optional[Dict[str, str]] = None):
+                 preprocess_failed: Optional[Dict[str, str]] = None, revise: bool = False,
+                 revise_fonts=None, default_font: str = ""):
         self.settings = settings
+        self.revise = revise
+        """The pages were finished by an earlier run: check them again (``revise.py``)."""
+        self.revise_fonts = revise_fonts if revise_fonts is not None else fonts
+        """``fonts.FontService`` for the thin-font replacement of a check (also when the agent does not
+        choose fonts); ``default_font`` is the user's font when there is none."""
+        self.default_font = default_font
         self.preprocess_failed = {os.path.normcase(os.path.abspath(k)): v for k, v in (preprocess_failed or {}).items()}
         """Image path -> why the preprocess did not write the page again: the agent leaves it alone
         (its JSON is the one from before the run)."""
@@ -206,6 +229,8 @@ class AgentRunner:
                                      [t for t in TOOLS if t.name != "set_font_style"])
         self.preamble: List[dict] = []
         self.history: List[tuple] = []  # (page index, message)
+        self.images_from = 0
+        """Pages before this one have lost their images in the conversation (``drop_images``)."""
         self.done_pages: List[str] = []
         self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0,
                        "recall_requests": 0}
@@ -224,6 +249,8 @@ class AgentRunner:
             extra += LINE_BREAK_PROMPT.format(rules=self.line_breaks.strip())
         if self.fonts is not None:
             extra += FONT_PROMPT.format(default=self.fonts.default_font, target=target)
+        if self.revise:
+            extra += REVISE_PROMPT
         if self.settings.extra_instructions.strip():
             extra += f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}"
         return SYSTEM_PROMPT.format(double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
@@ -283,17 +310,30 @@ class AgentRunner:
                                               "translation": region["translation"], "category": region.get("category")})
 
     def image_pages_from(self, current_page: int) -> int:
-        """First page whose images stay in the conversation. Images are dropped n pages at a time, so the
-        start of the conversation (and the API's prompt cache) changes once every n pages instead of on
+        """First page whose images may stay in the conversation. Images are dropped n pages at a time, so
+        the start of the conversation (and the API's prompt cache) changes once every n pages instead of on
         every page; between n and 2n - 1 pages keep their images."""
         n = self.settings.keep_images_last_n_pages
         return max(0, ((current_page + 1) // n - 1) * n)
 
+    def drop_images(self, index: int) -> None:
+        """At the start of page ``index``: drop the next block of old images when it pays. A drop changes
+        the conversation from the first dropped image on, so that request finds only the start cached and
+        pays for the rest in full (ch34 check, page 10 of 10: 58k of 73k tokens), while each later request
+        saves only the dropped images at the cached price. That takes about three pages to make up for,
+        so with fewer than ``DROP_PAGES_LEFT`` pages left the images stay, unless the conversation is
+        already past half the compaction threshold."""
+        due = self.image_pages_from(index)
+        if due <= self.images_from:
+            return
+        left = len(self.pages) - index
+        if left >= DROP_PAGES_LEFT or self.session.last_prompt_tokens >= self.settings.compact_threshold_tokens // 2:
+            self.images_from = due
+
     def request_messages(self, current_page: int) -> List[dict]:
-        keep_from = self.image_pages_from(current_page)
         out = list(self.preamble)
         for page_index, message in self.history:
-            if page_index < keep_from:
+            if page_index < self.images_from:
                 message = strip_images(message, f"page {page_index + 1}")
             out.append(message)
         return out
@@ -332,9 +372,17 @@ class AgentRunner:
         if self.settings.recall_pass and 0 <= index < len(self.pages) and index not in self._recall_tasks:
             self._recall_tasks[index] = asyncio.ensure_future(self._recall_request(self.pages[index]))
 
+    def load_doc(self, path: str) -> PageDoc:
+        """The page for the agent: the preprocess JSON, or on a check the page as it was left."""
+        if not self.revise:
+            return PageDoc.load(path)
+        from .revise import load_page
+        return load_page(path, self.store, lock=self.settings.revise_lock_user_edits, fonts=self.revise_fonts,
+                         default_font=self.default_font)
+
     async def _recall_request(self, path: str) -> List[dict]:
         from . import images
-        doc = PageDoc.load(path)
+        doc = self.load_doc(path)
         page = images.open_page(path)
         marked = images.draw_marks(page, [(r.id, r.bbox, "pending") for r in doc.active_regions()])
         messages = [{"role": "system", "content": RECALL_PROMPT},
@@ -404,14 +452,18 @@ class AgentRunner:
         from . import images
         regions = doc.active_regions()
         page = self.session.page_image
+        checked = ", checked again: the list gives the current translations" if doc.revise else ""
         text = (f"Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
-                f"({page.width}x{page.height} px), {len(regions)} candidate region(s).\n"
+                f"({page.width}x{page.height} px), {len(regions)} candidate region(s){checked}.\n"
                 f"{self.session.candidate_lines()}\n")
         if recalled:
             text += ("A recall check added " + ", ".join(f"#{i}" for i in recalled)
                      + " for text the detector missed; its reading is only a hint. Handle them like the others "
                        "(skip_region not_text if one is not really text).\n")
-        text += "Work through this page with the tools, then call mark_page_done."
+        if doc.revise:
+            text += "Check this page against the image, fix what is wrong with the tools, then call mark_page_done."
+        else:
+            text += "Work through this page with the tools, then call mark_page_done."
         image = images.draw_marks(self.session.page_image, self.session.marks())
         return {"role": "user", "content": [
             {"type": "text", "text": text},
@@ -423,6 +475,7 @@ class AgentRunner:
         st = self.settings
         if self.session.last_prompt_tokens >= st.compact_threshold_tokens:
             self.compact("threshold")
+        self.drop_images(index)
         self.session.start_page(index, doc)
         page = doc.stem
         boxes = doc.boxes()
@@ -534,7 +587,8 @@ class AgentRunner:
                          memory=self.memory.counts(),
                          work_prompt={"name": self.work_prompt.name, "terms": len(self.work_prompt.terms)}
                          if self.work_prompt else None,
-                         fonts=list(self.session.font_choices) or None, **self.run_info)
+                         fonts=list(self.session.font_choices) or None, **({"revise": True} if self.revise else {}),
+                         **self.run_info)
         outcomes: List[Dict[str, Any]] = []
         failures_in_a_row = 0
         ended = ""  # why the run ended early: "stopped" or "failed"
@@ -550,7 +604,7 @@ class AgentRunner:
                     outcomes.append({"page": stem, "image": path, "status": "error", "error": error})
                     continue
                 try:
-                    doc = PageDoc.load(path)
+                    doc = self.load_doc(path)
                 except Exception as exc:
                     self.events.emit("error", page=stem, error=f"cannot open page data: {exc}")
                     outcomes.append({"page": stem, "image": path, "status": "error", "error": str(exc)})

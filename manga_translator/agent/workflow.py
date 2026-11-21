@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -63,6 +64,47 @@ def _set_mode(translator, **flags: bool) -> None:
 
 def _key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
+
+
+def _rect(value: Any) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return False
+    try:
+        return all(math.isfinite(float(v)) for v in value)
+    except (TypeError, ValueError):
+        return False
+
+
+def editor_box_center(region: dict) -> None:
+    """Typeset a region in the box set in the editor, as the editor's export does
+    (``EditorControllerExportService.apply_white_frame_center``): the center moves to the middle of
+    the user's own white frame, else of the saved text box, else of an older file's white frame. A
+    region without one (new or changed by the agent) stays centered on its lines.
+
+    The render reads the JSON with ``load_text``, which used only the center of the detected lines:
+    a ch34 p6 label the user had moved and spaced by hand came out shifted in the check-again run."""
+    custom, saved = region.get("white_frame_rect_local"), region.get("render_box_rect_local")
+    if region.get("has_custom_white_frame") and _rect(custom):
+        box = custom
+    elif _rect(saved):
+        box = saved
+    elif _rect(custom):
+        box = custom
+    else:
+        return
+    try:
+        cx, cy = (float(v) for v in region["center"][:2])
+    except (KeyError, TypeError, ValueError):  # the editor's fallback: the middle of the lines
+        points = [p for line in region.get("lines") or [] for p in line]
+        if not points:
+            return
+        xs, ys = [float(p[0]) for p in points], [float(p[1]) for p in points]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    left, top, right, bottom = (float(v) for v in box)
+    lx, ly = (left + right) / 2, (top + bottom) / 2
+    angle = math.radians(float(region.get("angle") or 0.0))
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    region["center"] = [cx + lx * cos_a - ly * sin_a, cy + lx * sin_a + ly * cos_a]
 
 
 class PipelineInpaintBackend:
@@ -401,6 +443,72 @@ async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> Li
         outcomes.extend(await reviewer.run([path]))
 
 
+async def _inpaint_changes(pages: List[str], guard: RunGuard, backend, events: EventLog, log,
+                           should_stop: Callable[[], bool]) -> set:
+    """A check: each finished page's inpainted image brought up to its new mask, the rest kept
+    (``revise.inpaint_changes``). Returns the pages whose render reuses their inpainted image; a page
+    whose patch failed is inpainted again by the render."""
+    from ..utils.path_manager import find_json_path
+    from .revise import inpaint_changes
+
+    reuse = set()
+    for path in pages:
+        if should_stop():
+            raise asyncio.CancelledError("Agent workflow stopped by user")
+        if json_guard.taken(find_json_path(path)):  # saved in the editor: the user's, not rendered
+            continue
+        page = os.path.splitext(os.path.basename(path))[0]
+        before = (guard.entries.get(_key(path)) or {}).get("json_copy") or ""
+        try:
+            result = await inpaint_changes(path, before, backend, backend.save)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"inpainting the changes of {page} failed", exc_info=True)
+            log(f"[Agent] {page}: inpainting the changed areas failed ({type(exc).__name__}: {exc}); "
+                f"the render inpaints the whole page again")
+            events.emit("inpaint_changes", page=page, agent="inpaint", status="error",
+                        error=f"{type(exc).__name__}: {str(exc)[:200]}")
+            continue
+        events.emit("inpaint_changes", page=page, agent="inpaint", **result)
+        if result["status"] != "no_inpainted":
+            reuse.add(_key(path))
+        if result["status"] == "patched":
+            log(f"[Agent] {page}: inpainted again where text is erased now ({result['added']} px), original "
+                f"back where it is kept now ({result['restored']} px); the rest of the image stays")
+    return reuse
+
+
+def _keep_outputs(translator, items: List[tuple], save_info: Optional[dict], log) -> None:
+    """A check renders the pages again over their output images (the user's exports from the editor):
+    a copy of each goes to ``agent/backups`` first."""
+    import shutil
+    import time
+
+    from ..utils.path_manager import get_work_dir
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    kept = 0
+    for image, _cfg in items:
+        path = _image_path(image)
+        try:
+            target = translator._calculate_output_path(path, save_info or {})
+        except Exception:
+            continue
+        if not target or not os.path.exists(target):
+            continue
+        folder = os.path.join(AgentStore(get_work_dir(path)).agent_dir, "backups")
+        os.makedirs(folder, exist_ok=True)
+        base, ext = os.path.splitext(os.path.basename(target))
+        try:
+            shutil.copy2(target, os.path.join(folder, f"{base}.output.{stamp}{ext}"))
+            kept += 1
+        except OSError:
+            logger.warning(f"agent: could not copy {target}", exc_info=True)
+    if kept:
+        log(f"[Agent] {kept} output image(s) from before the check copied to agent/backups")
+
+
 def _left_out_context(path: str, status: str, error: str = ""):
     """A result for a page the render left out, so the batch summary names it: a failure with its
     reason when the agent failed on it, else a skipped page (stopped, not reached)."""
@@ -473,8 +581,13 @@ async def run_agent_workflow(
     render: bool = True,
     inpaint_backend=None,
     fonts=None,
+    revise: bool = False,
 ) -> list:
+    """``revise`` checks again pages an earlier run finished (``revise.py``): no preprocess, the
+    user's changes stay, only what changed is inpainted again."""
     settings = agent_settings if isinstance(agent_settings, AgentSettings) else AgentSettings(**(agent_settings or {}))
+    if revise:
+        preprocess = False
     if not images_with_configs:
         return []
     config = images_with_configs[0][1]
@@ -527,6 +640,18 @@ async def run_agent_workflow(
             if preprocess_failed:
                 log("[Agent] Preprocess failed, the agent leaves these pages as they were: " + "; ".join(
                     f"{os.path.basename(p)} ({why})" for p, why in preprocess_failed.items()))
+        elif revise:
+            # the pages change in place: copies first (JSON, sidecar, inpainted image), and the pages
+            # the check does not finish get theirs back
+            guard = RunGuard.begin(paths, revise=True)
+            from ..utils.path_manager import find_json_path as _find_json
+
+            for path in paths:  # from here on, a save in the editor makes the page the user's
+                json_guard.note(_find_json(path))
+            log(f"[Agent] Check again: {len(paths)} page(s) keep their translations and your changes; copies of "
+                f"them are in agent/backups. Your edited boxes are "
+                f"{'locked' if settings.revise_lock_user_edits else 'not locked'}.")
+            broadcast("workflow_stage", stage="revise", pages=len(paths))
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
@@ -565,7 +690,9 @@ async def run_agent_workflow(
                 client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"
             try:
                 reviewer = None
-                if settings.inpaint_review:
+                # a check keeps the inpainted image (the user's repairs are in it): only what changed is
+                # inpainted again, after the agent (_inpaint_changes)
+                if settings.inpaint_review and not revise:
                     backend = inpaint_backend or PipelineInpaintBackend(translator, config)
                     reviewer = InpaintReviewer(settings, client, store, events, target_lang, backend, should_stop,
                                                save_image=getattr(backend, "save", None))
@@ -591,7 +718,8 @@ async def run_agent_workflow(
                                      font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
                                      run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
                                                **({"work_memory": seeded} if seeded else {})},
-                                     preprocess_failed=preprocess_failed)
+                                     preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
+                                     default_font=getattr(getattr(config, "render", None), "font_family", "") or "")
                 review: List[dict] = []
                 proof_task: Optional[asyncio.Future] = None
                 try:
@@ -626,6 +754,9 @@ async def run_agent_workflow(
                                 or work_prompt
                         if work_memory:
                             _save_memory(work_memory, runner.memory, work_dir, events, log)
+                        if revise and finished and guard is not None:
+                            backend = inpaint_backend or PipelineInpaintBackend(translator, config)
+                            reviewed |= await _inpaint_changes(finished, guard, backend, events, log, should_stop)
                     except BaseException:
                         for task in (review_task, proof_task):
                             if task is not None and not task.done():
@@ -696,7 +827,11 @@ async def run_agent_workflow(
         guard_hook = getattr(translator, "json_save_guard", None)
         # a page saved in the editor while it is typeset keeps the user's JSON
         translator.json_save_guard = lambda image: not json_guard.taken(find_json_path(image))
+        region_hook = getattr(translator, "load_text_region_hook", None)
+        translator.load_text_region_hook = editor_box_center  # text where the editor puts it
         try:
+            if revise:
+                _keep_outputs(translator, render_items, save_info, log)
             render_events.start([_image_path(image) for image, _ in render_items], left_out)
             # Reviewed pages reuse the inpainted image the review saved; the others
             # must not pick up an older one made before the agent changed the mask.
@@ -714,6 +849,7 @@ async def run_agent_workflow(
         finally:
             translator.on_result_saved = saved_hook
             translator.json_save_guard = guard_hook
+            translator.load_text_region_hook = region_hook
             render_events.close()
         if guard is None:  # what the run leaves, so the next run sees changes made in the editor
             record_saved(paths)

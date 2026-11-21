@@ -3,15 +3,19 @@
 The preprocess writes every page's JSON again, so a rerun replaces the agent's translations and the
 changes made in the editor. When pages of the run already have a translation (an agent result, or
 one from another mode or the editor), the user chooses: only the pages that are not done, every
-page, or nothing.
+page, checking the finished pages again (``manga_translator.agent.revise``: they keep their
+translations and the user's changes), or nothing.
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from PyQt6.QtWidgets import QMessageBox
 
 MAX_NAMES = 8
+REVISABLE = ("done", "incomplete", "edited")
+"""Agent statuses of pages a check can go over: the agent finished them (``edited``: the user saved
+the page during a run)."""
 
 
 def _names(stems: Sequence[str], separator: str) -> str:
@@ -29,6 +33,7 @@ def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
         return None
     done = [s for s in seen if s.status in ("done", "edited")]  # edited: the user saved it during a run
     edited = [s for s in seen if s.edited]
+    revisable = [s for s in seen if s.status in REVISABLE]
     separator = t("Agent Result Separator")
     parts = []
     if seen:
@@ -37,25 +42,33 @@ def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
         parts.append(t("Agent Rerun Translated", count=len(others), pages=_names([s.stem for s in others], separator)))
     if edited:
         parts.append(t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)))
+    if revisable:
+        parts.append(t("Agent Rerun Revise Note"))
     parts.append(t("Agent Rerun Stop Note"))
     keep = {id(s) for s in done + others}
     return {"text": "\n\n".join(parts), "unfinished": [s.path for s in states if id(s) not in keep],
-            "all": [s.path for s in states], "edited": len(edited), "translated": len(others)}
+            "all": [s.path for s in states], "revise": [s.path for s in revisable],
+            "edited": len(edited), "translated": len(others)}
 
 
 def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
-              states=None) -> Optional[List[str]]:
-    """The files to process: all of them, only the ones not done, or None when the user cancels."""
+              states=None) -> Optional[Tuple[List[str], bool]]:
+    """(the files to process, whether to check them again) — all of them, only the ones not done, or
+    the finished ones checked again; None when the user cancels."""
     if states is None:
         from manga_translator.agent.resume import previous_states
         states = previous_states(files)
     question = rerun_question(t, states)
     if question is None:
-        return list(files)
+        return list(files), False
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Warning)
     box.setWindowTitle(t("Agent Rerun Title"))
     box.setText(question["text"])
+    revise = None
+    if question["revise"]:
+        revise = box.addButton(t("Agent Rerun Revise", count=len(question["revise"])),
+                               QMessageBox.ButtonRole.ActionRole)
     only = None
     if question["unfinished"]:
         only = box.addButton(t("Agent Rerun Unfinished", count=len(question["unfinished"])),
@@ -66,8 +79,10 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
     box.setEscapeButton(cancel)
     box.exec()
     clicked = box.clickedButton()
+    if revise is not None and clicked is revise:
+        return question["revise"], True
     if only is not None and clicked is only:
-        return question["unfinished"]
+        return question["unfinished"], False
     if clicked is redo:
-        return question["all"]
+        return question["all"], False
     return None

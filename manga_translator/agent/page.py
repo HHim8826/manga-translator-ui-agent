@@ -171,6 +171,24 @@ class Region:
     """The font of the region's style; empty keeps the JSON's font (the user's)."""
     style: str = ""
     """The agent's font style for this region (``font_styles.py``); empty for normal dialogue."""
+    # --- a page checked again (``revise.py``) ---------------------------------
+    user_edited: bool = False
+    """The user changed the region in the editor after the agent (its text or place), or drew it."""
+    user_font: bool = False
+    """The user gave the region its font in the editor: the thin-font replacement and the font check
+    leave it."""
+    locked: bool = False
+    """The user's region, kept as it is: the write tools refuse it (setting ``revise_lock_user_edits``)."""
+    loaded: Optional[dict] = None
+    """The region's JSON as the check loaded it; written back unchanged while the agent leaves the
+    region's text alone, so the editor's own fields stay."""
+    loaded_state: Optional[tuple] = None
+    """(source text, translation, lines) at load."""
+    was_skipped: bool = False
+    """Skipped by the earlier run: its text is not in the saved mask."""
+    drop_rich: bool = False
+    """The region's ``translation_rich`` only drew glyphs from a fallback of its old font; the font
+    check makes it again for the new font."""
 
     @property
     def polygons(self) -> List[np.ndarray]:
@@ -209,7 +227,13 @@ class Region:
 
     @property
     def done(self) -> bool:
-        return self.skipped or bool(self.translation)
+        return self.skipped or bool(self.translation) or self.locked
+
+    @property
+    def unchanged(self) -> bool:
+        """A loaded region the agent left as it was."""
+        return self.loaded_state is not None and not self.skipped and \
+            self.loaded_state == (self.source_text, self.translation, self.data.get("lines"))
 
     def status(self) -> str:
         if self.merged_into is not None:
@@ -254,6 +278,13 @@ class PageDoc:
         self.note = ""
         self._history: List[tuple] = []
         self._next_link = 1
+        self.revise = False
+        """Loaded by ``revise.load_page``: a page an earlier run finished, checked again."""
+        self.removed: List[dict] = []
+        """``{"bbox", "text"}`` of boxes the user deleted in the editor (a page checked again): their
+        text stays as the user left it, so neither the recall check nor add_region boxes it again."""
+        self.sidecar_extra: Dict[str, object] = {}
+        """Sidecar fields of the earlier run that the check keeps (the inpaint review's)."""
 
     @classmethod
     def load(cls, image_path: str, json_path: Optional[str] = None) -> "PageDoc":
@@ -325,15 +356,29 @@ class PageDoc:
         return label
 
     # --- edits --------------------------------------------------------------
+    @staticmethod
+    def _unlocked(region: Region) -> Region:
+        if region.locked:
+            raise RegionError(f"#{region.id} is the user's: they changed it in the editor after the earlier run, "
+                              f"so it stays as it is. Leave it; if something in it looks wrong, flag_for_review "
+                              f"#{region.id} with the reason.")
+        return region
+
+    @staticmethod
+    def _agents(region: Region) -> None:
+        """The agent changed the region (the lock is off): it is no longer the user's version."""
+        region.user_edited = False
+
     def set_text(self, rid, source_text: str, translation: str, category: str = "dialogue",
                  confidence: Optional[float] = None, ruby: str = "", reason: str = "") -> Region:
-        region = self.get(rid)
+        region = self._unlocked(self.get(rid))
         translation = with_breaks(translation)
         if not translation.strip():
             raise RegionError(f"#{region.id}: translation is empty; use skip_region for text that stays as it is")
         if category and category not in CATEGORIES:
             raise RegionError(f"category must be one of {', '.join(CATEGORIES)}")
         self._checkpoint(f"set_text #{region.id}")
+        self._agents(region)
         region.source_text = (source_text or "").strip()
         region.translation = translation
         region.ruby = (ruby or "").strip()
@@ -346,10 +391,11 @@ class PageDoc:
         return region
 
     def skip(self, rid, category: str, reason: str) -> Region:
-        region = self.get(rid)
+        region = self._unlocked(self.get(rid))
         if not reason:
             raise RegionError("reason is required")
         self._checkpoint(f"skip #{region.id}")
+        self._agents(region)
         region.skipped = True
         region.skip_category = category or "other"
         region.translation = None
@@ -357,7 +403,7 @@ class PageDoc:
         return region
 
     def merge(self, ids, reason: str) -> Region:
-        regions = [self.get(i) for i in ids]
+        regions = [self._unlocked(self.get(i)) for i in ids]
         unique = {r.id: r for r in regions}
         if len(unique) < 2:
             raise RegionError("merge_regions needs at least two different ids")
@@ -372,6 +418,8 @@ class PageDoc:
                 "where it is, and use link_regions if one sentence runs across them. Merge only boxes that cut "
                 "one paragraph apart.")
         self._checkpoint("merge " + "+".join(f"#{r.id}" for r in ordered))
+        for region in ordered:
+            self._agents(region)
         keep = ordered[0]
         lines, texts, local = [], [], []
         for region in ordered:
@@ -396,7 +444,7 @@ class PageDoc:
         one detected box that holds two separate texts (a small aside beside the main text, a subtitle
         printed in a logo above a chapter title). Both parts are then translated or skipped on their own;
         the new region comes right after the old one in reading order."""
-        region = self.get(rid)
+        region = self._unlocked(self.get(rid))
         if not reason:
             raise RegionError("reason is required")
         x1, y1, x2, y2 = box
@@ -414,6 +462,7 @@ class PageDoc:
                               f"whole lines move and both parts keep at least one. #{region.id} has {len(polys)} "
                               f"lines: {listed}. Give a box around the middle of the lines for the new region.")
         self._checkpoint(f"split #{region.id}")
+        self._agents(region)
         vertical = region.direction.startswith("v")
 
         def thickness(quads) -> float:
@@ -467,13 +516,14 @@ class PageDoc:
         return group
 
     def set_line_breaks(self, rid, text: str, reason: str = "") -> Region:
-        region = self.get(rid)
+        region = self._unlocked(self.get(rid))
         if not region.translation:
             raise RegionError(f"#{region.id} has no translation yet; call set_text first")
         text = with_breaks(text)
         if "".join(text.replace(BREAK, "").split()) != "".join(region.translation.replace(BREAK, "").split()):
             raise RegionError(f"#{region.id}: the text must be the current translation with line breaks only")
         self._checkpoint(f"line_breaks #{region.id}")
+        self._agents(region)
         region.translation = text
         if reason:
             region.reasons.append(reason)
@@ -487,27 +537,41 @@ class PageDoc:
         self.flags.append(entry)
         return entry
 
-    def occupied(self, shape, dilate: int = 2) -> np.ndarray:
-        """0/1 array of pixels covered by the active regions (kept or skipped),
+    def occupied(self, shape, dilate: int = 2, but: Optional[int] = None) -> np.ndarray:
+        """0/1 array of pixels covered by the active regions (kept or skipped) other than ``but``,
         so snapping a new region does not take their strokes."""
         canvas = np.zeros(shape[:2], np.uint8)
-        polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in self.active_regions() for p in r.polygons]
+        polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in self.active_regions() if r.id != but
+                 for p in r.polygons]
         if polys:
             cv2.fillPoly(canvas, polys, 1)
         if dilate > 0:
             canvas = cv2.dilate(canvas, np.ones((2 * dilate + 1,) * 2, np.uint8))
         return canvas
 
-    def overlap(self, bbox) -> float:
-        """Largest share of ``bbox`` that one active region's box covers."""
+    def overlap(self, bbox, removed: bool = True) -> float:
+        """Largest share of ``bbox`` that one active region's box covers (or a box the user deleted)."""
         x1, y1, x2, y2 = bbox
         area = max(1, (x2 - x1) * (y2 - y1))
         best = 0.0
-        for region in self.active_regions():
-            rx1, ry1, rx2, ry2 = region.bbox
+        boxes = [r.bbox for r in self.active_regions()]
+        if removed:
+            boxes += [item["bbox"] for item in self.removed]
+        for rx1, ry1, rx2, ry2 in boxes:
             inter = max(0, min(x2, rx2) - max(x1, rx1)) * max(0, min(y2, ry2) - max(y1, ry1))
             best = max(best, inter / area)
         return best
+
+    def removed_at(self, bbox) -> Optional[dict]:
+        """A box the user deleted that covers most of ``bbox``."""
+        x1, y1, x2, y2 = bbox
+        area = max(1, (x2 - x1) * (y2 - y1))
+        for item in self.removed:
+            rx1, ry1, rx2, ry2 = item["bbox"]
+            inter = max(0, min(x2, rx2) - max(x1, rx1)) * max(0, min(y2, ry2) - max(y1, ry1))
+            if inter / area > 0.5:
+                return item
+        return None
 
     def add_region(self, snap: SnapResult, direction: str, origin: str = "agent", reason: str = "",
                    hint: str = "", kind: str = "", after=None) -> Region:
@@ -515,6 +579,10 @@ class PageDoc:
         direction = (direction or "").lower()[:1]
         if direction not in ("v", "h"):
             raise RegionError("direction must be v (vertical) or h (horizontal)")
+        gone = self.removed_at(snap.bbox)
+        if gone is not None:
+            raise RegionError(f"the user deleted the box here in the editor (it read 「{gone.get('text') or ''}」): "
+                              "the text stays as they left it, so do not box it again")
         anchor = self.get(after).id if after not in (None, "", 0, "0") else None
         self._checkpoint(f"add_region ({origin})")
         rid = max(self.regions, default=0) + 1
@@ -544,6 +612,14 @@ class PageDoc:
         for region in self.active_regions():
             if region.skipped:
                 continue
+            if region.unchanged:  # a page checked again: the region as it was, with the editor's fields
+                data = copy.deepcopy(region.loaded)
+                if region.drop_rich:
+                    data.pop("translation_rich", None)
+                if region.font and region.font != data.get("font_family"):
+                    data["font_family"] = region.font
+                out.append(data)
+                continue
             data = copy.deepcopy(region.data)
             source = region.source_text if region.source_text else region.ocr_local
             data["text"] = source
@@ -551,6 +627,8 @@ class PageDoc:
             data["translation"] = region.translation or ""
             data["translation_raw"] = region.translation or ""
             data.pop("translation_rich", None)
+            if region.loaded_state is not None:  # new text: the box the last render measured is gone
+                data.pop("render_box_rect_local", None)
             data["center"] = region.center
             if region.font:
                 data["font_family"] = region.font
@@ -570,12 +648,19 @@ class PageDoc:
         unfinished = self.status == "incomplete"
 
         def left(region: Region) -> bool:
-            return region.skipped or (unfinished and not region.translation)
+            """Its text is taken out of the mask now. On a page checked again, text the earlier run
+            skipped is out of the saved mask already, and the mask stays as the user left it there."""
+            if region.skipped:
+                return not (self.revise and region.was_skipped)
+            return unfinished and not region.translation and not region.unchanged
+
+        def kept(region: Region) -> bool:
+            return not region.skipped and not left(region)
 
         skipped = [r for r in self.active_regions() if left(r)]
         # An added region merged into another one keeps its strokes in the
         # mask as long as the region it went into is kept.
-        added = [r for r in self.regions.values() if r.erase is not None and not left(self._final(r))]
+        added = [r for r in self.regions.values() if r.erase is not None and kept(self._final(r))]
         encoded = self.page_data.get("mask_raw")
         if not (skipped or added) or not isinstance(encoded, str):
             return None
@@ -607,8 +692,8 @@ class PageDoc:
                     cv2.fillPoly(canvas, polys, 1)
                 return canvas
 
-            kept = [r for r in self.active_regions() if not left(r)]
-            keep_zone = cv2.dilate(fill(kept), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * keep_margin + 1,) * 2))
+            keep_zone = cv2.dilate(fill([r for r in self.active_regions() if kept(r)]),
+                                   cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * keep_margin + 1,) * 2))
             skip_seed = fill(skipped)
             skip_touch = cv2.dilate(skip_seed, np.ones((7, 7), np.uint8))
             skip_near = cv2.dilate(skip_seed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * reach + 1,) * 2))
@@ -668,9 +753,15 @@ class PageDoc:
                     "checks": [c["code"] for c in self.checks if c.get("region") == r.id],
                     # a skipped region is not in the JSON: the editor can put it back as it was
                     **({"json": r.data} if r.skipped else {}),
+                    # the user's changes, for the next check of the page and the later stages
+                    **({"user_edited": True} if r.user_edited else {}),
+                    **({"user_font": True} if r.user_font else {}),
+                    **({"locked": True} if r.locked else {}),
                 }
                 for r in (self.regions[i] for i in self.order)
             ],
             "review_flags": self.flags,
             "checks": self.checks,
+            **({"removed": self.removed} if self.removed else {}),
+            **self.sidecar_extra,
         }

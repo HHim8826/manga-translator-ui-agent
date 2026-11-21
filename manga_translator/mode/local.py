@@ -360,6 +360,7 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
                 save_info,
                 agent_settings=config_dict.get('agent'),
                 log=print,
+                revise=bool(getattr(args, 'agent_revise', False)),
             )
         else:
             contexts = await translator.translate_batch(

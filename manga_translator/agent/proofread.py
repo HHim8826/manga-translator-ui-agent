@@ -33,10 +33,15 @@ Check each region for:
 
 {invented_script} The translator gives such regions the meaning only on purpose: do not add the readings back.
 
-Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. [BR] in a translation is a line break the renderer follows: keep the breaks when you revise a line, at natural boundaries of the new text. Use view_page when you need the picture (who is speaking, what is shown). Put all your revise_text calls in as few responses as you can, use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them.{extra}"""
+Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. [BR] in a translation is a line break the renderer follows: keep the breaks when you revise a line, at natural boundaries of the new text. Go through the chapter in page order, at most {per_round} pages at a time: view those pages with view_page when you need the picture (who is speaking, what is shown), then send the revise_text calls for them together with the view_page calls of the next pages. Never keep the revisions of the whole chapter for one response: a reply that long is cut off by the connection and lost. Use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them.{extra}"""
+PAGES_PER_ROUND = 2
+"""Pages the proofreader views (and revises) per response. All revisions in one response took 63-125 s on
+ch33/35/36; the user's API sits behind a proxy that cuts a reply off at 120 s (Cloudflare 524), which
+ended the ch34 check's proofreading after four tries of the same request. Three pages of ch34 (003, 004,
+006: 48 regions) still took 110 s, so two."""
 PROOF_BREAKS = """
 
-Line breaks: the user's render setting breaks lines only at [BR] (AI line breaks). The listing gives each region's number of source lines. A revised translation of a source with two or more lines needs at least one [BR], about one line per source line where natural boundaries allow it; a one-line source gets none. Never break inside a word or name, and never write a newline instead of [BR]."""
+Line breaks: the user's render setting breaks lines only at [BR] (AI line breaks). The listing gives each region's number of source lines. A revised translation of a source with two or more lines needs at least one [BR], about one line per source line where natural boundaries allow it; a one-line source gets none. Never break inside a word or name, and never write a newline instead of [BR]. The renderer does not shrink the text, so every line has to fit: the listing says about how many characters fit per line and how many lines fit, and that comes before the number of source lines. A translation whose lines run out of its box is a fault to fix."""
 
 
 def _obj(properties: Dict[str, Any], required: List[str]) -> Dict[str, Any]:
@@ -85,6 +90,8 @@ class ProofPage:
         self.regions = {i: Region(id=i, data=r) for i, r in enumerate(regions, start=1)}
         self.categories: Dict[int, str] = {}
         """From the agent's sidecar, matched by box center."""
+        self.locked: set = set()
+        """Regions the user changed in the editor (a chapter checked again): not revised."""
 
     def match_sidecar(self, side: Optional[dict]) -> None:
         by_center = {tuple((e.get("match") or {}).get("center") or ()): e for e in (side or {}).get("regions", [])}
@@ -92,6 +99,8 @@ class ProofPage:
             entry = by_center.get(tuple(region.center))
             if entry and entry.get("category"):
                 self.categories[rid] = str(entry["category"])
+            if entry and entry.get("locked") and not entry.get("skipped"):
+                self.locked.add(rid)
 
     @staticmethod
     def source(region: Region) -> str:
@@ -109,9 +118,13 @@ class ProofPage:
             if not translation:
                 continue
             category = self.categories.get(rid, "")
-            count = f", {region.line_count} line(s)" if line_counts else ""
-            lines.append(f"#{rid} [{category + ', ' if category else ''}~{checks._capacity(region)} chars{count}] "
-                         f"「{_one_line(self.source(region))}」 → 「{with_breaks(translation)}」")
+            count = ""
+            if line_counts:
+                room, rows = checks.room_counts(region)
+                count = f", {region.line_count} line(s), ~{room} chars per line, ~{rows} lines fit"
+            locked = ", LOCKED: the user's own text, do not revise" if rid in self.locked else ""
+            lines.append(f"#{rid} [{category + ', ' if category else ''}~{checks._capacity(region)} chars{count}"
+                         f"{locked}] 「{_one_line(self.source(region))}」 → 「{with_breaks(translation)}」")
         return lines
 
     def write(self, rid: int, translation: str) -> None:
@@ -181,6 +194,8 @@ class ProofSession:
         region = page.regions.get(rid)
         if region is None or not page.translation(region):
             raise ProofError(f"page {page.stem} has no translated region #{rid}")
+        if rid in page.locked:
+            raise ProofError(f"{page.stem} #{rid} is the user's own text (changed in the editor): leave it")
         return region
 
 
@@ -205,6 +220,10 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
             raise ProofError(f"{page.stem} #{region.id}: the source has {region.line_count} lines, so the new "
                              f"translation needs [BR] line breaks at natural boundaries; without them it is "
                              f"typeset as one line. Send it again with [BR].")
+        over = checks.line_overflow(region, new) if s.line_breaks else None
+        if over:  # the proofreader breaks lines in revise_text: it has no set_line_breaks
+            note = checks.agent_text(checks.Issue("line_overflow", region.id, over, 0.0))
+            raise ProofError(f"{page.stem} {note.replace(' (set_line_breaks)', '')} Send it again.")
         old = page.translation(region)
         if normalize(new) == normalize(old):
             return f"{page.stem} #{region.id}: unchanged (same text).", "unchanged", []
@@ -268,7 +287,7 @@ class Proofreader:
         from .runner import INVENTED_SCRIPT, language_name
         target = language_name(self.target_lang)
         return PROOF_PROMPT.format(target=target, reason_lang=target, invented_script=INVENTED_SCRIPT,
-                                   extra=PROOF_BREAKS if self.line_breaks else "")
+                                   per_round=PAGES_PER_ROUND, extra=PROOF_BREAKS if self.line_breaks else "")
 
     def first_message(self, pages: Dict[str, ProofPage]) -> str:
         parts = []
@@ -349,6 +368,7 @@ class Proofreader:
             if not reply.tool_calls:
                 messages.append({"role": "user", "content": "Continue with tool calls; end with finish_proofread."})
                 continue
+            views = 0
             for call in reply.tool_calls:
                 try:
                     args = json.loads(call.arguments or "{}")
@@ -358,6 +378,11 @@ class Proofreader:
                     args, error = {}, str(exc)
                 else:
                     error = ""
+                if call.name == "view_page" and not error:
+                    views += 1
+                    if views > PAGES_PER_ROUND:
+                        error = (f"view at most {PAGES_PER_ROUND} pages in one response: send the revisions for "
+                                 f"the pages you have looked at, then view the next ones")
                 page_name = page_key(args.get("page"), session.pages) or str(args.get("page") or "") or None
                 self.events.emit("tool_call", page=page_name, agent="proofread", tool=call.name,
                                  args=_compact_args(args), reason=str(args.get("reason") or ""))

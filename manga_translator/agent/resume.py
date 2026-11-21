@@ -196,8 +196,8 @@ def _remove(path: str) -> None:
 
 
 def _restore(entry: dict) -> bool:
-    """The page's JSON and sidecar as they were before the run; False when it had no JSON then (the
-    run's partial work stays)."""
+    """The page's JSON and sidecar (and on a check its inpainted image) as they were before the run;
+    False when it had no JSON then (the run's partial work stays)."""
     if not entry.get("json_copy") or not os.path.exists(entry["json_copy"]):
         return False
     shutil.copy2(entry["json_copy"], entry["json"])
@@ -206,6 +206,8 @@ def _restore(entry: dict) -> bool:
         shutil.copy2(entry["sidecar_copy"], sidecar)
     elif os.path.exists(sidecar):  # made by this run
         os.remove(sidecar)
+    if entry.get("inpainted_copy") and os.path.exists(entry["inpainted_copy"]):
+        shutil.copy2(entry["inpainted_copy"], entry["inpainted"])
     return True
 
 
@@ -251,6 +253,8 @@ def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
     if prints:
         _set_prints(store, prints)
     for entry in entries.values():
+        if entry.get("kind") == "revise":  # a check keeps every copy: the page as it was before it
+            continue
         _remove(entry.get("sidecar_copy", ""))
         if entry.get("kind") == "agent":
             _remove(entry.get("json_copy", ""))
@@ -295,8 +299,10 @@ class RunGuard:
         """Copies of the user's own work, kept in ``backups``."""
 
     @classmethod
-    def begin(cls, paths: Sequence[str]) -> "RunGuard":
-        from ..utils.path_manager import find_json_path, get_json_path
+    def begin(cls, paths: Sequence[str], revise: bool = False) -> "RunGuard":
+        """Copies and the journal before the preprocess, or before a check (``revise``: no preprocess;
+        the inpainted images are copied too, and every copy stays in ``backups``)."""
+        from ..utils.path_manager import find_inpainted_path, find_json_path, get_json_path
 
         guard = cls(paths)
         states = previous_states(paths)
@@ -311,7 +317,7 @@ class RunGuard:
             sidecar = store.sidecar_path(state.stem)
             entry = {"image": state.path, "json": json_path, "sidecar": sidecar, "json_copy": "",
                      "sidecar_copy": "", "print": journal["_prints"].get(state.stem),
-                     "kind": "edited" if state.edited else "other" if state.users else "agent",
+                     "kind": "revise" if revise else "edited" if state.edited else "other" if state.users else "agent",
                      "signature": _signature(json_path)}
             folder = os.path.join(store.agent_dir, "backups")
             if entry["signature"] is not None:
@@ -320,6 +326,10 @@ class RunGuard:
                     guard.users_copies.append(entry["json_copy"])
             if os.path.exists(sidecar):
                 entry["sidecar_copy"] = _copy_to(folder, sidecar, os.path.basename(sidecar), stamp)
+            inpainted = find_inpainted_path(state.path) if revise else None
+            if inpainted and os.path.exists(inpainted):
+                entry["inpainted"] = inpainted
+                entry["inpainted_copy"] = _copy_to(folder, inpainted, os.path.basename(inpainted), stamp)
             guard.entries[_key(state.path)] = entry
             journal["pages"][state.stem] = entry
         for work_dir, journal in journals.items():

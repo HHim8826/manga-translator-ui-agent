@@ -14,6 +14,9 @@ can do reliably:
   OCR read differently, that was never zoomed
 * ``missing_line_break`` - AI line breaks are on and a source of two or more
   lines has a translation without [BR], so it would be typeset as one line
+* ``line_overflow``      - AI line breaks are on and a line is far longer than the box (or there are
+  far more lines than fit across it): the renderer follows [BR] and does not shrink the text, so it
+  runs out of the box
 
 The first ``mark_page_done`` returns these issues to the model so it can fix
 them. What is left when the page is finished lowers the score, and the
@@ -24,7 +27,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .page import BREAK, needs_break, text_length
 from .store import normalize
@@ -45,6 +48,7 @@ WEIGHTS = {
     "overflow": 0.15,
     "needs_second_read": 0.15,
     "missing_line_break": 0.1,
+    "line_overflow": 0.15,
 }
 SERIOUS = {"untranslated_kana": "uncertain_translation", "glossary_mismatch": "uncertain_translation",
            "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr"}
@@ -54,6 +58,12 @@ REGION_FLAG_WEIGHT = 0.25
 PAGE_FLAG_WEIGHT = 0.2
 SMALL_FONT_PX = 22
 OVERFLOW_RATIO = 2.5
+LINE_ROOM_RATIO = 1.2
+LINE_ROOM_SLACK = 1.0
+"""A line may run this far past the box: ``ratio * room + slack`` cells (bubbles have room around the
+text box, most of all around short lines). Tuned on chapters 27-36: of 1167 regions the user accepted,
+6 go past it; the 6 regions of the ch34 check that ran far out of their box (1.4 to 2 times its
+length) all do."""
 
 
 @dataclass
@@ -81,6 +91,10 @@ AGENT_TEXT = {
                          "the reading changes.",
     "missing_line_break": "#{region}: the source has {lines} lines but the translation has no [BR], so it would "
                           "be typeset as one line. Add [BR] at natural breaks with set_line_breaks.",
+    "line_overflow": "#{region}: {lines} line(s), the longest {longest} characters, but at its font size the box "
+                     "fits about {room} characters per line and {rows} line(s). The renderer keeps your [BR] and "
+                     "does not shrink the text, so it would run out of the box: break it into shorter lines of "
+                     "about even length (set_line_breaks), or shorten it.",
 }
 WHY = {
     "small": "small text",
@@ -99,11 +113,13 @@ HUMAN_TEXT = {
         "overflow": "譯文 {length} 字，框內以原字級約容納 {capacity} 字",
         "needs_second_read": "沒有放大確認",
         "missing_line_break": "原文 {lines} 行，譯文沒有換行",
+        "line_overflow": "最長一行 {longest} 字，框內以原字級每行約容納 {room} 字，會超出框",
         "page": "程式檢查的信心分數 {score:.2f}：{summary}",
         "count": "{count} 個框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "沒用術語表譯法",
                   "character_mismatch": "沒用角色譯名", "empty_source": "沒有原文", "overflow": "譯文過長",
-                  "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行"},
+                  "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行",
+                  "line_overflow": "超出框"},
         "none": "沒有發現問題",
     },
     "CHS": {
@@ -114,11 +130,13 @@ HUMAN_TEXT = {
         "overflow": "译文 {length} 字，框内以原字号约容纳 {capacity} 字",
         "needs_second_read": "没有放大确认",
         "missing_line_break": "原文 {lines} 行，译文没有换行",
+        "line_overflow": "最长一行 {longest} 字，框内以原字号每行约容纳 {room} 字，会超出框",
         "page": "程序检查的置信分数 {score:.2f}：{summary}",
         "count": "{count} 个框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "没用术语表译法",
                   "character_mismatch": "没用角色译名", "empty_source": "没有原文", "overflow": "译文过长",
-                  "needs_second_read": "没有放大确认", "missing_line_break": "没有换行"},
+                  "needs_second_read": "没有放大确认", "missing_line_break": "没有换行",
+                  "line_overflow": "超出框"},
         "none": "没有发现问题",
     },
     "ENG": {
@@ -129,12 +147,14 @@ HUMAN_TEXT = {
         "overflow": "{length} characters for room of about {capacity} at the original size",
         "needs_second_read": "not zoomed for a second read",
         "missing_line_break": "the source has {lines} lines, the translation has no line break",
+        "line_overflow": "the longest line has {longest} characters, the box fits about {room} per line at the "
+                         "original size, so it runs out of the box",
         "page": "program check score {score:.2f}: {summary}",
         "count": "{count} region(s): {label}",
         "short": {"untranslated_kana": "kana left", "glossary_mismatch": "glossary not used",
                   "character_mismatch": "character name not used", "empty_source": "no source text",
                   "overflow": "translation too long", "needs_second_read": "not zoomed",
-                  "missing_line_break": "no line break"},
+                  "missing_line_break": "no line break", "line_overflow": "runs out of the box"},
         "none": "no issues found",
     },
 }
@@ -219,6 +239,46 @@ def _capacity(region: "Region") -> int:
     return max(1, int(h // (fs * 1.2))) * max(1, int(w // fs))
 
 
+def line_room(region: "Region") -> Tuple[float, float]:
+    """Characters per line and lines that fit the box at the region's font size (the length along the
+    text and across it, in font sizes)."""
+    x1, y1, x2, y2 = region.bbox
+    w, h = max(1, x2 - x1), max(1, y2 - y1)
+    fs = max(8, region.font_size or int(min(w, h) * 0.8))
+    if region.direction.startswith("v"):
+        room, rows = h / fs, w / (fs * 1.1)
+    else:
+        room, rows = w / fs, h / (fs * 1.2)
+    # the source's own lines fit the box at this size: ch34 two-column boxes measured 1.8 lines (shown as
+    # "1 line"), and the proofreader would not break lines that the source line count asks for
+    return room, max(rows, float(region.line_count))
+
+
+def room_counts(region: "Region") -> Tuple[int, int]:
+    """``line_room`` as the agents read it: characters per line and lines, rounded, at least 1."""
+    room, rows = line_room(region)
+    return max(1, int(room + 0.5)), max(1, int(rows + 0.5))
+
+
+def _cells(line: str) -> float:
+    """Length of a line in font sizes: a CJK character is one, punctuation and Latin letters or digits
+    about half (they are narrow, or the renderer squeezes them)."""
+    return sum(1.0 if ch.isalnum() and not ch.isascii() else 0.5 for ch in re.sub(r"\s", "", line))
+
+
+def line_overflow(region: "Region", translation: str) -> Optional[Dict[str, int]]:
+    """With AI line breaks: the details of a translation whose lines run out of the box, else None."""
+    lines = str(translation or "").split(BREAK)
+    longest = max(lines, key=_cells, default="")
+    room, rows = line_room(region)
+    too_long = _cells(longest) > room * LINE_ROOM_RATIO + LINE_ROOM_SLACK
+    if too_long or len(lines) > max(rows * LINE_ROOM_RATIO, rows + 1):
+        shown_room, shown_rows = room_counts(region)
+        return {"lines": len(lines), "longest": len(re.sub(r"\s", "", longest)), "room": shown_room,
+                "rows": shown_rows}
+    return None
+
+
 def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
     issues: List[Issue] = []
     translation = region.translation or ""
@@ -246,9 +306,14 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
     if getattr(session, "line_breaks", False) and needs_break(region.line_count, translation):
         issues.append(Issue("missing_line_break", region.id, {"lines": region.line_count},
                             WEIGHTS["missing_line_break"]))
+    elif getattr(session, "line_breaks", False):
+        over = line_overflow(region, translation)
+        if over:
+            issues.append(Issue("line_overflow", region.id, over, WEIGHTS["line_overflow"]))
 
     mode = session.settings.double_read
-    if mode != "none" and not session.was_zoomed(region):
+    # a translation kept from the earlier run had its reads then (a page checked again)
+    if mode != "none" and not region.unchanged and not session.was_zoomed(region):
         why: List[str] = []
         if mode == "all":
             why.append("unsure")
@@ -272,9 +337,10 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
 
 
 def page_issues(session: "AgentSession") -> List[Issue]:
+    """Issues of the translated regions; on a page checked again, not of the user's locked regions."""
     issues: List[Issue] = []
     for region in session.doc.active_regions():
-        if region.translation and not region.skipped:
+        if region.translation and not region.skipped and not region.locked:
             issues.extend(region_issues(session, region))
     return issues
 
@@ -284,7 +350,7 @@ def page_score(session: "AgentSession", issues: List[Issue]) -> float:
     doc = session.doc
     scores: Dict[int, float] = {}
     for region in doc.active_regions():
-        if region.skipped or not region.translation:
+        if region.skipped or not region.translation or region.locked:
             continue
         score = 1.0
         if region.confidence is not None:

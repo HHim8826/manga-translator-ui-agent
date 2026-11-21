@@ -65,6 +65,23 @@ def test_proofreader_revises_flags_and_records_the_old_text(tmp_path):
     assert logged[-1]["revised"] == 1 and logged[-1]["pages"] == {"002": 1}
 
 
+def test_the_proofreader_goes_through_a_few_pages_per_response(tmp_path):
+    """ch34 check: the revisions of the whole chapter in one reply took over 120 s, and the proxy cut it off
+    (Cloudflare 524) four times. The prompt asks for rounds of 2 pages; a third view_page in one reply is refused."""
+    pages, store, events, runner = _translated_chapter(tmp_path)
+    views = [("view_page", {"page": name}) for name in ("001", "002", "001")]
+    client = ScriptedClient([], proof=[_calls(*views), _calls(*views[:2]), _calls(("finish_proofread", {}))])
+    proofreader = Proofreader(AgentSettings(), client, store, events, "CHT", runner.memory)
+    assert "at most 2 pages at a time" in proofreader.system_prompt()
+    assert "Never keep the revisions of the whole chapter for one response" in proofreader.system_prompt()
+    asyncio.run(proofreader.run([p for p, _ in pages]))
+    events.close()
+    results = [m for m in client.proof_requests[-1] if m.get("role") == "tool"]
+    assert [isinstance(m["content"], list) for m in results[:3]] == [True, True, False]  # with the picture
+    assert results[2]["content"].startswith("Error: view at most 2 pages in one response")
+    assert [isinstance(m["content"], list) for m in results[3:5]] == [True, True]  # a new reply, a new count
+
+
 def _chapter(tmp_path):
     folder = tmp_path / "chapter"
     folder.mkdir()

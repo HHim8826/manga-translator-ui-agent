@@ -71,6 +71,8 @@ def create_parser():
                              help='批量处理大小（覆盖配置文件）')
     local_parser.add_argument('--attempts', type=int, default=None,
                              help='翻译失败重试次数，-1表示无限重试（覆盖配置文件）')
+    local_parser.add_argument('--agent-revise', action='store_true',
+                             help='AI Agent 重新检查已完成的话数：不重新检测和翻译，保留编辑器里的修改，只重新修复有变动的地方')
     # 内存管理参数（子进程模式）
     local_parser.add_argument('--subprocess', action='store_true',
                              help='启用子进程模式（支持内存管理和断点续传）')

@@ -265,12 +265,11 @@ def _runner(tmp_path, pages, script, recall=None, **settings):
 
 
 def test_runner_finishes_pages_and_strips_old_images(tmp_path):
-    pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
-    runner, client, store, events = _runner(tmp_path, pages, _finish_page() + _finish_page(),
-                                            keep_images_last_n_pages=1)
+    pages = [make_page(tmp_path, f"{i:03d}") for i in range(1, 6)]  # page 2 has 4 pages left: page 1's image goes
+    runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 5, keep_images_last_n_pages=1)
     outcomes = asyncio.run(runner.run())
     events.close()
-    assert [o["status"] for o in outcomes] == ["done", "done"]
+    assert [o["status"] for o in outcomes] == ["done"] * 5
     saved = next(iter(json.load(open(pages[1][1], encoding="utf-8")).values()))
     assert [r["translation"] for r in saved["regions"]] == ["譯1", "譯2", "譯3"]
     assert store.load_sidecar("001")["status"] == "done"
@@ -279,8 +278,12 @@ def test_runner_finishes_pages_and_strips_old_images(tmp_path):
     page1_parts = [m for m in page2_request if isinstance(m.get("content"), list)
                    and any("001.png" in p.get("text", "") for p in m["content"] if p.get("type") == "text")]
     assert page1_parts and not any(p.get("type") == "image_url" for p in page1_parts[0]["content"])
+    # later pages have fewer than 4 pages left: page 2's image is still there at page 5
+    page2_parts = [m for m in client.requests[-1] if isinstance(m.get("content"), list)
+                   and any("002.png" in p.get("text", "") for p in m["content"] if p.get("type") == "text")]
+    assert page2_parts and any(p.get("type") == "image_url" for p in page2_parts[0]["content"])
     types = [e["type"] for e in read_events(events.path)]
-    assert types[0] == "run_start" and types[-1] == "run_end" and types.count("page_done") == 2
+    assert types[0] == "run_start" and types[-1] == "run_end" and types.count("page_done") == 5
     # every assistant tool call is answered before the next request
     for request in client.requests:
         pending = set()
@@ -393,6 +396,31 @@ def test_old_page_images_are_dropped_in_blocks():
         assert 5 <= current - runner.image_pages_from(current) + 1 <= 9 or current < 5
     runner.settings = AgentSettings(keep_images_last_n_pages=1)
     assert [runner.image_pages_from(i) for i in range(4)] == [0, 1, 2, 3]
+
+
+def _dropped(pages, n=5, tokens=0):
+    from types import SimpleNamespace
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.settings = AgentSettings(keep_images_last_n_pages=n)
+    runner.pages = [f"{i:03d}.png" for i in range(pages)]
+    runner.session = SimpleNamespace(last_prompt_tokens=tokens)
+    runner.images_from = 0
+    seen = []
+    for index in range(pages):
+        runner.drop_images(index)
+        seen.append(runner.images_from)
+    return seen
+
+
+def test_no_drop_of_old_images_near_the_end_of_a_chapter():
+    # ch34 (10 pages): the drop came at page 10, and that request found 15k of its 73k tokens cached
+    assert _dropped(10) == [0] * 10
+    assert _dropped(13) == [0] * 9 + [5] * 4  # 4 pages left: the smaller requests make up for the miss
+    assert _dropped(15) == [0] * 9 + [5] * 6  # page 15 has 1 page left: pages 6-10 keep their images
+    assert _dropped(5, n=1) == [0, 1, 1, 1, 1]
+    # a conversation past half the compaction threshold drops them anyway
+    assert _dropped(10, tokens=150_000) == [0] * 9 + [5]
 
 
 def test_client_sends_the_session_header(monkeypatch):

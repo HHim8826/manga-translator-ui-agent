@@ -1333,6 +1333,7 @@ class MainAppLogic(QObject):
                     "proofread": self._t("label_proofread"),
                     "fix_missing_glyphs": self._t("label_fix_missing_glyphs"),
                     "choose_fonts": self._t("label_choose_fonts"),
+                    "revise_lock_user_edits": self._t("label_revise_lock_user_edits"),
                     "model": self._t("label_model"),
                     "reasoning_effort": self._t("label_reasoning_effort"),
                     "review_reasoning_effort": self._t("label_review_reasoning_effort"),
@@ -1933,9 +1934,13 @@ class MainAppLogic(QObject):
                 self.state_manager.set_translating(False)
                 self.state_manager.set_status_message("就绪")
                 return
-            if len(chosen) != len(resolved_files):
-                self._ui_log(f"AI Agent: processing {len(chosen)} page(s) that are not done yet")
-            resolved_files = chosen
+            chosen_files, revise = chosen
+            if revise:  # check the finished pages again (only for this run, never saved to the config)
+                self._ui_log(f"AI Agent: checking {len(chosen_files)} finished page(s) again")
+                task_config = {**task_config, "agent_revise": True}
+            elif len(chosen_files) != len(resolved_files):
+                self._ui_log(f"AI Agent: processing {len(chosen_files)} page(s) that are not done yet")
+            resolved_files = chosen_files
 
         # 启动真正的翻译任务
         self._start_translation_worker(resolved_files, task_config)
@@ -3169,6 +3174,7 @@ class TranslationWorker(QObject):
                         should_stop=lambda: not self._is_running,
                         log=self._log_info,
                         progress=agent_progress,
+                        revise=bool(self.config_dict.get('agent_revise')),
                     )
                 else:
                     contexts = await translator.translate_batch(

@@ -588,6 +588,11 @@ DESIGN_CLASSES = (
 CLASS_BONUS = 0.25
 """Same kind of typeface counts for, another kind against; more than the locale term, so a
 Japanese Mincho beats a Chinese gothic for a Ming face (the shapes alone hardly tell them apart)."""
+DISPLAY_CLASSES = ("clerical", "round")
+"""Lettering kinds that a thin font of another kind never moves to (``FontService.stand_in``)."""
+RELATED_CLASSES = {("kai", "serif"), ("fangsong", "serif")}
+"""A thin Kai or FangSong face moves to a Song (Ming) face when the sheet has none of its own kind:
+both are book faces with brush-shaped strokes. DFKai-SB went to LiSu (clerical) before."""
 
 
 def _words(name: str) -> List[str]:
@@ -938,6 +943,12 @@ class FontService:
             raw = json.load(fh)
         entry = raw[next(iter(raw))]
         regions = entry.get("regions", []) if isinstance(entry, dict) else entry
+        from .revise import json_center, locked_centers
+
+        side = store.load_sidecar(stem)
+        users_fonts = locked_centers(side, "user_font") | locked_centers(side, "locked")
+        """Regions whose font the user chose in the editor, and the user's locked regions (a chapter
+        checked again): left as they are."""
         changes: List[Dict[str, Any]] = []
         """Font changes of a whole region: an agent's font that moves the text goes back to the user's."""
         borrowed: List[Dict[str, Any]] = []
@@ -949,7 +960,7 @@ class FontService:
         new_texts: Dict[int, Dict[str, Any]] = {}
         for index, region in enumerate(regions):
             text = str(region.get("translation") or "")
-            if not text.strip():
+            if not text.strip() or (users_fonts and json_center(region) in users_fonts):
                 continue
             original = str(region.get("font_family") or self.default_font)
             current = original
@@ -1043,11 +1054,15 @@ class FontService:
         face = self.catalog.find(value) if value else None
         if face is None or not self.catalog.thin(face, kind) or self.catalog.thin(self.default_face(), kind):
             return None
+        own = design_class(face)
         ranked = []
         for other in self.choices:
             score = self.catalog.similarity(face, other, kind)
-            if score is not None:
-                ranked.append((score + class_term(face, other), other))
+            other_class = design_class(other)
+            if score is None or (other_class in DISPLAY_CLASSES and other_class != own):
+                continue  # a book face never becomes clerical or rounded lettering
+            term = 0.0 if (own, other_class) in RELATED_CLASSES else class_term(face, other)
+            ranked.append((score + term, other))
         return max(ranked, key=lambda item: item[0])[1].value if ranked else ""
 
 

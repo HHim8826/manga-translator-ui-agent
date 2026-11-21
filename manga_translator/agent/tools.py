@@ -24,6 +24,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
+from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentMemory, normalize
@@ -117,25 +118,42 @@ class AgentSession:
 
     def candidate_lines(self) -> str:
         lines = []
+        revise = self.doc.revise
         for region in self.doc.active_regions():
             x1, y1, x2, y2 = region.bbox
             local = region.ocr_local.replace("\n", " / ") or "(empty)"
-            if region.origin == "recall":
+            if revise and region.loaded_state is not None and region.user_edited and not region.ocr_local:
+                source = "drawn by the user in the editor"
+            elif revise and region.loaded_state is not None and region.unchanged and region.source_text:
+                source = f"earlier reading: 「{_short(region.source_text, 80)}」"
+            elif region.origin == "recall":
                 source = f"added by the recall check ({region.origin_kind or 'text'}), its reading (hint): 「{local}」"
             elif region.origin == "agent":
                 source = "added by you with add_region"
             else:
                 source = f"local OCR (weak hint): 「{local}」"
-            count = f"{region.line_count} source line(s), " if self.line_breaks else ""
+            count = ""
+            if self.line_breaks:
+                room, rows = checks.room_counts(region)
+                count = f"{region.line_count} source line(s), fits about {room} characters per line and {rows} line(s), "
+            status = region.status()
+            if revise and region.translation and not region.skipped:
+                status += f" 「{region.translation}」"
+                if region.style:
+                    status += f" [style {region.style}]"
+            if revise and region.locked:
+                status += " — LOCKED: the user changed it in the editor; leave it"
             lines.append(f"#{region.id}: {region.direction}, {x2 - x1}x{y2 - y1}px, font≈{region.font_size}px, "
-                         f"{count}{source}, {region.status()}{_apart(region)}")
+                         f"{count}{source}, {status}{_apart(region, revise)}")
         return "\n".join(lines) if lines else "(no candidate regions on this page)"
 
 
-def _apart(region: Region) -> str:
+def _apart(region: Region, revise: bool = False) -> str:
     """For a pending region whose lines stand in groups apart from each other: the groups, so the
-    model can split two bubbles (or an aside beside the main text) that were boxed as one text."""
-    if region.skipped or region.translation:
+    model can split two bubbles (or an aside beside the main text) that were boxed as one text. On a
+    page checked again (``revise``) translated regions get it too: their one translation may cover
+    both parts, or only one."""
+    if region.skipped or region.locked or (region.translation and not revise):
         return ""
     groups = line_groups(region)
     if len(groups) < 2:
@@ -426,6 +444,8 @@ def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     style = _style_choice(s, a.get("style"), category, a.get("reason", ""))
     region = s.doc.set_text(a["id"], a.get("source_text", ""), a.get("translation", ""),
                             category, a.get("confidence"), a.get("ruby", ""), a.get("reason", ""))
+    if s.doc.revise:  # text the earlier run skipped: find its strokes so the render erases them
+        unskip_erase(s.doc, region, s.page_array)
     if style is not None:
         region.style, region.font = style
         if region.style:
@@ -438,12 +458,23 @@ def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if s.line_breaks and needs_break(region.line_count, region.translation):
         text += (f" Its source has {region.line_count} lines but the translation has no {BREAK}, so it would be "
                  f"typeset as one line: add {BREAK} at natural breaks with set_line_breaks.")
+    else:
+        text += _overflow_note(s, region)
     return ToolResult(text=text, summary=summary)
+
+
+def _overflow_note(s: AgentSession, region: Region) -> str:
+    """With AI line breaks: what to fix when the lines run out of the box (``checks.line_overflow``)."""
+    over = checks.line_overflow(region, region.translation) if s.line_breaks else None
+    if not over:
+        return ""
+    return " " + checks.agent_text(checks.Issue("line_overflow", region.id, over, 0.0))
 
 
 def set_line_breaks(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     region = s.doc.set_line_breaks(a["id"], a.get("text", ""), a.get("reason", ""))
-    return ToolResult(text=f"#{region.id} line breaks saved.", summary=f"#{region.id}: {_short(region.translation)}")
+    return ToolResult(text=f"#{region.id} line breaks saved.{_overflow_note(s, region)}",
+                      summary=f"#{region.id}: {_short(region.translation)}")
 
 
 # --- memory -------------------------------------------------------------------

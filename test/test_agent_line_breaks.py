@@ -34,6 +34,7 @@ def _two_line_page(tmp_path, stem="001", translations=None):
     raw = json.load(open(json_path, encoding="utf-8"))
     page = next(iter(raw.values()))
     page["regions"][0]["lines"] = _quad(40, 20, 60, 120) + _quad(20, 20, 38, 120)
+    page["regions"][0]["font_size"] = 18  # columns about 20 px wide: two lines of about 5 characters fit
     for region, text in zip(page["regions"], translations or ()):
         region["translation"] = text
     with open(json_path, "w", encoding="utf-8") as fh:
@@ -144,7 +145,60 @@ def test_set_text_saves_breaks_as_br_and_points_out_a_missing_one(tmp_path):
     assert "has no [BR]" not in again.text and session.doc.regions[1].translation == "村裡大概[BR]就忙到這時候。"
     one_line = registry.execute("set_text", {"id": 2, "source_text": "x", "translation": LONG,
                                              "category": "dialogue", "confidence": 0.9})
-    assert "[BR]" not in one_line.text
+    assert "has no [BR]" not in one_line.text
+    # region 2 is one column of about 4 characters at 24 px: the long line runs out of the box
+    assert "the longest 11 characters" in one_line.text and "about 4 characters per line" in one_line.text
+
+
+def test_candidates_say_how_much_fits_the_box(tmp_path):
+    session, _ = _session(tmp_path)
+    lines = session.candidate_lines().splitlines()
+    assert "fits about 6 characters per line and 2 line(s)" in lines[0]
+    session.line_breaks = False
+    assert "fits about" not in session.candidate_lines()
+
+
+def test_new_breaks_that_run_out_of_the_box_get_a_note(tmp_path):
+    """Chapter 34, the revise trial: the agent's breaks kept lines of 9-12 characters in columns of about 6."""
+    session, registry = _session(tmp_path)
+    registry.execute("set_text", {"id": 1, "source_text": "x", "translation": "村裡大概就忙到[BR]這時候。",
+                                  "category": "narration", "confidence": 0.9})
+    too_long = registry.execute("set_line_breaks", {"id": 1, "text": "村裡大概就忙到這[BR]時候。"})
+    assert too_long.ok and "#1: 2 line(s), the longest 8 characters" in too_long.text
+    assert "set_line_breaks" in too_long.text
+    fits = registry.execute("set_line_breaks", {"id": 1, "text": "村裡大概[BR]就忙到這時候。"})
+    assert fits.ok and fits.text == "#1 line breaks saved."
+    for rid, text in ((2, "好"), (3, "走")):
+        registry.execute("set_text", {"id": rid, "source_text": "x", "translation": text, "category": "dialogue",
+                                      "confidence": 0.95})
+    assert registry.execute("mark_page_done", {"confidence": 0.9}).ok  # nothing left to check
+
+
+def test_lines_that_run_out_of_the_box():
+    column = Region(id=1, data={"lines": [[[100, 20], [140, 20], [140, 260], [100, 260]]], "direction": "vertical",
+                                "font_size": 24})
+    room, rows = checks.line_room(column)  # 240 px high, 40 px wide at 24 px
+    assert room == pytest.approx(10) and rows == pytest.approx(40 / 26.4)
+    assert checks.line_overflow(column, "我倒沒覺得[BR]有什麼不對") is None
+    assert checks.line_overflow(column, "我倒沒覺得有什麼不對勁的地方啊[BR]好") == {
+        "lines": 2, "longest": 15, "room": 10, "rows": 2}  # rounded for the agent
+    assert checks.line_overflow(column, "好[BR]的[BR]啊")  # three columns in a box of one and a half
+    # punctuation and Latin letters are narrow: 「……嗯？OK」 is about 3.5 characters long
+    assert checks._cells("……嗯？ OK") == pytest.approx(3.5)
+    assert checks.line_overflow(column, "……嗯？……嗯？……嗯？……！") is None
+    row = Region(id=2, data={"lines": [[[0, 0], [200, 0], [200, 30], [0, 30]]], "direction": "horizontal",
+                             "font_size": 20})
+    assert checks.line_room(row) == pytest.approx((10, 1.25))
+    assert checks.line_overflow(row, "一行橫寫的字就這樣") is None and checks.line_overflow(row, "一行[BR]兩行[BR]三行")
+
+
+def test_a_box_always_fits_its_own_source_lines():
+    """ch34 re-run: two-column boxes measured 1.7-1.8 lines and were listed as "~1 lines fit"; the proofreader then
+    would not add the [BR] that the two source lines ask for, and 11 of its revisions were refused."""
+    pair = _region(1, (40, 20, 70, 200), (8, 20, 38, 200))  # two columns 30 px wide at 34 px
+    pair.data["font_size"] = 34
+    assert checks.line_room(pair)[1] == 2 and checks.room_counts(pair) == (5, 2)
+    assert checks.line_overflow(pair, "我們雨季[BR]沒做東西") is None
 
 
 def test_mark_page_done_lists_a_missing_break_once(tmp_path):
@@ -216,17 +270,22 @@ def _proof_session(tmp_path, line_breaks=True):
 def test_proofreading_shows_and_keeps_the_breaks(tmp_path):
     session, page, json_path = _proof_session(tmp_path)
     listing = page.listing(line_counts=True)
-    assert "2 line(s)]" in listing[0] and "→ 「村裡大概就忙到[BR]這時候。」" in listing[0]
+    assert "2 line(s), ~6 chars per line, ~2 lines fit]" in listing[0]
+    assert "→ 「村裡大概就忙到[BR]這時候。」" in listing[0]
     assert "line(s)" not in page.listing()[0] and "[BR]" in page.listing()[0]
     with pytest.raises(ProofError, match=r"needs \[BR\]"):
         _execute(session, "revise_text", {"page": "001", "id": 1, "translation": "村裡大概只忙到這個時候。", "reason": "r"})
     text, summary, _ = _execute(session, "revise_text", {"page": "001", "id": 1,
                                                          "translation": "村裡大概只忙到\n這個時候。", "reason": "r"})
     assert "revised" in text and "/" in summary
+    with pytest.raises(ProofError, match="run out of the box") as refused:  # the renderer does not shrink it
+        _execute(session, "revise_text", {"page": "001", "id": 1, "translation": "村裡大概只忙到這個[BR]時候。",
+                                          "reason": "r"})
+    assert "set_line_breaks" not in str(refused.value)  # not a proofreader tool
     saved = next(iter(json.load(open(json_path, encoding="utf-8")).values()))["regions"]
     assert saved[0]["translation"] == "村裡大概只忙到[BR]這個時候。"
-    # a one-line source needs no break
-    _execute(session, "revise_text", {"page": "001", "id": 2, "translation": "好吧，就這麼辦。", "reason": "r"})
+    # a one-line source needs no break (region 2 fits about 4 characters)
+    _execute(session, "revise_text", {"page": "001", "id": 2, "translation": "好吧，走。", "reason": "r"})
 
 
 def test_proofreading_without_ai_line_breaks_does_not_ask_for_breaks(tmp_path):
