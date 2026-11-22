@@ -137,6 +137,8 @@ class AgentsPage(QWidget):
         self._pages: Dict[str, dict] = {}
         self._order: List[str] = []
         self._pending_rows: Dict[str, List[QTreeWidgetItem]] = {}
+        self._replaying = False  # replay(): rows are added without following each one
+        self._replay_reset = False
         self._page_filter = ALL_PAGES
         self._limit = 400_000
         self._translating = False
@@ -808,8 +810,20 @@ class AgentsPage(QWidget):
             self.status_label.setText(self._finished_status())
 
     def replay(self, events: List[dict]) -> None:
-        for event in events:
-            self._handle(event)
+        """Many events at once (an old run log, back to the current run). The timeline does not follow
+        or repaint each row: it ends at the bottom when it was there or the events started a new run,
+        as row by row (1,000 rows took about 0.75 s, mostly scrolling to each one)."""
+        follow = self._at_bottom()
+        self._replaying, self._replay_reset = True, False
+        self.timeline.setUpdatesEnabled(False)
+        try:
+            for event in events:
+                self._handle(event)
+        finally:
+            self._replaying = False
+            self.timeline.setUpdatesEnabled(True)
+        if follow or self._replay_reset:
+            self.timeline.scrollToBottom()
         self._update_actions()
 
     # --- helpers --------------------------------------------------------------
@@ -844,6 +858,7 @@ class AgentsPage(QWidget):
             self._paint(row, MUTED)
 
     def _reset(self) -> None:
+        self._replay_reset = self._replaying
         self.timeline.clear()
         self.row_detail.hide()
         self._pending_rows.clear()
@@ -895,6 +910,10 @@ class AgentsPage(QWidget):
         row.setData(0, Qt.ItemDataRole.UserRole, key)
         row.setData(0, Qt.ItemDataRole.UserRole + 1, problem)
         row.setData(0, Qt.ItemDataRole.UserRole + 2, _region_id(region))
+        if self._replaying:  # replay() scrolls once at the end
+            self.timeline.addTopLevelItem(row)
+            self._apply_filter_to(row)
+            return row
         at_bottom = self._at_bottom()  # the user scrolled up to read: stay there
         self.timeline.addTopLevelItem(row)
         self._apply_filter_to(row)

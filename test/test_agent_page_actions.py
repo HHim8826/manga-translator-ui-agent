@@ -131,6 +131,47 @@ def test_the_work_memory_rows(app):  # noqa: F811
     assert rows[1].toolTip(4) == "dict/agent/x.memory"
 
 
+def _tools(n, start=0, ok=True):
+    events = []
+    for i in range(start, start + n):
+        events += [{"type": "tool_call", "run": "r1", "page": "001", "tool": "set_text", "args": {"id": 1},
+                    "reason": f"r{i}"},
+                   {"type": "tool_result", "run": "r1", "page": "001", "tool": "set_text", "ok": ok,
+                    "summary": f"s{i}"}]
+    return events
+
+
+def test_a_long_replay_scrolls_once_and_ends_where_row_by_row_would(app):  # noqa: F811
+    """Review perf item: a replay (an old log, back to the current run) built and followed each row;
+    1,000 rows took about 0.75 s. Rows are now added without following each one, with the same end:
+    at the bottom after a new run or when it was there, where the user scrolled to otherwise."""
+    page = _page()
+    page.resize(800, 600)
+    page.show()
+    bar = page.timeline.verticalScrollBar()
+    page.replay([_start(pages=("001.jpg",)), *_tools(300)])
+    app.processEvents()
+    assert page.timeline.topLevelItemCount() == 300 and 0 < bar.maximum() == bar.value()
+
+    bar.setValue(0)  # the user scrolls up to read
+    page.replay(_tools(50, start=300, ok=False))
+    app.processEvents()
+    assert page.timeline.topLevelItemCount() == 350 and bar.value() == 0
+    assert page.timeline.topLevelItem(349).text(4) == "r349"
+
+    bar.setValue(bar.maximum())
+    page.handle_event(_tools(1, start=350)[0])  # a live row follows again
+    app.processEvents()
+    assert bar.value() == bar.maximum() and page.timeline.topLevelItemCount() == 351
+
+    page.problems_only.setChecked(True)  # a replay keeps the filter
+    page.replay([_start(run="r2", batch="b2", pages=("001.jpg",)), *_tools(5), *_tools(2, start=5, ok=False)])
+    app.processEvents()
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(4) for r in rows if not r.isHidden()] == ["r5", "r6"]
+    page.hide()
+
+
 def _canvas(tmp_path):
     from PyQt6.QtCore import QPointF
     from ui.main_page.pages.agent_preview import PreviewCanvas, ImageCache
