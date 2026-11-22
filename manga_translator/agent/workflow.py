@@ -79,14 +79,23 @@ def _rect(value: Any) -> bool:
         return False
 
 
-def editor_box_center(region: dict) -> None:
+def editor_box_center(region: dict, editor_layout: bool = True) -> None:
     """Typeset a region in the box set in the editor, as the editor's export does
     (``EditorControllerExportService.apply_white_frame_center``): the center moves to the middle of
     the user's own white frame, else of the saved text box, else of an older file's white frame. A
     region without one (new or changed by the agent) stays centered on its lines.
 
     The render reads the JSON with ``load_text``, which used only the center of the detected lines:
-    a ch34 p6 label the user had moved and spaced by hand came out shifted in the check-again run."""
+    a ch34 p6 label the user had moved and spaced by hand came out shifted in the check-again run.
+
+    ``editor_layout``: the page is typeset the way the editor exports it (``skip_font_scaling``,
+    which a JSON the editor saved leaves at its default): the center is the middle of the text box.
+    A page the pipeline typeset last and the user has not saved since (``skip_font_scaling`` false)
+    places its text from the center of the lines itself, at their top or in the middle of the
+    bubble, so its box is where the pipeline put it: moving the center there moved the text twice as
+    far (ch33 p1: a recap in the margin went 330 px up, off the top of the page). Left as it is."""
+    if not editor_layout:
+        return
     custom, saved = region.get("white_frame_rect_local"), region.get("render_box_rect_local")
     if region.get("has_custom_white_frame") and _rect(custom):
         box = custom

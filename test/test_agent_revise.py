@@ -706,6 +706,7 @@ def test_the_render_reads_each_region_through_the_hook(tmp_path):
     raw = json.load(open(json_path, encoding="utf-8"))
     next(iter(raw.values()))["regions"][0].update(translation="譯", center=[40, 70],
                                                    render_box_rect_local=[10, 20, 30, 40])
+    next(iter(raw.values())).pop("skip_font_scaling")  # saved in the editor, which leaves the flag out
     json.dump(raw, open(json_path, "w", encoding="utf-8"), ensure_ascii=False)
     saved = open(json_path, encoding="utf-8").read()
     translator = MangaTranslator(params={"load_text": True, "translator": "none"})
@@ -722,3 +723,45 @@ def test_the_render_reads_each_region_through_the_hook(tmp_path):
     translator.load_text_region_hook = lambda region: 1 / 0
     assert first_center() == [40, 70]  # a failing hook loses no region
     assert open(json_path, encoding="utf-8").read() == saved  # the JSON is only read
+
+
+def test_a_page_the_pipeline_typeset_keeps_the_center_of_its_lines(tmp_path):
+    """ch33 p1: the pipeline typesets a page whose JSON says ``skip_font_scaling`` false from the
+    center of the lines (the text at their top, or in the middle of the bubble), so the box it saved
+    is where it put the text already. Moving the center to that box moved the recap in the margin
+    330 px further up, off the top of the page. A page the editor saved (no flag, or true) is
+    typeset around the center, which goes to the middle of the box as before."""
+    from manga_translator.agent.workflow import editor_box_center
+    from manga_translator.config import Config, TranslatorConfig
+    from manga_translator.manga_translator import MangaTranslator
+
+    image_path, json_path = make_page(tmp_path)
+    raw = json.load(open(json_path, encoding="utf-8"))
+    page = next(iter(raw.values()))
+    page["regions"][0].update(translation="譯", center=[40, 70], render_box_rect_local=[10, 20, 30, 40])
+    translator = MangaTranslator(params={"load_text": True, "translator": "none"})
+    translator.load_text_region_hook = editor_box_center
+    cfg = Config(translator=TranslatorConfig(translator="none"))
+
+    def first_center(flag):
+        if flag == "absent":
+            page.pop("skip_font_scaling", None)
+        else:
+            page["skip_font_scaling"] = flag
+        json.dump(raw, open(json_path, "w", encoding="utf-8"), ensure_ascii=False)
+        regions, *_rest, failures = translator._load_text_and_regions_from_file(image_path, cfg)
+        assert failures == 0
+        return [float(v) for v in regions[0].center]
+
+    assert first_center(False) == [40, 70]
+    assert first_center("false") == [40, 70]
+    assert first_center(True) == [60, 100]
+    assert first_center("absent") == [60, 100]  # the editor's save leaves the flag out
+
+    # the recap of ch33 p1: lines from y 121 to 1866, the 1081 px of text the pipeline put at their top
+    recap = {"lines": [[[1251, 121], [1289, 121], [1290, 1866], [1252, 1866]]], "center": [1270.5, 993.5],
+             "direction": "v", "render_box_rect_local": [-17.5, -867.5, 17.5, 213.5]}
+    editor_box_center(recap, editor_layout=False)
+    assert recap["center"] == [1270.5, 993.5]
+    editor_box_center(recap)  # had the user saved the page in the editor: the box's middle
+    assert recap["center"] == pytest.approx([1270.5, 666.5])

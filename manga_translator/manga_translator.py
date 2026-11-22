@@ -1618,7 +1618,8 @@ class MangaTranslator:
             try:
                 if region_hook is not None and isinstance(region_data, dict):
                     try:
-                        region_hook(region_data)
+                        # editor_layout: the page is typeset as the editor exports it (center = the text box's middle)
+                        region_hook(region_data, editor_layout=skip_font_scaling)
                     except Exception as hook_err:  # never lose a region to the hook
                         logger.debug(f"load_text_region_hook failed: {hook_err}")
                 # Convert literal '\\n' to newline characters for the rendering engine
