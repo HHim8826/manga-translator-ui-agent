@@ -6,13 +6,71 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .runner import ChatReply, ToolCall
+from .runner import AgentStopped, ChatReply, ToolCall
 from .settings import AgentSettings
 
 logger = logging.getLogger("manga_translator.agent")
+
+QUOTA_MARGIN_SECONDS = 10
+"""Sent again this long after the reset time the API gave: its clock and ours differ a little."""
+_RESET_TEXT = re.compile(r"""['"]?(resets_in_seconds|resets_at)['"]?\s*[:=]\s*(\d+(?:\.\d+)?)""")
+
+
+def _reset_from(values: Dict[str, Any], now: float) -> Optional[float]:
+    """``resets_in_seconds`` (seconds from the reply) or ``resets_at`` (a Unix time, also in ms)."""
+    seconds = values.get("resets_in_seconds")
+    if isinstance(seconds, (int, float, str)):
+        try:
+            return float(seconds)
+        except ValueError:
+            pass
+    at = values.get("resets_at")
+    if isinstance(at, (int, float, str)):
+        try:
+            at = float(at)
+        except ValueError:
+            return None
+        return (at / 1000 if at > 1e12 else at) - now
+    return None
+
+
+def quota_reset_seconds(error: BaseException, now: Optional[float] = None) -> Optional[float]:
+    """Seconds until the API's usage limit resets, when a 429 in ``error`` or its causes says so: the
+    error body's ``resets_in_seconds`` / ``resets_at`` (for example an API proxy's ``usage_limit_reached``,
+    ``resets_in_seconds: 792``) or a ``Retry-After`` header. None for any other error, and for a 429
+    that does not say when."""
+    now = time.time() if now is None else now
+    seen: Set[int] = set()
+    exc: Optional[BaseException] = error
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc)
+        if getattr(exc, "status_code", None) == 429 or "429" in text:
+            body = getattr(exc, "body", None)
+            for values in (body, body.get("error") if isinstance(body, dict) else None):
+                found = _reset_from(values, now) if isinstance(values, dict) else None
+                if found is not None:
+                    return max(0.0, found)
+            headers = getattr(getattr(exc, "response", None), "headers", None)
+            retry_after = headers.get("retry-after") if hasattr(headers, "get") else None
+            if retry_after:
+                try:
+                    return max(0.0, float(retry_after))
+                except ValueError:
+                    try:
+                        return max(0.0, parsedate_to_datetime(retry_after).timestamp() - now)
+                    except (TypeError, ValueError):
+                        pass
+            found = _reset_from({m.group(1): m.group(2) for m in _RESET_TEXT.finditer(text)}, now)
+            if found is not None:
+                return max(0.0, found)
+        exc = exc.__cause__ or exc.__context__
+    return None
 
 
 class OpenAIChatClient:
@@ -32,6 +90,18 @@ class OpenAIChatClient:
         self.session_id: Optional[str] = None
         """Sent as the ``session_id`` header, so a proxy that groups requests (for example an
         API proxy) shows one chapter run, with its recall and review calls, as one session."""
+        self.quota_until = 0.0
+        """When the API's usage limit resets (``time.time()``), after a 429 that said so. Every
+        conversation of the run (translator, recall, inpaint review, proofread) waits for it before
+        its next request, so they do not use up their attempts on the same limit."""
+        self.should_stop: Callable[[], bool] = lambda: False
+        """The stop button, polled while waiting for the usage limit (it also cancels the task)."""
+        self.on_quota_wait: Optional[Callable[[Dict[str, Any]], None]] = None
+        """Told once per limit when the agents start waiting (``until``, ``seconds``, ``conversation``,
+        ``error``) and when they go on (``until``, ``resumed``); the workflow shows it."""
+        self._told_wait = 0.0
+        self._told_resume = 0.0
+        self._quota_error = ""
 
     @property
     def model_label(self) -> str:
@@ -116,10 +186,84 @@ class OpenAIChatClient:
                              completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
                              cached_tokens=(getattr(details, "cached_tokens", 0) or 0) if details else 0)
 
-        return await run_with_api_candidates(
-            endpoints=self.endpoints, strategy=self.strategy, operation=operation, provider_name="agent",
-            operation_name="chat completion", logger=logger, runtime_config=self.runtime_config,
-            retry_attempts=self.settings.retry_attempts)
+        started = time.time()
+        while True:
+            if self.quota_until > time.time():
+                await self._wait_for_quota(cache_key)
+            try:
+                return await run_with_api_candidates(
+                    endpoints=self.endpoints, strategy=self.strategy, operation=operation, provider_name="agent",
+                    operation_name="chat completion", logger=logger, runtime_config=self.runtime_config,
+                    retry_attempts=self.settings.retry_attempts)
+            except Exception as exc:
+                if not self._quota_limited(exc, started):
+                    raise
+
+    def _quota_limited(self, exc: Exception, started: float) -> bool:
+        """True when ``exc`` is a usage limit to wait for (``quota_wait_minutes``): a 429 that says when
+        it resets, or the endpoint still cooling down after the limit another conversation hit. One
+        request waits at most that long in all, also when the API keeps moving the reset."""
+        from ..api_key_rotation import APIRotationExhaustedError
+
+        limit = max(0, int(getattr(self.settings, "quota_wait_minutes", 0) or 0)) * 60
+        if limit <= 0:
+            return False
+        now = time.time()
+        seconds = quota_reset_seconds(exc, now)
+        if seconds is None:
+            # no reset time of its own: "no available API candidates" while the limit lasts
+            return self.quota_until > now and self.quota_until - started <= limit \
+                and isinstance(exc, APIRotationExhaustedError) and exc.__cause__ is None
+        if now + seconds - started > limit:
+            logger.warning("The API's usage limit resets in %d min, after the %d min the agents wait "
+                           "(quota_wait_minutes): %s", round(seconds / 60), limit // 60, str(exc)[:300])
+            return False
+        self.quota_until = max(self.quota_until, now + seconds + QUOTA_MARGIN_SECONDS)
+        self._quota_error = str(exc)[:300]
+        return True
+
+    async def _wait_for_quota(self, conversation: str) -> None:
+        until = self.quota_until
+        if self._told_wait < until:  # once per limit, however many conversations wait for it
+            self._told_wait = until
+            seconds = max(0, round(until - time.time()))
+            logger.warning("The API's usage limit is reached: the agents wait until %s (%d min) and go on",
+                           time.strftime("%H:%M:%S", time.localtime(until)), max(1, round(seconds / 60)))
+            self._tell({"until": until, "seconds": seconds, "conversation": conversation,
+                        "error": self._quota_error})
+        while True:
+            left = self.quota_until - time.time()
+            if left <= 0:
+                break
+            if self.should_stop():
+                raise AgentStopped()
+            await asyncio.sleep(min(left, 1.0))
+        from ..api_key_rotation import clear_api_status, get_api_status
+
+        for endpoint in self.endpoints:  # its cooldown was this wait
+            if (get_api_status(endpoint) or {}).get("state") == "cooldown":
+                clear_api_status(endpoint)
+        if self._told_resume < until:
+            self._told_resume = until
+            self._tell({"until": until, "resumed": True})
+
+    def _tell(self, info: Dict[str, Any]) -> None:
+        if self.on_quota_wait is not None:
+            try:
+                self.on_quota_wait(info)
+            except Exception:
+                logger.warning("agent: showing the wait for the API usage limit failed", exc_info=True)
+
+    async def aclose(self) -> None:
+        """Close the HTTP connections in the event loop that opened them. Left to the garbage
+        collector, the SDK closes them in whatever loop runs by then, after the run's loop has closed:
+        "RuntimeError: Event loop is closed" in the log (2026-11-22)."""
+        clients, self._clients = list(self._clients.values()), {}
+        for client in clients:
+            try:
+                await client.close()
+            except Exception:
+                logger.debug("agent: closing an API client failed", exc_info=True)
 
     async def _streamed(self, api, args: dict, endpoint) -> Tuple[SimpleNamespace, object]:
         """The reply sent in pieces (``stream_requests``), put together as one message, with the token
@@ -222,6 +366,8 @@ async def check_api(client) -> None:
         reply = await client.complete(messages, [PROBE_TOOL], "required")
     except asyncio.CancelledError:
         raise
+    except AgentStopped:  # stopped while waiting for the usage limit
+        raise asyncio.CancelledError("Agent workflow stopped by user")
     except Exception as exc:
         raise APICheckError(f"AI Agent API check failed (model {model}): {type(exc).__name__}: "
                             f"{str(exc)[:300]}. {fix}") from exc

@@ -25,6 +25,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -178,6 +179,39 @@ class PipelineInpaintBackend:
         if not saved:
             raise OSError(f"the inpainted image of {os.path.basename(image_path)} was not saved")
         return saved
+
+
+def _watch_quota(client, should_stop: Callable[[], bool], live_events: List[Optional[EventLog]], log) -> None:
+    """The agents wait for the API's usage limit to reset (``quota_wait_minutes``): the stop button
+    ends the wait, and the log and the AI Agent page say until when. Before the first chapter (the API
+    check) the page hears of it as a stage, later as an ``api_wait`` event of the chapter's run log."""
+    if not hasattr(client, "on_quota_wait"):
+        return
+    client.should_stop = should_stop
+
+    def notice(info: Dict[str, Any]) -> None:
+        until = time.strftime("%H:%M:%S", time.localtime(float(info.get("until") or 0)))
+        events = live_events[0]
+        if info.get("resumed"):
+            log(f"[Agent] The API usage limit has reset ({until}): the agents go on")
+            if events is not None:
+                events.emit("api_wait", agent="workflow", until=until, resumed=True)
+            else:
+                broadcast("workflow_stage", stage="api_check", model=getattr(client, "model_label", ""))
+            return
+        seconds = int(info.get("seconds") or 0)
+        minutes = max(1, round(seconds / 60))
+        log(f"[Agent] The API usage limit is reached: waiting until {until} (about {minutes} min), then the "
+            f"agents go on by themselves. Stop ends the wait.")
+        conversation = str(info.get("conversation") or "")
+        agent = "proofread" if conversation == "proofread" else \
+            "inpaint" if conversation.startswith("inpaint") else "translator"
+        if events is not None:
+            events.emit("api_wait", agent=agent, until=until, seconds=seconds, error=info.get("error") or "")
+        else:
+            broadcast("workflow_stage", stage="api_wait", until=until, seconds=seconds)
+
+    client.on_quota_wait = notice
 
 
 async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLog, log) -> dict:
@@ -637,6 +671,10 @@ async def run_agent_workflow(
     saved = {name: getattr(translator, name, False) for name in MODE_FLAGS}
     target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
     font_task: Optional[asyncio.Future] = None
+    own_client = False
+    """The workflow built the API client, so it closes it at the end."""
+    live_events: List[Optional[EventLog]] = [None]
+    """The run log of the chapter in progress, for the wait for the API usage limit (_watch_quota)."""
     guard: Optional[RunGuard] = None
     """Copies of the pages from before the run: the pages it does not finish get them back."""
     preprocess_failed: Dict[str, str] = {}
@@ -653,9 +691,13 @@ async def run_agent_workflow(
         broadcast("workflow_stage", stage="start", pages=len(paths))
         if fonts is None:  # scanning the installed fonts takes seconds: do it while the pages are preprocessed
             font_task = asyncio.ensure_future(_font_service(translator, config, settings, target_lang, log))
-        if client is None:  # before the preprocess: a wrong API setting should not wait for it
-            from .client import build_client, check_api
+        own_client = client is None
+        if own_client:
+            from .client import build_client
             client = build_client(config, settings)
+        _watch_quota(client, should_stop, live_events, log)
+        if own_client:  # before the preprocess: a wrong API setting should not wait for it
+            from .client import check_api
             log(f"[Agent] API check: model {getattr(client, 'model_label', '')}")
             broadcast("workflow_stage", stage="api_check", model=getattr(client, "model_label", ""))
             await check_api(client)
@@ -729,6 +771,7 @@ async def run_agent_workflow(
                 number += 1
                 run_id = f"{base}~{number}"
             events = EventLog(store.run_log_path(run_id), run_id)
+            live_events[0] = events
             chapter_logs[work_dir] = (events.path, run_id)
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
             if hasattr(client, "session_id"):  # one session per chapter run on the API side
@@ -838,6 +881,7 @@ async def run_agent_workflow(
                 events.emit("stopped", agent="workflow", stage="agent")
                 raise
             finally:
+                live_events[0] = None
                 events.close()
             for outcome in chapter:
                 log(f"[Agent] {outcome['page']}: {outcome.get('status')}, flags {outcome.get('flags', 0)}")
@@ -956,3 +1000,8 @@ async def run_agent_workflow(
             font_task.cancel()
         for name, value in saved.items():
             setattr(translator, name, value)
+        if own_client and hasattr(client, "aclose"):
+            try:
+                await client.aclose()
+            except Exception:
+                logger.debug("agent: closing the API client failed", exc_info=True)

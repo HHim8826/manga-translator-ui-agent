@@ -1347,6 +1347,7 @@ class MainAppLogic(QObject):
                     "inpaint_attempts_per_region": self._t("label_inpaint_attempts_per_region"),
                     "proofread_steps": self._t("label_proofread_steps"),
                     "low_confidence_threshold": self._t("label_low_confidence_threshold"),
+                    "quota_wait_minutes": self._t("label_quota_wait_minutes"),
                     "renderer": self._t("label_renderer"),
                     "font_family": self._t("label_font_family"),
                     "disable_system_fonts": self._t("label_disable_system_fonts"),
