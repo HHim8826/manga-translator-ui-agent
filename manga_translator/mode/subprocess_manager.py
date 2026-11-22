@@ -8,7 +8,7 @@ import multiprocessing
 import os
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 ROOT_DIR = (
     Path(sys.executable).resolve().parent
@@ -53,6 +53,56 @@ def get_system_memory_percent() -> float:
 
 
 
+def over_memory_limit(memory_limit_mb: int, memory_limit_percent: int) -> Optional[str]:
+    """Why this process is over its memory limit (``--memory-limit`` MB of its own, or
+    ``--memory-percent`` of the system's memory in use); None when it is not, or no limit is set."""
+    if memory_limit_mb > 0:
+        used = get_memory_usage_mb()
+        if used > memory_limit_mb:
+            return f"{used:.0f} MB > {memory_limit_mb} MB"
+    if memory_limit_percent > 0:
+        percent = get_system_memory_percent()
+        if percent > memory_limit_percent:
+            return f"{percent:.0f}% > {memory_limit_percent}%"
+    return None
+
+
+def _output_key(file_path: str, input_folders: Iterable[str], output_format: Optional[str]) -> str:
+    """Where the translator writes the page (``MangaTranslator._calculate_output_path``), as a key:
+    the chapter folder under the output folder, the name and the format."""
+    parent = os.path.normpath(os.path.dirname(file_path))
+    folder_part = ""
+    if os.path.basename(parent) == "original_images":  # an extracted archive: <output>/<archive>/
+        folder_part = os.path.join("archive", os.path.basename(os.path.dirname(parent)))
+    else:
+        for folder in input_folders:
+            if parent.startswith(folder):
+                relative = os.path.relpath(parent, folder)
+                folder_part = os.path.basename(folder) if relative == "." else os.path.join(
+                    os.path.basename(folder), relative)
+                break
+    stem, ext = os.path.splitext(os.path.basename(file_path))
+    fmt = output_format if output_format and output_format.strip() and output_format.lower() not in (
+        "none", "不指定") else ext.lstrip(".")
+    return os.path.normcase(os.path.normpath(os.path.join(folder_part, f"{stem}.{fmt.lower()}")))
+
+
+def same_output_paths(files: Sequence[str], input_folders: Iterable[str],
+                      output_format: Optional[str]) -> Dict[str, str]:
+    """Pages that would be written where an earlier page of ``files`` is -> that earlier page (two
+    chapters' ``001.png`` given as files, or ``001.jpg`` and ``001.png`` saved as PNG)."""
+    folders = list(input_folders)
+    first: Dict[str, str] = {}
+    clashes: Dict[str, str] = {}
+    for path in files:
+        key = _output_key(path, folders, output_format)
+        if key in first:
+            clashes[path] = first[key]
+        else:
+            first[key] = path
+    return clashes
+
+
 def worker_translate_batch(
     file_paths: List[str],
     output_dir: str,
@@ -61,10 +111,15 @@ def worker_translate_batch(
     config_dict: dict,
     memory_limit_mb: int,
     memory_limit_percent: int,
-    result_queue: multiprocessing.Queue
+    result_queue: multiprocessing.Queue,
+    input_folders: Optional[Sequence[str]] = None,
 ):
     """
     子进程工作函数：翻译一批图片
+
+    ``input_folders``：输入的文件夹，输出时保留章节结构（不同章节的同名页不会写到同一路径）。
+    设了内存上限时按 batch_size 分段翻译，段与段之间检查内存，超过上限就结束这个子进程，
+    已完成的页照常回报，剩下的由下一个子进程继续（``restart``）。
     """
     import asyncio
     
@@ -113,14 +168,24 @@ def worker_translate_batch(
             'output_folder': output_dir,
             'format': output_format,
             'overwrite': overwrite,
-            'input_folders': set()
+            'input_folders': {os.path.normpath(os.path.abspath(f)) for f in (input_folders or ())}
         }
         
         completed = []
         skipped = []
         failed = []
         items = [(file_path, manga_config) for file_path in file_paths]
-        contexts = await translator.translate_batch(items, save_info=save_info)
+        limited = memory_limit_mb > 0 or memory_limit_percent > 0
+        step = max(1, int(cli_config.get('batch_size') or 1)) if limited else max(1, len(items))
+        contexts = []
+        for start in range(0, len(items), step):
+            contexts.extend(await translator.translate_batch(items[start:start + step], save_info=save_info))
+            over = over_memory_limit(memory_limit_mb, memory_limit_percent) if limited else None
+            if over and start + step < len(items):
+                print(f"📊 子进程内存超过上限（{over}）：已完成的页保存好了，换一个子进程继续剩下的 "
+                      f"{len(items) - start - step} 页")
+                restart[0] = True
+                break
 
         for ctx in contexts:
             image_name = getattr(ctx, 'image_name', '') or ''
@@ -141,6 +206,7 @@ def worker_translate_batch(
 
         return completed, skipped, failed
     
+    restart = [False]
     try:
         completed, skipped, failed = asyncio.run(_do_translate())
         result_queue.put({
@@ -148,6 +214,7 @@ def worker_translate_batch(
             'completed': completed,
             'skipped': skipped,
             'failed': failed,
+            'restart': restart[0],
         })
     except Exception as e:
         import traceback
@@ -171,7 +238,8 @@ async def translate_with_subprocess(
     memory_limit_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
     memory_limit_percent: int = DEFAULT_MEMORY_THRESHOLD_PERCENT,
     batch_per_restart: int = DEFAULT_BATCH_SIZE_PER_RESTART,
-    resume: bool = False
+    resume: bool = False,
+    input_folders: Optional[Sequence[str]] = None,
 ) -> Tuple[int, int, int]:
     """
     使用子进程模式翻译，支持内存管理
@@ -179,6 +247,7 @@ async def translate_with_subprocess(
     Args:
         memory_limit_mb: 绝对内存限制（MB），0表示不限制
         memory_limit_percent: 内存百分比限制，超过系统总内存的这个百分比时重启
+        input_folders: 输入的文件夹（保留章节结构）；会输出到同一路径的页不处理，算失败
     
     Returns:
         (success_count, skipped_count, failed_count)
@@ -204,6 +273,15 @@ async def translate_with_subprocess(
     if batch_per_restart > 0:
         print(f"📊 每批处理: {batch_per_restart} 张")
     print(f"{'='*60}\n")
+    
+    output_format = (config_dict.get('cli') or {}).get('format')
+    folders = [os.path.normpath(os.path.abspath(f)) for f in (input_folders or ())]
+    clashes = same_output_paths(all_files, folders, output_format)
+    for path, earlier in clashes.items():
+        print(f"❌ 失败: {os.path.basename(path)} - 会和 {earlier} 输出到同一个路径，没有处理"
+              f"（改用章节文件夹作为输入，或换输出格式）")
+    failed_count += len(clashes)
+    completed_files.update(clashes)
     
     restart_count = 0
     
@@ -237,7 +315,8 @@ async def translate_with_subprocess(
                 config_dict,
                 memory_limit_mb,
                 memory_limit_percent,
-                result_queue
+                result_queue,
+                folders,
             )
         )
         
@@ -265,6 +344,14 @@ async def translate_with_subprocess(
                         f"\n📊 批次完成: 成功 {len(batch_completed)}, "
                         f"跳过 {len(batch_skipped)}, 失败 {len(batch_failed)}"
                     )
+                    handled = set(batch_completed) | set(batch_skipped) | set(batch_failed)
+                    if result.get('restart'):  # over the memory limit: the next worker goes on
+                        print(f"🔄 内存超过上限，重启子进程继续剩下的 "
+                              f"{sum(1 for f in batch_files if f not in handled)} 页")
+                    elif not handled.issuperset(batch_files):  # pages the worker did not report
+                        missing = [f for f in batch_files if f not in handled]
+                        failed_count += len(missing)
+                        completed_files.update(missing)
                 else:
                     print(f"\n❌ 批次错误: {result.get('error', '未知错误')}")
                     if verbose and 'traceback' in result:

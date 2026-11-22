@@ -79,9 +79,9 @@ def create_parser():
     local_parser.add_argument('--subprocess', action='store_true',
                              help='启用子进程模式（支持内存管理和断点续传）')
     local_parser.add_argument('--memory-limit', type=int, default=0,
-                             help='绝对内存限制（MB），超过后自动重启子进程，0表示不限制（默认：0）')
+                             help='绝对内存限制（MB）：子进程每处理完一段（batch_size 张）检查自己的内存，超过后已完成的页照常保存，换新的子进程继续剩下的页；0表示不限制（默认：0，仅 --subprocess）')
     local_parser.add_argument('--memory-percent', type=int, default=0,
-                             help='内存百分比限制，超过系统总内存的这个百分比时重启，0表示不限制（默认：0）')
+                             help='内存百分比限制：系统已用内存超过这个百分比时，子进程在页与页之间结束并换新的子进程继续；0表示不限制（默认：0，仅 --subprocess）')
     local_parser.add_argument('--batch-per-restart', type=int, default=0,
                              help='每处理N张图片后重启子进程释放内存，0表示不限制（默认：0）')
     

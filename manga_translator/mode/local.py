@@ -547,7 +547,8 @@ async def run_local_mode(args):
                 overwrite=overwrite,
                 memory_limit_mb=getattr(args, 'memory_limit', DEFAULT_MEMORY_THRESHOLD_MB),
                 memory_limit_percent=getattr(args, 'memory_percent', 80),
-                batch_per_restart=getattr(args, 'batch_per_restart', DEFAULT_BATCH_SIZE_PER_RESTART)
+                batch_per_restart=getattr(args, 'batch_per_restart', DEFAULT_BATCH_SIZE_PER_RESTART),
+                input_folders=folders,  # 保留章节结构：不同章节的同名页不会写到同一路径
             )
             
             print(f"\n{'='*60}")
