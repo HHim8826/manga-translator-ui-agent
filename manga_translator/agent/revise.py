@@ -44,7 +44,7 @@ import cv2
 import numpy as np
 
 from .page import PageDoc, Region, custom_frame
-from .review import match_region, region_bbox
+from .review import flag_agent, match_region, region_bbox
 from .store import AgentStore, _read_json
 
 logger = logging.getLogger("manga_translator.agent")
@@ -237,7 +237,8 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
         entry_rid[entry.get("id")] = rid
     _order_like(doc, side.get("order") or [e.get("id") for e in entries], entry_rid)
 
-    doc.flags = [f for f in side.get("review_flags") or [] if isinstance(f, dict) and f.get("agent") == "inpaint"]
+    # the inpaint review is not run again: its flags stay until the user deals with them, old ones too
+    doc.flags = [f for f in side.get("review_flags") or [] if isinstance(f, dict) and flag_agent(f, side) == "inpaint"]
     doc.sidecar_extra = {k: side[k] for k in KEPT_SIDECAR if k in side}
     return doc
 

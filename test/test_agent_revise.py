@@ -636,6 +636,37 @@ def test_no_mask_to_compare_with_changed_boxes_is_not_unchanged(tmp_path):
     assert image_path not in backend.saved
 
 
+def test_the_inpaint_reviews_old_flags_stay_after_a_check(tmp_path):
+    """Review item 13: a flag from before flags named their agent (``type=inpaint``, no ``agent``) is
+    the inpaint review's, which a check does not run again: it stays with its page, reason and area,
+    and an undo by the translator leaves it (it numbers an area, not a region). The translator's old
+    flag goes: the check translates the page again."""
+    from manga_translator.agent import review
+
+    folder, (path,) = _first_run(tmp_path)
+    store = _store(folder)
+    side = store.load_sidecar("001")
+    old = {"region": 7, "type": "inpaint", "reason": "修圖後仍偵測到殘留文字"}
+    new = {"region": 8, "type": "inpaint", "reason": "邊緣有痕跡", "agent": "inpaint"}
+    side["review_flags"] = [old, new, {"region": 1, "type": "uncertain_ocr", "reason": "手寫"}]
+    side["inpaint"] = {"units": {str(u): {"box": [10 * u, 10, 10 * u + 40, 90], "chosen": 1, "flagged": True,
+                                          "attempts": [{"method": "lama", "verdict": ["residual_text"],
+                                                        "file": f"r{u}_a1.png", "mask": f"r{u}_a1_mask.png"}]}
+                                 for u in (7, 8)}}
+    store.save_sidecar("001", side)
+    assert [f.agent for f in review.load(path).flags] == ["inpaint", "inpaint", "translator"]
+
+    _check(tmp_path, path, [_calls(_say(1, "新譯1")), _calls(("undo", {})),
+                            _calls(("mark_page_done", {"confidence": 0.9}))])
+    after = store.load_sidecar("001")
+    assert after["review_flags"] == [old, new]
+    assert sorted(after["inpaint"]["units"]) == ["7", "8"]
+    flags = review.load(path).flags
+    assert [(f.agent, f.number, f.reason) for f in flags] == [("inpaint", 7, old["reason"]),
+                                                               ("inpaint", 8, new["reason"])]
+    assert flags[0].bbox == [70, 10, 110, 90]  # still on its area
+
+
 # --- the box set in the editor ---------------------------------------------------------
 def test_text_goes_in_the_box_set_in_the_editor():
     """ch34 p6: a label the user moved and spaced in the editor was typeset around the detected lines."""

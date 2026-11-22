@@ -110,7 +110,10 @@ def _font_flag_numbers(side: dict) -> set:
     return numbers | {u.get("region") for u in fonts.get("unfixed") or []}
 
 
-def _agent_of(flag: dict, side: dict) -> str:
+def flag_agent(flag: dict, side: dict) -> str:
+    """The agent a sidecar flag came from, flags from before they named it included (an old
+    ``type=inpaint`` flag is the inpaint review's; an old ``layout`` flag on a font-check region the font
+    check's). The review lists and a check that keeps the inpaint review's flags both go by it."""
     if flag.get("agent"):
         return str(flag["agent"])
     if flag.get("type") == "inpaint":  # before flags named their agent
@@ -141,7 +144,7 @@ def load(image_path: str) -> Optional[PageReview]:
     for raw in side.get("review_flags") or []:
         if not isinstance(raw, dict):
             continue
-        agent = _agent_of(raw, side)
+        agent = flag_agent(raw, side)
         number = raw.get("region")
         number = int(number) if isinstance(number, (int, float)) or str(number).isdigit() else None
         flag = Flag(type=str(raw.get("type") or ""), reason=str(raw.get("reason") or ""), agent=agent, number=number)

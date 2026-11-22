@@ -357,7 +357,8 @@ class PageDoc:
     # --- history ------------------------------------------------------------
     def _checkpoint(self, label: str) -> None:
         # Flags are notes for the human, not edits: undo leaves them (one on a region that undo
-        # removes goes with it).
+        # removes goes with it). Only the translator's flags number regions; the inpaint review's,
+        # which a check keeps, number its areas and stay.
         self._history.append((label, copy.deepcopy(self.regions), list(self.order)))
 
     def clear_history(self) -> None:
@@ -367,7 +368,8 @@ class PageDoc:
         if not self._history:
             raise RegionError("nothing to undo on this page")
         label, self.regions, self.order = self._history.pop()
-        self.flags = [f for f in self.flags if f.get("region") is None or f.get("region") in self.regions]
+        self.flags = [f for f in self.flags if f.get("agent") != "translator" or f.get("region") is None
+                      or f.get("region") in self.regions]
         return label
 
     # --- edits --------------------------------------------------------------
