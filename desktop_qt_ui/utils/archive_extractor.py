@@ -2,12 +2,15 @@
 压缩包/文档格式图片提取工具
 支持 PDF、EPUB、CBZ 格式
 """
+import hashlib
 import json
+import logging
 import os
 import posixpath
 import re
 import shutil
 import tempfile
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
@@ -22,6 +25,11 @@ ARCHIVE_EXTENSIONS = {'.pdf', '.epub', '.cbz', '.cbr', '.zip'}
 IMAGE_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS
 
 ORIGINAL_IMAGE_DIRNAME = 'original_images'
+WORK_DIRNAME = 'manga_translator_work'  # path_manager.WORK_DIR_NAME: the pages' work files, beside them
+REPLACED_DIRNAME = 'replaced'
+"""Under the work folder: pages an archive's new version no longer has, with their work files."""
+
+logger = logging.getLogger(__name__)
 ARCHIVE_SOURCE_MARKER_FILENAME = '.archive_source.txt'
 EXTRACT_META_FILENAME = '.extract_meta.json'
 
@@ -423,7 +431,7 @@ def extract_images_from_archive(archive_path: str, output_dir: Optional[str] = N
     """
     if output_dir is None:
         output_dir = get_temp_extract_dir(archive_path)
-    
+
     expected_meta = _build_extract_meta(archive_path)
 
     # 如果目录已存在且缓存元数据一致，直接返回缓存结果
@@ -436,26 +444,192 @@ def extract_images_from_archive(archive_path: str, output_dir: Optional[str] = N
         cached_meta = _read_extract_meta(output_dir)
         if existing_images and cached_meta == expected_meta:
             return sorted(existing_images), output_dir
-        # 目录存在但缓存不可用（来源/版本不匹配或残留脏数据），清空后重解压
+        if os.path.isdir(os.path.join(output_dir, WORK_DIRNAME)):
+            # 工作目录（校稿 JSON、手修图、Agent 备份）在里面：先解压到旁边，再按内容核对每一页
+            images = _update_extract_output_dir(archive_path, output_dir)
+            _write_extract_meta(output_dir, archive_path)
+            return images, output_dir
+        # 目录存在但缓存不可用（来源/版本不匹配或残留脏数据），没有工作文件，清空后重解压
         _clear_extract_output_dir(output_dir)
     else:
         os.makedirs(output_dir, exist_ok=True)
-    
-    ext = os.path.splitext(archive_path)[1].lower()
-    
-    if ext == '.pdf':
-        images = extract_images_from_pdf(archive_path, output_dir)
-    elif ext == '.epub':
-        images = extract_images_from_epub(archive_path, output_dir)
-    elif ext in {'.cbz', '.zip'}:
-        images = extract_images_from_cbz(archive_path, output_dir)
-    elif ext == '.cbr':
-        images = extract_images_from_cbr(archive_path, output_dir)
-    else:
-        raise ValueError(f"不支持的文件格式: {ext}")
 
+    images = _extract_to(archive_path, output_dir)
     _write_extract_meta(output_dir, archive_path)
     return images, output_dir
+
+
+def _extract_to(archive_path: str, output_dir: str) -> List[str]:
+    ext = os.path.splitext(archive_path)[1].lower()
+    if ext == '.pdf':
+        return extract_images_from_pdf(archive_path, output_dir)
+    if ext == '.epub':
+        return extract_images_from_epub(archive_path, output_dir)
+    if ext in {'.cbz', '.zip'}:
+        return extract_images_from_cbz(archive_path, output_dir)
+    if ext == '.cbr':
+        return extract_images_from_cbr(archive_path, output_dir)
+    raise ValueError(f"不支持的文件格式: {ext}")
+
+
+def _digest(path: str) -> str:
+    digest = hashlib.sha1()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _page_work_files(work_dir: str, image_name: str) -> List[str]:
+    """The work files of one page (paths relative to ``work_dir``), by the names ``path_manager``
+    gives them."""
+    stem, ext = os.path.splitext(image_name)
+    found = []
+    for sub, name in (('json', f'{stem}_translations.json'), ('inpainted', f'{stem}_inpainted{ext}'),
+                      ('paint_overlay', f'{stem}_overlay.png'), ('editor_base', image_name),
+                      ('yolo_labels', f'{stem}.txt'), (os.path.join('agent', 'pages'), f'{stem}.agent.json')):
+        if os.path.isfile(os.path.join(work_dir, sub, name)):
+            found.append(os.path.join(sub, name))
+    for sub, suffix in (('originals', '_original.'), ('translations', '_translated.')):
+        folder = os.path.join(work_dir, sub)
+        if os.path.isdir(folder):
+            found += [os.path.join(sub, name) for name in sorted(os.listdir(folder))
+                      if name.startswith(stem + suffix) and os.path.isfile(os.path.join(folder, name))]
+    return found
+
+
+def _renamed(rel: str, old_name: str, new_name: str) -> str:
+    """A work file of ``old_name`` as the one of ``new_name``."""
+    folder, name = os.path.split(rel)
+    old_stem, new_stem = os.path.splitext(old_name)[0], os.path.splitext(new_name)[0]
+    if name == old_name:
+        name = new_name
+    elif name.startswith(old_stem):
+        name = new_stem + name[len(old_stem):]
+        if name.endswith('_inpainted' + os.path.splitext(old_name)[1]):  # it keeps the image's extension
+            name = name[:-len(os.path.splitext(old_name)[1])] + os.path.splitext(new_name)[1]
+    return os.path.join(folder, name)
+
+
+def _move(source: str, target: str) -> None:
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.move(source, target)
+
+
+def _remove_empty_dirs(folder: str) -> None:
+    for root, dirs, files in os.walk(folder, topdown=False):
+        if not dirs and not files:
+            try:
+                os.rmdir(root)
+            except OSError:
+                pass
+
+
+def _remap_agent_records(work_dir: str, renamed: dict, gone: set) -> None:
+    """The AI Agent's records that are kept by page name follow the pages (``renamed``: old stem ->
+    new stem); the records of pages that are gone are dropped (their sidecars went aside with them)."""
+    if not renamed and not gone:
+        return
+    agent_dir = os.path.join(work_dir, 'agent')
+
+    def remap(data: dict) -> dict:
+        result = {key: value for key, value in data.items() if key not in gone and key not in renamed}
+        result.update({renamed[key]: value for key, value in data.items() if key in renamed})
+        return result
+
+    for name, nested in (('saved_json.json', False), ('saved_json.stat.json', False),
+                         ('saved_inpainted.json', False), ('pending_steps.json', True)):
+        path = os.path.join(agent_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                continue
+            if nested:
+                data = {step: remap(pages) if isinstance(pages, dict) else pages for step, pages in data.items()}
+            else:
+                data = remap(data)
+            temp = path + '.tmp'
+            with open(temp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp, path)
+        except Exception:
+            logger.warning(f"could not update {path} for the archive's new pages", exc_info=True)
+
+
+def _update_extract_output_dir(archive_path: str, output_dir: str) -> List[str]:
+    """Bring an extraction folder that has work files (校稿 JSON, the user's repairs, the AI Agent's
+    backups) up to the archive's new version, without deleting anything; returns its pages.
+
+    The new version is extracted beside the folder first, and each page is matched by its content:
+    an unchanged page stays as it is; a page that only got another name (a page added in front
+    shifts every ``0000_`` prefix) takes its work files and the AI Agent's records along; a page
+    that is gone, or whose name now has other content, is moved with its work files to
+    ``manga_translator_work/replaced/<time>/``."""
+    staging = tempfile.mkdtemp(prefix='.extract-', dir=os.path.dirname(os.path.abspath(output_dir)))
+    try:
+        extracted = _extract_to(archive_path, staging)
+        new = {os.path.relpath(p, staging): p for p in extracted}
+        old = {name: os.path.join(output_dir, name) for name in os.listdir(output_dir)
+               if os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
+               and os.path.isfile(os.path.join(output_dir, name))}
+        new_hash = {name: _digest(path) for name, path in new.items()}
+        old_hash = {name: _digest(path) for name, path in old.items()}
+        unchanged = {name for name in new if name in old and new_hash[name] == old_hash[name]}
+        by_hash: dict = {}
+        for name in sorted(old):
+            if name not in unchanged:
+                by_hash.setdefault(old_hash[name], []).append(name)
+        moves = {}  # old name -> new name: the same page under another name
+        for name in sorted(new):
+            if name not in unchanged and by_hash.get(new_hash[name]):
+                moves[by_hash[new_hash[name]].pop(0)] = name
+        gone = [name for name in sorted(old) if name not in unchanged and name not in moves]
+
+        work_dir = os.path.join(output_dir, WORK_DIRNAME)
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        aside = os.path.join(work_dir, REPLACED_DIRNAME, stamp)
+        number = 1
+        while os.path.exists(aside):
+            number += 1
+            aside = os.path.join(work_dir, REPLACED_DIRNAME, f'{stamp}~{number}')
+        # 1. pages that are gone, or whose name now has other content: aside, with their work files
+        for name in gone:
+            for rel in _page_work_files(work_dir, name):
+                _move(os.path.join(work_dir, rel), os.path.join(aside, rel))
+            _move(old[name], os.path.join(aside, ORIGINAL_IMAGE_DIRNAME, name))
+        # 2. the same page under another name: its work files go along (through a holding folder, as
+        #    the names can chain: 0000_a -> 0001_a, 0001_b -> 0002_b)
+        hold = aside + '.moving'
+        held = {}
+        for old_name in moves:
+            held[old_name] = _page_work_files(work_dir, old_name)
+            for rel in held[old_name]:
+                _move(os.path.join(work_dir, rel), os.path.join(hold, old_name, rel))
+        for old_name, new_name in moves.items():
+            for rel in held[old_name]:
+                _move(os.path.join(hold, old_name, rel), os.path.join(work_dir, _renamed(rel, old_name, new_name)))
+            if old_name not in new:  # its bytes are the new name's now
+                os.remove(old[old_name])
+        if os.path.isdir(hold):
+            _remove_empty_dirs(hold)
+        # 3. the new version's images that are not there yet
+        for name, path in new.items():
+            if name not in unchanged:
+                _move(path, os.path.join(output_dir, name))
+        _remap_agent_records(work_dir, {os.path.splitext(o)[0]: os.path.splitext(n)[0] for o, n in moves.items()},
+                             {os.path.splitext(n)[0] for n in gone})
+        if moves or gone:
+            logger.warning(
+                f"{os.path.basename(archive_path)} changed: {len(unchanged)} page(s) unchanged, {len(moves)} "
+                f"renamed with their work files, {len(new) - len(unchanged) - len(moves)} new"
+                + (f"; {len(gone)} page(s) no longer in it, or replaced, were moved with their work files to "
+                   f"{aside}" if gone else ""))
+        return sorted(os.path.join(output_dir, name) for name in new)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def cleanup_temp_archives():
