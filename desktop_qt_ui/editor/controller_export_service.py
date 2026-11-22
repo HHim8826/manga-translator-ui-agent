@@ -20,6 +20,9 @@ from .region_geometry_state import RegionGeometryState, normalize_region_geometr
 if TYPE_CHECKING:
     from .editor_controller import EditorController
 
+_UNKNOWN = object()
+"""The JSON stamp of a page read without stamps: nothing to compare with."""
+
 
 def _close_images(*images: object) -> None:
     closed: set[int] = set()
@@ -156,6 +159,14 @@ class EditorControllerExportService:
         self._accepting = True
         self._unfinished = 0
         self._pending_auto: dict[str, concurrent.futures.Future] = {}
+        # the open page: its key, the stamp of its JSON when read or last saved here, and the
+        # history revision its output image was last rendered from (None: not since a failure)
+        self._document_key: Optional[str] = None
+        self._json_stamp = _UNKNOWN
+        self._exported_revision: Optional[int] = None
+        # the open page was saved while its repair was still running (its key): the finished
+        # repair is written when it arrives
+        self._inpaint_save_pending: Optional[str] = None
         from services.export_service import ExportService
 
         self._export_service = ExportService()
@@ -176,6 +187,105 @@ class EditorControllerExportService:
         """脏检测唯一真相源：仅成功保存工程数据后标记 clean。"""
         return not self.controller.history_service.is_clean()
 
+    @staticmethod
+    def _key(path) -> Optional[str]:
+        return os.path.normcase(os.path.abspath(path)) if path else None
+
+    def _revision(self) -> int:
+        current = getattr(self.controller.history_service, "current_revision", None)
+        return int(current()) if callable(current) else 0
+
+    def _is_open_document(self, source_path) -> bool:
+        key = self._key(source_path)
+        return bool(key) and key == self._document_key and key == self._key(
+            self.model.get_source_image_path()
+        )
+
+    def begin_document(self, snapshot) -> None:
+        """A page was loaded: its output image counts as up to date, and the stamp of its JSON is
+        kept, to notice a write by another program before the editor saves over it."""
+        self._document_key = self._key(getattr(snapshot, "source_path", None))
+        stamps = dict(getattr(snapshot, "files_signature", ()) or ())
+        self._json_stamp = stamps["json"] if "json" in stamps else _UNKNOWN
+        self._exported_revision = self._revision()
+
+    def end_document(self) -> None:
+        self._document_key = None
+        self._json_stamp = _UNKNOWN
+        self._exported_revision = None
+        self._inpaint_save_pending = None
+
+    def inpaint_installed(self) -> None:
+        """A repair finished for the open page after it was saved with the unfinished one: the
+        saved inpainted image is older than the saved mask, so the finished one is written now.
+        While the page has unsaved edits the next save writes it."""
+        source_path = self.model.get_source_image_path()
+        if not source_path or self._inpaint_save_pending != self._key(source_path):
+            return
+        if self.has_unsaved_changes():
+            return
+        artifact = self.model.get_ready_inpaint_artifact()
+        if artifact is None:
+            return
+        try:
+            config = self._build_config_dict(self.config_service.get_config())
+            self._export_service.save_inpainted_image(
+                os.path.abspath(source_path), artifact.image, config
+            )
+            self._inpaint_save_pending = None
+        except Exception as e:
+            self.logger.warning(f"Writing the finished repair of {source_path} failed: {e}")
+
+    def needs_export(self) -> bool:
+        """The open page changed since its output image was last rendered (saved with Ctrl+S but
+        not exported, or its last export failed)."""
+        if self._document_key is None:
+            return False
+        if self._key(self.model.get_source_image_path()) != self._document_key:
+            return False
+        return self._exported_revision != self._revision()
+
+    def export_failed(self, source_path) -> None:
+        """An export of the open page failed: it is exported again when the page is left."""
+        if self._is_open_document(source_path):
+            self._exported_revision = None
+
+    def json_changed_elsewhere(self, source_path) -> bool:
+        """The page's JSON was written, created or removed by another program (an AI Agent run, the
+        batch management) since the editor read or saved it."""
+        if self._json_stamp is _UNKNOWN or not self._is_open_document(source_path):
+            return False
+        from .document_files import json_stamp
+
+        return json_stamp(source_path) != self._json_stamp
+
+    def _ask_changed_on_disk_action(self, source_path: str) -> str:
+        """覆盖保存 / 重新载入 / 取消 -> overwrite / reload / cancel."""
+        from PyQt6.QtWidgets import QApplication
+        from qfluentwidgets import Dialog, PushButton
+
+        view = getattr(self.controller, "view", None)
+        dialog = Dialog(
+            "工程文件已被改动",
+            f"{os.path.basename(source_path)} 的工程文件在编辑器打开后被其他程序改过"
+            "（例如 AI Agent 或批量管理）。\n\n"
+            "覆盖保存：用编辑器里的内容保存，盖掉那些改动。\n"
+            "重新载入：放弃编辑器里还没保存的修改，载入新的内容。",
+            view if view is not None else QApplication.activeWindow(),
+        )
+        dialog.setTitleBarVisible(True)
+        dialog.yesButton.setText("覆盖保存")
+        dialog.cancelButton.setText("取消")
+        reload_button = PushButton("重新载入", dialog.buttonGroup)
+        dialog.buttonLayout.insertWidget(1, reload_button, 1)
+        chosen = {"value": "overwrite"}
+        reload_button.clicked.connect(lambda: chosen.update(value="reload"))
+        reload_button.clicked.connect(dialog.accept)
+        dialog.setFixedSize(max(dialog.width(), 520), max(dialog.height(), 240))
+        if dialog.exec() != Dialog.DialogCode.Accepted:
+            return "cancel"
+        return chosen["value"]
+
     def save_editor_state(self) -> bool:
         """同步保存 JSON 与当前内存快照中的修复图，不等待后台修复。"""
         self.controller.commit_pending_edits()
@@ -183,6 +293,14 @@ class EditorControllerExportService:
         if not source_path:
             self._reject_export("保存失败：当前图片没有来源路径")
             return False
+        if self.json_changed_elsewhere(source_path):
+            action = self._ask_changed_on_disk_action(source_path)
+            if action == "reload":
+                self.controller.document_service.do_load_image(source_path)
+                return False
+            if action != "overwrite":
+                self._reject_export("没有保存：这一页的工程文件被其他程序改过")
+                return False
 
         try:
             image = self.model.get_image()
@@ -218,6 +336,15 @@ class EditorControllerExportService:
             else:
                 self._export_service.delete_inpainted_image(source_path)
             self.controller.history_service.mark_clean()
+            unfinished = False
+            if inpainted_image is not None:
+                export_base = self.model.get_export_base()
+                unfinished = getattr(export_base, "kind", None) == "backend_inpaint"
+            self._inpaint_save_pending = self._key(source_path) if unfinished else None
+            if self._is_open_document(source_path):
+                from .document_files import json_stamp
+
+                self._json_stamp = json_stamp(source_path)
             toast_manager = self.controller.get_toast_manager()
             if toast_manager is not None:
                 toast_manager.show_success("保存成功", 2500)
@@ -259,6 +386,8 @@ class EditorControllerExportService:
             if future is None:
                 job.release_resources()
                 return self._reject_export("导出队列已经关闭")
+            if self._is_open_document(source_path):
+                self._exported_revision = self._revision()
             return future
         except Exception as e:
             self.logger.error(f"Error during export request: {e}", exc_info=True)

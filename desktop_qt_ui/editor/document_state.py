@@ -103,6 +103,9 @@ class DocumentSnapshot:
     paint_overlay_image: Any = None
     stamp_overlay_image: Any = None
     paste_overlays: list[dict] = field(default_factory=list)
+    # the stamps of the page's files when they were read (``document_files``): a prefetched copy
+    # whose files changed since is not used, and the save notices a JSON written by another program
+    files_signature: tuple = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -281,8 +281,26 @@ class EditorLogic(QObject):
         self._add_sources(paths, load_first=not self.file_model.files)
 
     @pyqtSlot(str)
+    def removal_takes_current(self, file_path: str) -> bool:
+        """Removing ``file_path`` (a page or a folder) takes the page open in the editor."""
+        current = self.controller.model.get_source_image_path()
+        if not current or not file_path:
+            return False
+        current_key = canonical_path_key(current)
+        source = self._source_by_key.get(canonical_path_key(file_path), file_path)
+        if current_key in (canonical_path_key(file_path), canonical_path_key(source)):
+            return True
+        return os.path.isdir(file_path) and self._path_is_within(current, file_path)
+
+    def settle_before_removal(self, file_path: str) -> bool:
+        """Before the open page leaves the list: export/save it or ask (False: keep it)."""
+        if not self.removal_takes_current(file_path):
+            return True
+        return self.controller.document_service.settle_current_document("remove")
+
     def remove_file(self, file_path: str):
-        """从内存模型移除；后续后台重建通过 exclusion 保持删除结果。"""
+        """从内存模型移除；后续后台重建通过 exclusion 保持删除结果。
+        调用方先用 settle_before_removal 处理当前图未保存的编辑。"""
         target_key = canonical_path_key(file_path)
         target_node = None
         stack = list(self._snapshot.roots)
@@ -366,7 +384,9 @@ class EditorLogic(QObject):
 
     @pyqtSlot()
     def clear_list(self):
-        """清空文件列表"""
+        """清空文件列表（先处理当前图未保存的编辑；选取消时不清空）"""
+        if not self.controller.document_service.settle_current_document("remove"):
+            return
         self.file_data_service.cancel(self._file_channel)
         self._source_paths.clear()
         self._source_keys.clear()

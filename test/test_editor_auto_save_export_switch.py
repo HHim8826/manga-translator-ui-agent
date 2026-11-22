@@ -79,7 +79,7 @@ def test_image_switch_uses_distinct_auto_save_and_auto_export_modes(
     monkeypatch.setattr(
         service,
         "_ask_unsaved_action",
-        lambda: prompts.append(True) or "discard",
+        lambda purpose="switch": prompts.append(purpose) or "discard",
     )
 
     service.load_image_and_regions("next.png")

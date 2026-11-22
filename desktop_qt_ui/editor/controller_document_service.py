@@ -105,6 +105,9 @@ class EditorControllerDocumentService:
 
         self.history_service.clear()
         self.history_service.mark_clean()
+        end_document = getattr(self.controller.export_service, "end_document", None)
+        if callable(end_document):
+            end_document()
         self.controller._update_undo_redo_buttons()
 
         self.controller._log_memory_snapshot("after-clear-editor-state")
@@ -149,7 +152,17 @@ class EditorControllerDocumentService:
     ) -> Optional[DocumentSnapshot]:
         key = self._prefetch_key(image_path)
         with self._prefetch_lock:
-            return self._prefetched_documents.pop(key, None)
+            snapshot = self._prefetched_documents.pop(key, None)
+        if snapshot is not None and snapshot.files_signature:
+            from .document_files import document_files
+
+            if document_files(snapshot.source_path) != snapshot.files_signature:
+                # an AI Agent run, the batch management or another program wrote the page since
+                self.logger.info(
+                    f"Prefetched {os.path.basename(image_path)} is older than its files; reading it again"
+                )
+                return None
+        return snapshot
 
     def _clear_prefetched_documents(self) -> None:
         with self._prefetch_lock:
@@ -262,28 +275,53 @@ class EditorControllerDocumentService:
         if self._is_shutdown:
             return
         self._pending_prefetch_paths = list(prefetch_paths or [])
-        self.controller.commit_pending_edits()
-        if self.controller.export_service.has_unsaved_changes():
-            auto_export = self._auto_export_on_switch_enabled()
-            auto_save = self._auto_save_on_switch_enabled()
-            if auto_export and self.controller.export_image(automatic=True) is None:
-                self.logger.warning("Auto-export rejected; image switch aborted")
-                return
-            if auto_save and not self.controller.save_editor_state():
-                self.logger.warning("Auto-save rejected; image switch aborted")
-                return
-            if (
-                not auto_export
-                and not auto_save
-                and not self._suppress_unsaved_warning_enabled()
-            ):
-                action = self._ask_unsaved_action()
-                if action == "cancel":
-                    return
-                if action == "save" and not self.controller.save_editor_state():
-                    self.logger.warning("Save request failed; image switch aborted")
-                    return
+        if not self.settle_current_document("switch"):
+            return
         self.do_load_image(image_path)
+
+    def settle_current_document(self, purpose: str = "switch") -> bool:
+        """Before the open page is left: export it when its output image is older than the page
+        (切图时自动导出), save it when it has unsaved edits (切图时自动保存), or ask.
+
+        ``purpose``: "switch" (another image), "close" (the window closes), "remove" (the page
+        leaves the editor's list): False means stop there. "leave" (another page of the app; the
+        page stays open in the editor) never asks and never stops: the window close asks later.
+        Not only the switch: the last page of a chapter has no next image to switch to."""
+        if self._is_shutdown:
+            return True
+        self.controller.commit_pending_edits()
+        export_service = self.controller.export_service
+        dirty = export_service.has_unsaved_changes()
+        needs_export = getattr(export_service, "needs_export", None)
+        if not dirty and not (callable(needs_export) and needs_export()):
+            return True
+        blocking = purpose != "leave"
+        auto_export = self._auto_export_on_switch_enabled()
+        auto_save = self._auto_save_on_switch_enabled()
+        if auto_export and self.controller.export_image(automatic=True) is None:
+            self.logger.warning(f"Auto-export rejected ({purpose})")
+            if purpose == "switch":  # closing or removing still saves; the toast says why
+                return False
+        if not dirty:
+            return True
+        if auto_save:
+            if self.controller.save_editor_state():
+                return True
+            self.logger.warning(f"Auto-save rejected ({purpose})")
+            if purpose == "switch" or not blocking:
+                return purpose != "switch"
+            if not export_service.has_unsaved_changes():  # reloaded the newer files: stay there
+                return False
+            # closing or removing after a failed save: ask, so "不保存" still lets it go
+        elif auto_export or not blocking or self._suppress_unsaved_warning_enabled():
+            return True
+        action = self._ask_unsaved_action(purpose)
+        if action == "cancel":
+            return False
+        if action == "save" and not self.controller.save_editor_state():
+            self.logger.warning(f"Save request failed ({purpose})")
+            return False
+        return True
 
     def _auto_export_on_switch_enabled(self) -> bool:
         try:
@@ -320,14 +358,18 @@ class EditorControllerDocumentService:
         except Exception:
             return False
 
-    def _ask_unsaved_action(self) -> str:
+    def _ask_unsaved_action(self, purpose: str = "switch") -> str:
         """弹未保存编辑对话框，返回 save/discard/cancel。"""
         dialog_parent = (
             self.view if self.view is not None else QApplication.activeWindow()
         )
+        then = {
+            "close": "关闭前要保存工程数据吗？",
+            "remove": "移除前要保存工程数据吗？",
+        }.get(purpose, "保存工程数据后再切换图片。")
         dialog = Dialog(
             "未保存的编辑",
-            "当前图片有未保存的编辑\n\n保存工程数据后再切换图片。",
+            f"当前图片有未保存的编辑\n\n{then}",
             dialog_parent,
         )
         dialog.setTitleBarVisible(True)
@@ -439,6 +481,9 @@ class EditorControllerDocumentService:
                 render_parameter_service.import_parameters_from_json(index, region_data)
 
         self.model.apply_document_snapshot(snapshot)
+        begin_document = getattr(self.controller.export_service, "begin_document", None)
+        if callable(begin_document):
+            begin_document(snapshot)
         self.controller.inpaint_service.ensure_current_mask_inpaint()
 
         self.resource_manager.release_image_cache_except_current()

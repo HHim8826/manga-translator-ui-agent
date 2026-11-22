@@ -523,6 +523,7 @@ class EditorController(QObject):
                 self._log_memory_snapshot("after-export-cleanup")
             return
 
+        self.export_service.export_failed(outcome.source_path)  # exported again when left
         if toast_manager is not None:
             toast_manager.show_error(
                 f"{file_name} 导出失败：{outcome.error or '未知错误'}",
@@ -533,6 +534,8 @@ class EditorController(QObject):
     @pyqtSlot(object)
     def _apply_inpaint_result(self, result) -> None:
         self.inpaint_service.apply_inpaint_result(result)
+        # saved before this repair finished: the saved inpainted image is written again
+        self.export_service.inpaint_installed()
 
     @pyqtSlot(dict)
     def update_multiple_translations(self, translations: dict):
@@ -1900,7 +1903,16 @@ class EditorController(QObject):
         automatic: bool = False,
     ):
         self.commit_pending_edits()
-        return self.export_service.export_image(automatic=automatic)
+        future = self.export_service.export_image(automatic=automatic)
+        if (
+            not automatic
+            and future is not None
+            and self.export_service.has_unsaved_changes()
+            and self.document_service._auto_save_on_switch_enabled()
+        ):
+            # 导出的图和工程数据保持一致：开着自动保存时，手动导出也保存工程
+            self.save_editor_state()
+        return future
 
     @pyqtSlot(str)
     def set_display_mode(self, mode: str):

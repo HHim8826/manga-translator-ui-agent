@@ -216,8 +216,26 @@ class MainWindow(FluentWindow):
             self.switchTo(page)
             self._on_main_page_activated(page_key)
 
+    def _settle_editor(self, purpose: str) -> bool:
+        """Export/save the page open in the editor before it is left, or ask (False: stay)."""
+        controller = getattr(self, "editor_controller", None)
+        if controller is None:
+            return True
+        try:
+            return controller.document_service.settle_current_document(purpose)
+        except Exception as e:
+            self.logger.error(f"Saving the editor page failed: {e}", exc_info=True)
+            return purpose == "leave"
+
     def _on_fluent_page_changed(self, index: int):
         widget = self.stacked_widget.widget(index)
+        previous = getattr(self, "_shown_page_widget", None)
+        self._shown_page_widget = widget
+        editor = getattr(self, "editor_view", None)
+        if editor is not None and previous is editor and widget is not editor:
+            # the editor is left (the translation page, the AI Agent page...): a run started there
+            # reads the page's JSON, so the open page is exported/saved as on an image switch
+            self._settle_editor("leave")
         page_key = getattr(self, "_main_pages_by_widget", {}).get(widget)
         if page_key:
             self._on_main_page_activated(page_key)
@@ -573,7 +591,8 @@ class MainWindow(FluentWindow):
 
                 # 如果移除的是当前图片
                 if norm_current == norm_removed:
-                    self.editor_controller.document_service.clear_editor_state()
+                    if self._settle_editor("remove"):
+                        self.editor_controller.document_service.clear_editor_state()
                 # 如果移除的是文件夹，检查当前图片是否在该文件夹内
                 elif os.path.isdir(file_path):
                     try:
@@ -581,7 +600,7 @@ class MainWindow(FluentWindow):
                         if (
                             os.path.commonpath([norm_current, norm_removed])
                             == norm_removed
-                        ):
+                        ) and self._settle_editor("remove"):
                             self.editor_controller.document_service.clear_editor_state()
                     except ValueError:
                         # 不同驱动器，跳过
@@ -904,6 +923,18 @@ class MainWindow(FluentWindow):
 
     def closeEvent(self, event):
         """处理窗口关闭事件"""
+        started_here = False
+        if self.editor_controller is not None:
+            # 编辑器里还开着的图（例如章节的最后一页没有下一张可切）：照切图的设置导出/保存，
+            # 或询问；选取消、保存失败时不关闭
+            before = self.editor_controller.export_service.unfinished_count()
+            if not self._settle_editor("close"):
+                event.ignore()
+                return
+            started_here = (
+                before == 0
+                and self.editor_controller.export_service.unfinished_count() > 0
+            )
         if hasattr(self, "main_view") and hasattr(self.main_view, "update_checker"):
             self.main_view.update_checker.stop()
         unfinished_exports = 0
@@ -911,7 +942,9 @@ class MainWindow(FluentWindow):
             unfinished_exports = (
                 self.editor_controller.export_service.unfinished_count()
             )
-        if unfinished_exports:
+        if started_here:  # only the export the close itself started: wait for it, no question
+            self.editor_controller.shutdown()
+        elif unfinished_exports:
             from PyQt6.QtWidgets import QMessageBox
 
             reply = show_error_dialog(

@@ -1270,6 +1270,8 @@ class EditorView(QWidget):
     @pyqtSlot(str)
     def _on_file_remove_requested(self, file_path: str):
         """处理文件移除请求：只处理编辑器自己的文件列表"""
+        if not self.logic.settle_before_removal(file_path):  # 当前图未保存，选了取消
+            return
         # 先在视图中移除（避免重建列表）
         self.file_list.remove_file(file_path)
 

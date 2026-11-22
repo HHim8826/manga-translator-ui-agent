@@ -12,6 +12,7 @@ from manga_translator.utils.path_manager import (
 )
 from PIL import Image
 
+from .document_files import document_files
 from .document_state import DocumentLoadFailure, DocumentSnapshot, LoadedInpaintSidecar
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class DocumentLoadWorker:
         source_path, display_image_path = self.service.resolve_editor_image_paths(
             self.image_path
         )
+        # before the files are read: a write while they are read makes the copy count as old
+        files_signature = document_files(source_path)
 
         load_resource = (
             self.service.resource_manager.prefetch_image
@@ -118,6 +121,7 @@ class DocumentLoadWorker:
             paint_overlay_image=paint_overlay_image,
             stamp_overlay_image=stamp_overlay_image,
             paste_overlays=json_overlays.get("paste_overlays") or [],
+            files_signature=files_signature,
         )
 
     def _submit_aux_loads(
