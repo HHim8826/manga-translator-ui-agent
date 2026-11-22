@@ -297,10 +297,47 @@ def _mask(encoded: Any, shape) -> Optional[np.ndarray]:
     return mask > 0
 
 
-def _page_mask(json_path: str):
+def _page_entry(json_path: str) -> dict:
     raw = _read_json(json_path, {}) if json_path and os.path.exists(json_path) else {}
     entry = raw.get(next(iter(raw)), {}) if isinstance(raw, dict) and raw else {}
-    return entry.get("mask_raw") if isinstance(entry, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def _page_mask(json_path: str):
+    return _page_entry(json_path).get("mask_raw")
+
+
+def _structure(entry: dict) -> list:
+    """The page's text boxes (their lines, rounded): what the mask follows."""
+    out = []
+    for region in entry.get("regions") or []:
+        if isinstance(region, dict):
+            out.append([[round(float(v)) for point in line for v in point] for line in region.get("lines") or []])
+    return sorted(out)
+
+
+def base_image_path(image_path: str, entry: dict) -> str:
+    """The image the page was inpainted from: the editor's base (``editor_base``) when the run
+    colorized or upscaled the page, as the editor decides (``_is_editor_base_stale``), else the
+    original image."""
+    from ..utils.path_manager import find_work_image_path
+
+    colorizer = entry.get("colorizer")
+    processed = bool(entry.get("upscale_ratio")) or (bool(colorizer) and str(colorizer).lower() != "none")
+    work = find_work_image_path(image_path) if processed else None
+    return work if work and os.path.exists(work) else image_path
+
+
+def _read_rgba(path: str):
+    """(RGB array, alpha array or None): the alpha of an image that has one is kept apart, so it is
+    written back as it was."""
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        if handle.mode in ("RGBA", "LA", "PA") or (handle.mode == "P" and "transparency" in handle.info):
+            rgba = np.array(handle.convert("RGBA"))
+            return rgba[:, :, :3].copy(), rgba[:, :, 3].copy()
+        return np.array(handle.convert("RGB")), None
 
 
 INPAINT_GROW = 3
@@ -310,41 +347,103 @@ INPAINT_GROW = 3
 async def inpaint_changes(image_path: str, before_json: str, backend, save: Callable[[str, Any], Any]) -> Dict[str, Any]:
     """Bring the page's inpainted image up to its new mask, and leave the rest of it as it is.
 
-    ``before_json`` is the page's JSON from before the check (the run's backup). Returns
-    ``{"status": "unchanged" | "patched" | "no_inpainted" | "no_mask", "added": px, "restored": px}``;
-    with ``no_inpainted`` the render inpaints the page itself."""
-    from PIL import Image
+    ``before_json`` is a JSON whose mask the inpainted image matches (the run's backup, or an
+    earlier check's when that one stopped before its inpainting: ``pending_before``). Returns
+    ``{"status": "unchanged" | "patched" | "no_inpainted" | "no_mask", "added": px, "restored": px}``.
+    With ``no_inpainted`` the render inpaints the page itself. ``no_mask``: a mask is missing and the
+    text boxes changed, so what to inpaint cannot be told; the image stays and the page is not
+    rendered again (the user decides).
 
+    Where text is kept now, the pixels come from the image the page was inpainted from
+    (``base_image_path``: the colorized or upscaled base when there is one). An image with an alpha
+    channel keeps it: inpainted areas keep their alpha, restored areas get the base's alpha when it
+    has one."""
     from ..utils.path_manager import find_inpainted_path, find_json_path
 
     inpainted_path = find_inpainted_path(image_path)
     if not inpainted_path or not os.path.exists(inpainted_path):
         return {"status": "no_inpainted", "added": 0, "restored": 0}
-    old_encoded, new_encoded = _page_mask(before_json), _page_mask(find_json_path(image_path))
+    before, now = _page_entry(before_json), _page_entry(find_json_path(image_path))
+    old_encoded, new_encoded = before.get("mask_raw"), now.get("mask_raw")
+    if not old_encoded or not new_encoded:  # nothing to compare: only text that stayed in its boxes is safe
+        same = not old_encoded and not new_encoded and _structure(before) == _structure(now)
+        return {"status": "unchanged" if same else "no_mask", "added": 0, "restored": 0}
     if old_encoded == new_encoded:
         return {"status": "unchanged", "added": 0, "restored": 0}
-    with Image.open(inpainted_path) as handle:
-        inpainted = np.array(handle.convert("RGB"))
+    inpainted, alpha = _read_rgba(inpainted_path)
     old, new = _mask(old_encoded, inpainted.shape), _mask(new_encoded, inpainted.shape)
     if old is None or new is None:
         return {"status": "no_mask", "added": 0, "restored": 0}
     added, gone = new & ~old, old & ~new
     result = inpainted
-    if gone.any():  # erased before, kept now: the original pixels
-        with Image.open(image_path) as handle:
-            source = np.array(handle.convert("RGB"))
+    if gone.any():  # erased before, kept now: the pixels of the image it was inpainted from
+        source, source_alpha = _read_rgba(base_image_path(image_path, now))
+        size = (inpainted.shape[1], inpainted.shape[0])
         if source.shape != inpainted.shape:
-            source = cv2.resize(source, (inpainted.shape[1], inpainted.shape[0]), interpolation=cv2.INTER_AREA)
+            source = cv2.resize(source, size, interpolation=cv2.INTER_AREA)
         result = result.copy()
         result[gone] = source[gone]
+        if alpha is not None and source_alpha is not None:
+            if source_alpha.shape != alpha.shape:
+                source_alpha = cv2.resize(source_alpha, size, interpolation=cv2.INTER_AREA)
+            alpha[gone] = source_alpha[gone]
     if added.any():
         grown = cv2.dilate(added.astype(np.uint8), np.ones((2 * INPAINT_GROW + 1,) * 2, np.uint8)) * 255
         method = (backend.methods() or [""])[0]
         if not method:
             raise RuntimeError("no inpainting model is available")
-        result = np.asarray(await backend.inpaint(method, result, grown))
-    save(image_path, result)
+        result = np.asarray(await backend.inpaint(method, result, grown))[:, :, :3]
+    save(image_path, result if alpha is None else np.dstack([result, alpha]))
     return {"status": "patched", "added": int(added.sum()), "restored": int(gone.sum())}
+
+
+# --- an inpainted image not yet brought up to its mask -----------------------------
+def _pending_path(store: AgentStore, stem: str) -> str:
+    return os.path.join(store.pages_dir, f"{stem}.inpaint_pending.json")
+
+
+def _image_print(path: Optional[str]) -> Optional[str]:
+    if not path or not os.path.exists(path):
+        return None
+    from .resume import _fingerprint
+
+    return _fingerprint(path)
+
+
+def pending_before(store: AgentStore, stem: str, image_path: str) -> str:
+    """The JSON whose mask the page's inpainted image still matches, when a check saved the page's
+    new mask but stopped or failed before its inpainting (``mark_pending``); empty when there is
+    none, or when the image changed since (the user repaired it in the editor: it goes with the mask
+    there now)."""
+    from ..utils.path_manager import find_inpainted_path
+
+    data = _read_json(_pending_path(store, stem), None)
+    if not isinstance(data, dict) or not data.get("before"):
+        return ""
+    if data.get("image") != _image_print(find_inpainted_path(image_path)):
+        return ""
+    return str(data["before"])
+
+
+def mark_pending(store: AgentStore, stem: str, image_path: str, before_json: str) -> None:
+    """The check saved the page (maybe with a new mask) and its inpainted image is not brought up to
+    it yet: kept until ``clear_pending``. An earlier one that still holds stays: the image matches
+    that mask, not this run's backup."""
+    from ..utils.path_manager import find_inpainted_path
+    from .store import write_json_atomic
+
+    image = _image_print(find_inpainted_path(image_path))
+    if image is None or not before_json or pending_before(store, stem, image_path):
+        return
+    os.makedirs(store.pages_dir, exist_ok=True)
+    write_json_atomic(_pending_path(store, stem), {"before": before_json, "image": image})
+
+
+def clear_pending(store: AgentStore, stem: str) -> None:
+    try:
+        os.remove(_pending_path(store, stem))
+    except FileNotFoundError:
+        pass
 
 
 def locked_centers(side: Optional[dict], key: str = "locked") -> set:

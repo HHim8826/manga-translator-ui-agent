@@ -89,7 +89,11 @@ PAGE_STATE_KEYS = {
     "stopped": "Agent Page Stopped",
     "not_reached": "Agent Page Not Reached",
     "edited": "Agent Page Edited",
+    "inpaint_failed": "Agent Page Inpaint Failed",
+    "inpaint_unknown": "Agent Page Inpaint Unknown",
 }
+HELD_STATES = ("inpaint_failed", "inpaint_unknown")
+"""Pages a check finished but did not render again: their inpainted image is not up to their mask."""
 WARN = QColor(214, 140, 0)
 ERROR = QColor(210, 50, 50)
 MUTED = QColor(130, 130, 130)
@@ -572,6 +576,22 @@ class AgentsPage(QWidget):
             if not self._translating and not self._rendering:
                 self.preview.follow(page)
             self._show_finished_if_idle()
+        elif kind == "inpaint_changes":  # a check: the inpainted image brought up to the page's new mask
+            status = str(event.get("status") or "")
+            if status == "working":
+                self.status_label.setText(self._t("Agents Inpaint Changes Progress", page=self._label(page)))
+            elif status == "patched":
+                row = self._add_row(event, self._t("Agents Inpaint Changes"),
+                                    self._t("Agents Inpaint Changes Patched", added=event.get("added", 0),
+                                            restored=event.get("restored", 0)), "")
+                self._paint(row, MUTED)
+            elif status in ("error", "no_mask"):
+                failed = status == "error"
+                row = self._add_row(event, self._t("Agents Inpaint Changes"),
+                                    self._t("Agents Inpaint Changes Failed" if failed else "Agents Inpaint Changes Unknown"),
+                                    str(event.get("error") or "") if failed else "", problem=True)
+                self._paint(row, ERROR if failed else WARN)
+                self._set_page(page, state="inpaint_failed" if failed else "inpaint_unknown")
         elif kind == "proofread_start":
             self._proofreading = True
             self.status_label.setText(self._t("Agents Proofread Progress"))
@@ -634,9 +654,16 @@ class AgentsPage(QWidget):
                 for stem, status in skipped.items():
                     self._set_page(self._key(event, stem),
                                    state=status if status in PAGE_STATE_KEYS else "not_reached")
-                reason = self._t("Agents Render Skipped", pages=self._t("Agent Result Separator").join(
-                    f"{stem}（{self._t(PAGE_STATE_KEYS.get(status, 'Agent Page Not Reached'))}）"
-                    for stem, status in skipped.items()))
+                separator = self._t("Agent Result Separator")
+
+                def names(items):
+                    return separator.join(f"{stem}（{self._t(PAGE_STATE_KEYS.get(status, 'Agent Page Not Reached'))}）"
+                                          for stem, status in items)
+
+                held = [(s, v) for s, v in skipped.items() if v in HELD_STATES]
+                other = [(s, v) for s, v in skipped.items() if v not in HELD_STATES]
+                reason = "; ".join(([self._t("Agents Render Skipped", pages=names(other))] if other else []) +
+                                   ([self._t("Agents Render Held", pages=names(held))] if held else []))
             row = self._add_row(event, self._t("Agents Render"), text, reason, problem=bool(skipped))
             if skipped:
                 self._paint(row, WARN)
@@ -928,8 +955,8 @@ class AgentsPage(QWidget):
             return
         item.setText(self._page_text(key))
         state = self._pages.get(key, {}).get("state")
-        if state in ("error", "incomplete", "stopped"):
-            item.setForeground(QBrush(ERROR if state == "error" else WARN))
+        if state in ("error", "incomplete", "stopped", *HELD_STATES):
+            item.setForeground(QBrush(ERROR if state in ("error", "inpaint_failed") else WARN))
         else:
             item.setData(Qt.ItemDataRole.ForegroundRole, None)
 

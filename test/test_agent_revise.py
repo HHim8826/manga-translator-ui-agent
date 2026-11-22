@@ -418,6 +418,156 @@ def test_a_check_run_keeps_the_page_and_reuses_the_inpainted_image(tmp_path):
     assert not (folder / "manga_translator_work" / "agent" / "run_journal.json").exists()
 
 
+class DiskBackend(PaintBackend):
+    """Writes the image where the render reads it, the way the translator does (PIL from the array:
+    an RGBA array stays RGBA)."""
+
+    def save(self, image_path, image):
+        from PIL import Image
+
+        super().save(image_path, image)
+        target = get_inpainted_path(image_path, create_dir=True)
+        Image.fromarray(np.asarray(image)).save(target)
+        return target
+
+
+def _check(tmp_path, path, script, **settings):
+    translator = FakeTranslator(tmp_path)
+    results = asyncio.run(run_agent_workflow(translator, [(path, Cfg)], {}, client=ScriptedClient(script),
+                                             log=lambda m: None, revise=True, inpaint_backend=DiskBackend(),
+                                             agent_settings={"inpaint_review": True, "recall_pass": False, **settings}))
+    return translator, results
+
+
+@pytest.mark.parametrize("how", ["stopped", "failed"])
+def test_a_check_that_did_not_inpaint_its_changes_is_patched_by_the_next_one(tmp_path, monkeypatch, how):
+    """Review items 02 and 08: the check saved a page that no longer erases #1 (skipped now), then
+    stopped or failed before the inpainted image was brought up to the new mask. The image keeps the
+    old erasure; it is not inpainted again over the user's repairs, the page is not rendered with it,
+    and the next check (which changes nothing) puts the original pixels back."""
+    folder, (path,) = _first_run(tmp_path)
+    target = get_inpainted_path(path, create_dir=True)
+    cv2.imwrite(target, np.full((240, 320, 3), 128, np.uint8))  # the user's repaired image
+    first = load_page(path, _store(folder)).order[0]
+    real = revise.inpaint_changes
+
+    async def broken(*args, **kwargs):
+        if how == "stopped":
+            raise asyncio.CancelledError("Agent workflow stopped by user")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(revise, "inpaint_changes", broken)
+    skip = [_calls(("skip_region", {"id": first, "category": "sign", "reason": "背景招牌"})),
+            _calls(("mark_page_done", {"confidence": 0.9}))]
+    if how == "stopped":
+        with pytest.raises(asyncio.CancelledError):
+            _check(tmp_path, path, skip)
+    else:
+        translator, results = _check(tmp_path, path, skip)
+        assert not any(c["load_text"] for c in translator.calls)  # not rendered, not inpainted again
+        held = [r for r in results if not isinstance(r, str)]
+        assert held and "inpainting the changed areas failed" in held[0].translation_error
+        log = _store(folder).latest_run_log()
+        events = [json.loads(line) for line in open(log, encoding="utf-8")]
+        assert any(e.get("type") == "inpaint_changes" and e.get("status") == "error" for e in events)
+    _raw, page = _read(folder)
+    assert [r["translation"] for r in page["regions"]] == ["譯2", "譯4"]  # the check's result stays
+    assert (cv2.imread(target) == 128).all()  # the image is as it was
+    assert os.path.exists(os.path.join(_store(folder).pages_dir, "001.inpaint_pending.json"))
+
+    monkeypatch.setattr(revise, "inpaint_changes", real)
+    translator, _ = _check(tmp_path, path, [_calls(("mark_page_done", {"confidence": 0.9}))])
+    source = cv2.imread(path)
+    out = cv2.imread(target)
+    x1, y1, x2, y2 = BOXES[0]
+    assert (out[y1 - 4:y2 + 4, x1 - 4:x2 + 4] == source[y1 - 4:y2 + 4, x1 - 4:x2 + 4]).all()  # #1's text is back
+    assert (out[0:10, 0:10] == 128).all() and (out[100:140, 200:220] == 128).all()  # the rest stays
+    assert translator.calls[-1]["load_text"] and not translator.calls[-1]["ignore_existing_inpainted"]
+    assert not os.path.exists(os.path.join(_store(folder).pages_dir, "001.inpaint_pending.json"))
+
+
+def _masks(tmp_path, old, new, before_regions=None, **page_fields):
+    """A page whose JSON mask goes from ``old`` to ``new`` (None: no mask)."""
+    image_path, json_path = make_page(tmp_path)
+    before = tmp_path / "before.json"
+    raw = json.loads(open(json_path, encoding="utf-8").read())
+    page = next(iter(raw.values()))
+    page.update(page_fields)
+    for key, mask in (("old", old), ("new", new)):
+        if mask is None:
+            page.pop("mask_raw", None)
+        else:
+            page["mask_raw"] = _mask_b64(mask)
+        if key == "old":
+            kept = page["regions"]
+            if before_regions is not None:
+                page["regions"] = before_regions(kept)
+            before.write_text(json.dumps(raw), encoding="utf-8")
+            page["regions"] = kept
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(raw, fh)
+    return image_path, str(before)
+
+
+def test_a_transparent_inpainted_image_keeps_its_alpha(tmp_path):
+    """Review item 07: an RGBA inpainted image, 10 x 10 px no longer erased: written back as RGBA, the
+    alpha outside the patch as it was."""
+    from PIL import Image
+
+    old = np.zeros((240, 320), np.uint8)
+    old[50:60, 50:60] = 255
+    image_path, before = _masks(tmp_path, old, np.zeros((240, 320), np.uint8))
+    rgba = np.full((240, 320, 4), 128, np.uint8)
+    rgba[:, :, 3] = 77
+    target = get_inpainted_path(image_path, create_dir=True)
+    Image.fromarray(rgba).save(target)
+    backend = DiskBackend()
+    result = asyncio.run(inpaint_changes(image_path, before, backend, backend.save))
+    assert result["status"] == "patched" and result["restored"] == 100
+    with Image.open(target) as handle:
+        assert handle.mode == "RGBA"
+        out = np.array(handle)
+    source = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+    assert (out[50:60, 50:60, :3] == source[50:60, 50:60]).all()
+    outside = np.ones((240, 320), bool)
+    outside[50:60, 50:60] = False
+    assert (out[outside] == rgba[outside]).all()  # all four channels
+
+
+def test_text_kept_now_comes_back_from_the_colorized_base(tmp_path):
+    """Review item 09: a colorized page; the pixels put back come from the editor's base image, not
+    the uncolored original."""
+    from manga_translator.utils.path_manager import get_work_image_path
+
+    old = np.zeros((240, 320), np.uint8)
+    old[50:60, 50:60] = 255
+    image_path, before = _masks(tmp_path, old, np.zeros((240, 320), np.uint8), colorizer="mc2")
+    cv2.imwrite(image_path, np.full((240, 320, 3), (70, 90, 120), np.uint8))  # BGR of (120, 90, 70)
+    cv2.imwrite(get_work_image_path(image_path, create_dir=True), np.full((240, 320, 3), (80, 175, 15), np.uint8))
+    cv2.imwrite(get_inpainted_path(image_path, create_dir=True), np.full((240, 320, 3), 128, np.uint8))
+    backend = PaintBackend()
+    assert asyncio.run(inpaint_changes(image_path, before, backend, backend.save))["status"] == "patched"
+    assert (backend.saved[image_path][50:60, 50:60] == (15, 175, 80)).all()
+    # without a colorizer or an upscale in the JSON the base is stale (the editor's rule): the original
+    image_path, before = _masks(tmp_path, old, np.zeros((240, 320), np.uint8))
+    cv2.imwrite(image_path, np.full((240, 320, 3), (70, 90, 120), np.uint8))
+    asyncio.run(inpaint_changes(image_path, before, backend, backend.save))
+    assert (backend.saved[image_path][50:60, 50:60] == (120, 90, 70)).all()
+
+
+def test_no_mask_to_compare_with_changed_boxes_is_not_unchanged(tmp_path):
+    """Review item 10: neither JSON has a mask. The same boxes: nothing to inpaint; a box gone (skipped
+    now): it cannot be told what to inpaint, so the page is held (``no_mask``)."""
+    image_path, before = _masks(tmp_path, None, None)
+    cv2.imwrite(get_inpainted_path(image_path, create_dir=True), np.full((240, 320, 3), 128, np.uint8))
+    backend = PaintBackend()
+    assert asyncio.run(inpaint_changes(image_path, before, backend, backend.save))["status"] == "unchanged"
+    image_path, before = _masks(tmp_path, None, None, before_regions=lambda regions: regions + [
+        {"lines": _quad(150, 200, 190, 230), "texts": ["x"], "text": "x", "translation": "譯"}])
+    assert asyncio.run(inpaint_changes(image_path, before, backend, backend.save))["status"] == "no_mask"
+    assert image_path not in backend.saved
+
+
 # --- the box set in the editor ---------------------------------------------------------
 def test_text_goes_in_the_box_set_in_the_editor():
     """ch34 p6: a label the user moved and spaced in the editor was typeset around the detected lines."""

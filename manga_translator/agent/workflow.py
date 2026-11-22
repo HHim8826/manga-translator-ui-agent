@@ -33,6 +33,7 @@ from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
 from .proofread import ProofPage, Proofreader
 from .resume import RunGuard, record_saved
+from .revise import mark_pending
 from . import json_guard
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
@@ -49,6 +50,9 @@ MODE_FLAGS = ("template", "save_text", "load_text", "translate_json_only", "gene
 RENDERED = ("done", "incomplete")
 """Page statuses that are typeset; the other pages have no agent translation, or the user saved
 them in the editor during the run (``edited``: theirs, exported from the editor)."""
+HELD = ("inpaint_failed", "inpaint_unknown")
+"""Pages a check finished but does not typeset: their inpainted image is not up to their mask
+(``_inpaint_changes``)."""
 
 
 def _image_path(image: Any) -> str:
@@ -443,40 +447,55 @@ async def _review_queue(reviewer: InpaintReviewer, queue: "asyncio.Queue") -> Li
         outcomes.extend(await reviewer.run([path]))
 
 
-async def _inpaint_changes(pages: List[str], guard: RunGuard, backend, events: EventLog, log,
-                           should_stop: Callable[[], bool]) -> set:
+async def _inpaint_changes(pages: List[str], guard: RunGuard, backend, store: AgentStore, events: EventLog, log,
+                           should_stop: Callable[[], bool]) -> Tuple[set, Dict[str, str]]:
     """A check: each finished page's inpainted image brought up to its new mask, the rest kept
-    (``revise.inpaint_changes``). Returns the pages whose render reuses their inpainted image; a page
-    whose patch failed is inpainted again by the render."""
-    from ..utils.path_manager import find_json_path
-    from .revise import inpaint_changes
+    (``revise.inpaint_changes``). Returns (the pages whose render reuses their inpainted image, the
+    pages held back → why).
 
-    reuse = set()
+    A held page keeps its inpainted image and its output image: the render does not inpaint it
+    again over the user's repairs. ``inpaint_failed``: the patch failed; ``inpaint_unknown``: a mask
+    is missing and the boxes changed. Its pending mark (``revise.mark_pending``) stays, so the next
+    check patches it from the mask its image still matches."""
+    from ..utils.path_manager import find_json_path
+    from .revise import clear_pending, inpaint_changes, pending_before
+
+    reuse, held = set(), {}
     for path in pages:
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
         if json_guard.taken(find_json_path(path)):  # saved in the editor: the user's, not rendered
             continue
         page = os.path.splitext(os.path.basename(path))[0]
-        before = (guard.entries.get(_key(path)) or {}).get("json_copy") or ""
+        # an earlier check that stopped before this step left the mask its image still matches
+        before = pending_before(store, page, path) or (guard.entries.get(_key(path)) or {}).get("json_copy") or ""
+        events.emit("inpaint_changes", page=page, agent="inpaint", status="working")
         try:
             result = await inpaint_changes(path, before, backend, backend.save)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(f"inpainting the changes of {page} failed", exc_info=True)
-            log(f"[Agent] {page}: inpainting the changed areas failed ({type(exc).__name__}: {exc}); "
-                f"the render inpaints the whole page again")
-            events.emit("inpaint_changes", page=page, agent="inpaint", status="error",
+            log(f"[Agent] {page}: inpainting the changed areas failed ({type(exc).__name__}: {exc}); the page "
+                f"keeps its inpainted image and is not rendered again. Check it again to retry")
+            events.emit("inpaint_changes", page=page, agent="inpaint", status="error", image=path,
                         error=f"{type(exc).__name__}: {str(exc)[:200]}")
+            held[_key(path)] = "inpaint_failed"
             continue
-        events.emit("inpaint_changes", page=page, agent="inpaint", **result)
+        events.emit("inpaint_changes", page=page, agent="inpaint", image=path, **result)
+        if result["status"] == "no_mask":
+            log(f"[Agent] {page}: the mask from before or after the check is missing and the text boxes "
+                f"changed, so what to inpaint cannot be told; the page keeps its inpainted image and is not "
+                f"rendered again")
+            held[_key(path)] = "inpaint_unknown"
+            continue
+        clear_pending(store, page)
         if result["status"] != "no_inpainted":
             reuse.add(_key(path))
         if result["status"] == "patched":
             log(f"[Agent] {page}: inpainted again where text is erased now ({result['added']} px), original "
                 f"back where it is kept now ({result['restored']} px); the rest of the image stays")
-    return reuse
+    return reuse, held
 
 
 def _keep_outputs(translator, items: List[tuple], save_info: Optional[dict], log) -> None:
@@ -516,6 +535,13 @@ def _left_out_context(path: str, status: str, error: str = ""):
 
     ctx = Context()
     ctx.image_name = path
+    if status in HELD:
+        ctx.success = False
+        ctx.translation_error = ctx.error = (
+            "AI Agent: inpainting the changed areas failed" if status == "inpaint_failed" else
+            "AI Agent: the page has no mask to compare and its text boxes changed") + \
+            "; the page keeps its inpainted and output images and was not rendered again (check it again to retry)"
+        return ctx
     if status in ("error", "no_json"):
         ctx.success = False
         ctx.translation_error = ctx.error = (f"AI Agent: {error}" if error else
@@ -673,6 +699,8 @@ async def run_agent_workflow(
         translated = [0]
         _report(progress, "translate", 0, len(paths))
         reviewed: set = set()
+        held: Dict[str, str] = {}
+        """Pages a check holds back from the render (_inpaint_changes) -> why."""
         batch_id = f"b{uuid.uuid4().hex[:12]}"  # the chapters of this run, for the AI Agent page
         for work_dir, pages in group_by_chapter(paths):
             store = AgentStore(work_dir, settings.memory_dir)
@@ -705,6 +733,14 @@ async def run_agent_workflow(
                 def page_done(outcome: dict) -> None:
                     if guard is not None:
                         guard.page_finished(outcome["image"])
+                        if revise and outcome.get("status") in RENDERED:
+                            # its JSON keeps this check's mask from now on: until the inpainted image
+                            # is brought up to it, the mask it matches is kept (a stop or a failure)
+                            entry = guard.entries.get(_key(outcome["image"])) or {}
+                            try:
+                                mark_pending(store, outcome["page"], outcome["image"], entry.get("json_copy") or "")
+                            except Exception:
+                                logger.warning("agent: could not mark the inpainting as pending", exc_info=True)
                     translated[0] += 1
                     _report(progress, "translate", translated[0], len(paths))
                     if review_task is not None and outcome.get("status") in ("done", "incomplete"):
@@ -756,7 +792,10 @@ async def run_agent_workflow(
                             _save_memory(work_memory, runner.memory, work_dir, events, log)
                         if revise and finished and guard is not None:
                             backend = inpaint_backend or PipelineInpaintBackend(translator, config)
-                            reviewed |= await _inpaint_changes(finished, guard, backend, events, log, should_stop)
+                            reuse, kept_back = await _inpaint_changes(finished, guard, backend, store, events, log,
+                                                                      should_stop)
+                            reviewed |= reuse
+                            held.update(kept_back)
                     except BaseException:
                         for task in (review_task, proof_task):
                             if task is not None and not task.done():
@@ -810,6 +849,8 @@ async def run_agent_workflow(
             status = statuses.get(_key(path)) or "not_reached"
             if status in RENDERED and json_guard.taken(find_json_path(path)):
                 status = "edited"  # saved in the editor after the agent: the user's
+            if status in RENDERED and _key(path) in held:  # its inpainted image is not up to its mask
+                status = held[_key(path)]
             if status in RENDERED and find_json_path(path):
                 render_items.append((image, cfg))
             else:

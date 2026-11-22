@@ -152,6 +152,37 @@ def test_inpaint_review_events(app):
     assert page.page_list.item(1).text() == "005 · Agent Page Done · Agents Page Confidence percent=73 · Agents Flag Count count=1"
 
 
+def test_a_failed_partial_inpainting_is_a_problem_row_and_the_page_says_so(app):
+    """Review item 08: a check's inpainting of the changed areas failed. The page keeps its images and
+    is not rendered; the timeline and the page list say so, also with "problems only"."""
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["001.jpg", "002.jpg"], "model": "m"},
+        {"type": "page_done", "page": "001", "status": "done", "confidence": 0.99, "flags": 0},
+        {"type": "page_done", "page": "002", "status": "done", "confidence": 0.99, "flags": 0},
+        {"type": "inpaint_changes", "page": "001", "agent": "inpaint", "status": "working"},
+        {"type": "inpaint_changes", "page": "001", "agent": "inpaint", "status": "patched", "added": 40,
+         "restored": 100},
+        {"type": "inpaint_changes", "page": "002", "agent": "inpaint", "status": "working"},
+    ])
+    assert page.status_label.text() == "Agents Inpaint Changes Progress page=002"
+    page.handle_event({"type": "inpaint_changes", "page": "002", "agent": "inpaint", "status": "error",
+                       "error": "OSError: disk full"})
+    page.handle_event({"type": "render_start", "agent": "render", "pages": 1, "skipped": {"002": "inpaint_failed"}})
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(3) for r in rows] == ["Agents Inpaint Changes Patched added=40 restored=100",
+                                         "Agents Inpaint Changes Failed", "Agents Render Start pages=1"]
+    assert rows[1].text(4) == "OSError: disk full"
+    assert rows[2].text(4) == "Agents Render Held pages=002（Agent Page Inpaint Failed）"
+    page.problems_only.setChecked(True)
+    assert [r.isHidden() for r in rows] == [True, False, False]
+    assert page.page_list.item(2).text().startswith("002 · Agent Page Inpaint Failed")
+    page.deleteLater()
+    app.processEvents()
+
+
 def test_status_follows_the_agent_while_pages_are_reviewed_alongside(app):
     from ui.main_page.pages.agents_page import AgentsPage
 

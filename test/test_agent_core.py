@@ -134,7 +134,7 @@ def test_sidecar_matches_regions_by_center_and_bbox(tmp_path):
     doc.flag(1, "uncertain_ocr", "handwritten")
     side = doc.sidecar()
     first = side["regions"][0]
-    assert first["match"] == {"center": [40.0, 70.0], "bbox": [20, 20, 60, 120]}
+    assert first["match"] == {"center": [40.0, 70.0], "bbox": [20, 20, 60, 120], "frame": None}
     assert first["reasons"] == ["r"] and side["review_flags"][0]["type"] == "uncertain_ocr"
 
 
