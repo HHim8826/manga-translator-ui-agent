@@ -50,6 +50,10 @@ logger = logging.getLogger("manga_translator.agent")
 
 EDIT_MARGIN = 30.0
 FINGERPRINTS = "saved_json.json"
+STATS = "saved_json.stat.json"
+"""``[mtime_ns, size, fingerprint]`` of each page's JSON when its fingerprint was taken: the scan before
+the rerun question does not read a JSON again that still has its time and size (each read the whole
+file before: 100 pages of 1 MiB took about 0.34 s on the GUI thread)."""
 JOURNAL = "run_journal.json"
 
 _ACTIVE: Set[str] = set()
@@ -159,6 +163,35 @@ def _fingerprints_path(store: AgentStore) -> str:
     return os.path.join(store.agent_dir, FINGERPRINTS)
 
 
+def _stats_path(store: AgentStore) -> str:
+    return os.path.join(store.agent_dir, STATS)
+
+
+def _read_stats(store: AgentStore) -> dict:
+    """``STATS``; empty when it is missing or broken (it only saves reading the JSON again)."""
+    try:
+        stats = _read_json(_stats_path(store), {})
+    except (OSError, ValueError):
+        return {}
+    return stats if isinstance(stats, dict) else {}
+
+
+def _stat(path: str) -> Optional[list]:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return [stat.st_mtime_ns, stat.st_size]
+
+
+def _changed_since(path: str, saved: str, known: Any) -> bool:
+    """The JSON's content is not the one fingerprinted ``saved``. Its time and size as they were when
+    that fingerprint was taken (``known``, from ``STATS``) say it is without reading it."""
+    if isinstance(known, list) and len(known) == 3 and known[2] == saved and known[:2] == _stat(path):
+        return False
+    return _fingerprint(path) != saved
+
+
 def _journal_path(store: AgentStore) -> str:
     return os.path.join(store.agent_dir, JOURNAL)
 
@@ -205,6 +238,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
 
     stores: Dict[str, AgentStore] = {}
     prints: Dict[str, dict] = {}
+    stats: Dict[str, dict] = {}
     log_times: Dict[str, Optional[float]] = {}
     journals: Dict[str, Tuple[dict, bool]] = {}
     states = []
@@ -214,6 +248,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
         if key not in stores:
             stores[key] = store
             prints[key] = _read_json(_fingerprints_path(store), {}) if os.path.isdir(store.agent_dir) else {}
+            stats[key] = _read_stats(store) if prints[key] else {}
             latest = store.latest_run_log() if os.path.isdir(store.agent_dir) else None
             log_times[key] = os.path.getmtime(latest) if latest else None
             journal = _read_journal(store)
@@ -227,17 +262,19 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
         json_path = find_json_path(path) or ""
         read_json = json_path
         saved = prints[key].get(stem)
+        known = stats[key].get(stem)
         if restorable:  # what the restore of the killed run's journal will put back
             side_path = entry.get("sidecar_copy") or ""
             read_json = entry["json_copy"]
             saved = entry.get("print")
+            known = None
         side = _read_json(side_path, None) if side_path and os.path.exists(side_path) else None
         status = str((side or {}).get("status") or "") if isinstance(side, dict) else ""
         edited = translated = False
         exists = bool(read_json) and os.path.exists(read_json)
         if status and exists:
             if saved:
-                edited = _fingerprint(read_json) != saved
+                edited = _changed_since(read_json, saved, known)
             elif log_times[key] is not None:
                 edited = os.path.getmtime(read_json) > log_times[key] + EDIT_MARGIN
         elif exists:
@@ -257,14 +294,22 @@ def record_saved(paths: Sequence[str]) -> None:
         store = AgentStore(work_dir)
         target = _fingerprints_path(store)
         prints = _read_json(target, {})
+        stats = _read_stats(store)
         for path in pages:
+            stem = os.path.splitext(os.path.basename(path))[0]
             json_path = find_json_path(path)
             if json_path and os.path.exists(json_path):
-                prints[os.path.splitext(os.path.basename(path))[0]] = _fingerprint(json_path)
-        try:
-            write_json_atomic(target, prints)
-        except OSError:
-            logger.warning(f"agent: could not save {target}", exc_info=True)
+                before = _stat(json_path)
+                prints[stem] = _fingerprint(json_path)
+                if before is not None and before == _stat(json_path):  # not written while it was read
+                    stats[stem] = [*before, prints[stem]]
+                else:
+                    stats.pop(stem, None)
+        for name, data in ((target, prints), (_stats_path(store), stats)):
+            try:
+                write_json_atomic(name, data)
+            except OSError:
+                logger.warning(f"agent: could not save {name}", exc_info=True)
 
 
 def _copy_to(folder: str, source: str, name: str, stamp: str) -> str:

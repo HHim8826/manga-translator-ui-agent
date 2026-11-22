@@ -63,6 +63,35 @@ def test_runs_without_fingerprints_compare_the_time(tmp_path):
     assert previous_states(paths)[0].edited
 
 
+def test_the_scan_reads_only_the_json_that_changed(tmp_path, monkeypatch):
+    """Review perf item: the scan before the rerun question read every page's JSON to fingerprint it.
+    A JSON that still has the time and size it had when its fingerprint was taken is not read; one
+    the user saved again (same text, a new time) or changed is, and is told the same way as before."""
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / f"{i:03d}.png") for i in (1, 2, 3)]
+    _run(tmp_path, paths, _finish_page() * 3)
+    read = []
+    real = resume._fingerprint
+    monkeypatch.setattr(resume, "_fingerprint", lambda p: read.append(os.path.basename(p)) or real(p))
+    assert [s.edited for s in previous_states(paths)] == [False, False, False] and read == []
+
+    same = _json(folder, "002")
+    stat = os.stat(same)
+    os.utime(same, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))  # saved again, the same text
+    _edit(_json(folder, "003"))
+    assert [s.edited for s in previous_states(paths)] == [False, False, True]
+    assert read == ["002_translations.json", "003_translations.json"]
+
+    agent = folder / "manga_translator_work" / "agent"
+    (agent / resume.STATS).write_text("{broken", encoding="utf-8")  # a cache only: the scan still works
+    read.clear()
+    assert [s.edited for s in previous_states(paths)] == [False, False, True] and len(read) == 3
+    resume.record_saved(paths)  # the next run's end writes it again
+    read.clear()
+    assert not any(s.edited for s in previous_states(paths)) and read == []
+
+
 def test_a_rerun_keeps_a_copy_of_the_edited_json(tmp_path):
     folder = tmp_path / "chapter"
     folder.mkdir()
