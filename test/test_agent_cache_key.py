@@ -33,7 +33,7 @@ def _client(monkeypatch, refuse=()):
 
     monkeypatch.setattr(api_key_rotation, "run_with_api_candidates", run)
     endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
-    client = OpenAIChatClient((endpoint,), "failover", AgentSettings())
+    client = OpenAIChatClient((endpoint,), "failover", AgentSettings(stream_requests=False))
     api = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
     monkeypatch.setattr(client, "_client", lambda e: api)
     return client, sent

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Set
+import re
+from types import SimpleNamespace
+from typing import Dict, List, Optional, Set, Tuple
 
 from .runner import ChatReply, ToolCall
 from .settings import AgentSettings
@@ -24,6 +26,9 @@ class OpenAIChatClient:
         """Endpoints that rejected ``reasoning_effort``: they get requests without it."""
         self._no_cache_key: Set[str] = set()
         """Endpoints that rejected ``prompt_cache_key``: they get requests without it."""
+        self._no_stream: Set[str] = set()
+        """Endpoints that rejected streaming or streamed without token counts: they get requests
+        without it (the token counts drive compaction)."""
         self.session_id: Optional[str] = None
         """Sent as the ``session_id`` header, so a proxy that groups requests (for example an
         API proxy) shows one chapter run, with its recall and review calls, as one session."""
@@ -69,10 +74,18 @@ class OpenAIChatClient:
             if prompt_key and key not in self._no_cache_key:
                 extra["extra_body"] = {"prompt_cache_key": prompt_key}
             while True:
+                stream = self.settings.stream_requests and key not in self._no_stream
                 try:
-                    response = await self._client(endpoint).chat.completions.create(
-                        model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
-                        tool_choice=tool_choice, extra_headers=headers, **extra)
+                    api = self._client(endpoint).chat.completions
+                    args = dict(model=self.settings.model or endpoint.model_name, messages=messages, tools=tools,
+                                tool_choice=tool_choice, extra_headers=headers, **extra)
+                    if stream:
+                        message, usage = await self._streamed(api, args, endpoint)
+                    else:
+                        response = await api.create(**args)
+                        if not response.choices:
+                            raise RuntimeError("the API returned no choices")
+                        message, usage = response.choices[0].message, response.usage
                     break
                 except BadRequestError as err:
                     text = str(err).lower()
@@ -86,17 +99,17 @@ class OpenAIChatClient:
                         extra.pop("reasoning_effort")
                         logger.warning("The API at %s rejected reasoning_effort=%s; its requests go without it: %s",
                                        endpoint.base_url, effort, err)
+                    elif stream and re.search(r"\bstream(_options)?\b", text):
+                        self._no_stream.add(key)
+                        logger.warning("The API at %s rejected streaming; its requests go without it: %s",
+                                       endpoint.base_url, err)
                     else:
                         raise
-            if not response.choices:
-                raise RuntimeError("the API returned no choices")
-            message = response.choices[0].message
             calls = [ToolCall(id=c.id, name=c.function.name, arguments=c.function.arguments or "{}")
                      for c in (message.tool_calls or [])]
             if not calls and not (message.content or "").strip():
                 refusal = getattr(message, "refusal", None)
                 raise RuntimeError(f"empty reply{': ' + refusal if refusal else ''}")
-            usage = response.usage
             details = getattr(usage, "prompt_tokens_details", None) if usage else None
             return ChatReply(content=message.content, tool_calls=calls,
                              prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
@@ -107,6 +120,48 @@ class OpenAIChatClient:
             endpoints=self.endpoints, strategy=self.strategy, operation=operation, provider_name="agent",
             operation_name="chat completion", logger=logger, runtime_config=self.runtime_config,
             retry_attempts=self.settings.retry_attempts)
+
+    async def _streamed(self, api, args: dict, endpoint) -> Tuple[SimpleNamespace, object]:
+        """The reply sent in pieces (``stream_requests``), put together as one message, with the token
+        counts of its last piece. The reply starts within seconds and keeps coming while the model
+        writes, so a proxy that cuts a silent connection (the user's: 120 s, Cloudflare 524) does not
+        cut a long reply. Without token counts the endpoint gets requests without streaming."""
+        response = await api.create(stream=True, stream_options={"include_usage": True}, **args)
+        content: List[str] = []
+        refusal: List[str] = []
+        calls: Dict[int, Dict[str, str]] = {}
+        usage = None
+        try:
+            async for chunk in response:
+                usage = getattr(chunk, "usage", None) or usage
+                for choice in getattr(chunk, "choices", None) or []:
+                    delta = getattr(choice, "delta", None)
+                    if delta is None:
+                        continue
+                    content.append(getattr(delta, "content", None) or "")
+                    refusal.append(getattr(delta, "refusal", None) or "")
+                    for part in getattr(delta, "tool_calls", None) or []:
+                        index = part.index if getattr(part, "index", None) is not None else len(calls)
+                        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        slot["id"] = slot["id"] or (getattr(part, "id", None) or "")
+                        function = getattr(part, "function", None)
+                        if function is not None:
+                            slot["name"] = slot["name"] or (getattr(function, "name", None) or "")
+                            slot["arguments"] += getattr(function, "arguments", None) or ""
+        finally:
+            close = getattr(response, "close", None)
+            if close is not None:
+                await close()
+        if usage is None:
+            self._no_stream.add(self._key(endpoint))
+            logger.warning("The API at %s streams without token counts; its requests go without streaming",
+                           endpoint.base_url)
+        tool_calls = [SimpleNamespace(id=slot["id"] or f"call_{index}",
+                                      function=SimpleNamespace(name=slot["name"], arguments=slot["arguments"]))
+                      for index, slot in sorted(calls.items())]
+        message = SimpleNamespace(content="".join(content) or None, tool_calls=tool_calls,
+                                  refusal="".join(refusal) or None)
+        return message, usage
 
 
 def build_client(config, settings: AgentSettings) -> OpenAIChatClient:

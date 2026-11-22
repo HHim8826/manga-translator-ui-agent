@@ -226,8 +226,8 @@ def test_thin_fonts_of_the_agent_move_and_the_users_fonts_stay(tmp_path):
     assert json_center(out[1]) in locked_centers(store.load_sidecar("001"), "user_font")
 
 
-def test_a_locked_region_keeps_its_thin_font(tmp_path):
-    # ch34 p6: a label the user spaced with a blank line no longer met its frames in the stand-in's line height
+def test_a_locked_region_gets_a_stand_in_for_the_agents_thin_font(tmp_path):
+    # the user changed the text, not the agent's thin font (asked 2026-11-22)
     folder, (path,) = _first_run(tmp_path)
     _user_edits(folder)
     raw, page = _read(folder)
@@ -239,12 +239,14 @@ def test_a_locked_region_keeps_its_thin_font(tmp_path):
     store.save_sidecar("001", side)
     doc = load_page(path, store, fonts=FakeFonts())
     mine = next(r for r in doc.regions.values() if r.translation == "我改的")
-    assert mine.locked and not mine.user_font and mine.font == "MingLiU"
+    assert mine.locked and not mine.user_font and mine.font == "STZhongsong"
     out = doc.json_data()[doc.key]["regions"]
-    assert out[1]["font_family"] == "MingLiU"
+    assert out[1]["font_family"] == "STZhongsong" and out[1]["translation"] == "我改的"
     doc.status = "done"
     store.save_sidecar("001", doc.sidecar())
-    assert json_center(out[1]) in locked_centers(store.load_sidecar("001"), "locked")  # the font check leaves it
+    side = store.load_sidecar("001")
+    assert json_center(out[1]) in locked_centers(side, "locked")  # still the user's text, for the proofreader
+    assert json_center(out[1]) not in locked_centers(side, "user_font")  # the font check measures it
 
 
 def test_a_kai_face_moves_to_a_song_face_not_to_clerical_lettering():

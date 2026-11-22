@@ -443,7 +443,7 @@ def test_client_sends_the_session_header(monkeypatch):
 
     monkeypatch.setattr(api_key_rotation, "run_with_api_candidates", run)
     endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
-    client = OpenAIChatClient((endpoint,), "failover", AgentSettings())
+    client = OpenAIChatClient((endpoint,), "failover", AgentSettings(stream_requests=False))
     monkeypatch.setattr(client, "_client", lambda e: SimpleNamespace(chat=SimpleNamespace(completions=Completions())))
     reply = asyncio.run(client.complete([], [], "required"))
     assert reply.tool_calls[0].name == "zoom" and seen["extra_headers"] is None
@@ -483,7 +483,7 @@ def test_client_sends_reasoning_effort_and_drops_it_where_refused(monkeypatch):
     endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
     for refuse, expected in ((False, ["high", None, "low"]), (True, ["high", None, None, None])):
         sent.clear()
-        client = OpenAIChatClient((endpoint,), "failover", AgentSettings())
+        client = OpenAIChatClient((endpoint,), "failover", AgentSettings(stream_requests=False))
         api = SimpleNamespace(chat=SimpleNamespace(completions=Completions(refuse)))
         monkeypatch.setattr(client, "_client", lambda e, api=api: api)
         for effort in ("High ", "", "low"):

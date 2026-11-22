@@ -1334,6 +1334,7 @@ class MainAppLogic(QObject):
                     "fix_missing_glyphs": self._t("label_fix_missing_glyphs"),
                     "choose_fonts": self._t("label_choose_fonts"),
                     "revise_lock_user_edits": self._t("label_revise_lock_user_edits"),
+                    "stream_requests": self._t("label_stream_requests"),
                     "model": self._t("label_model"),
                     "reasoning_effort": self._t("label_reasoning_effort"),
                     "review_reasoning_effort": self._t("label_review_reasoning_effort"),

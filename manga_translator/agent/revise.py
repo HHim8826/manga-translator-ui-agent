@@ -10,14 +10,14 @@ The user's own work stays:
 
 * a region the user changed in the editor after the run (its text or its place), or drew there,
   counts as the user's (``Region.user_edited``). With ``revise_lock_user_edits`` (on by default) it
-  is locked: the write tools refuse it, the proofreader and the font check leave it;
+  is locked: the write tools refuse it and the proofreader leaves it;
 * a box the user deleted stays deleted (``PageDoc.removed``): neither the recall check nor
   add_region boxes its text again;
 * a font the user gave a region stays (``Region.user_font``).
 
 Thin fonts that earlier runs chose (MingLiU, Yu Mincho Light, SimSun, DFKai-SB ...) move to the
-sheet font that looks most like them (``FontService.stand_in``); the font check then measures them
-again. Locked regions keep theirs: the user laid their text out in it.
+sheet font that looks most like them (``FontService.stand_in``), in locked regions too; the font
+check then measures them again. Only a font the user chose stays.
 
 The inpainted image is the user's too (the editor's repairs are in it). Only what changed is
 inpainted again (``inpaint_changes``): text that is erased now and was not before (a region added
@@ -185,9 +185,9 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
             if font and not region.user_font and default_font and not same(font, default_font):
                 region.font = font  # the agent's font, kept in the sidecar
         region.locked = lock and region.user_edited
-        # a locked region keeps its font too: the user laid its text out in that font (ch34 p6: a label
-        # spaced with blank lines no longer met its frames in the stand-in's line height)
-        if font and not region.user_font and not region.locked and stand_in is not None:
+        # a locked region too: the user changed its text, not the agent's thin font (asked 2026-11-22);
+        # the text box set in the editor keeps it in place (``workflow.editor_box_center``)
+        if font and not region.user_font and stand_in is not None:
             new = stand_in(font)
             if new is not None:
                 region.font = new or default_font

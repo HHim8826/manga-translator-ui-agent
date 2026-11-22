@@ -70,6 +70,10 @@ class AgentSettings(BaseModel):
     """Seconds per API request."""
     retry_attempts: int = Field(default=3, ge=1)
     """Attempts per API candidate before moving to the next candidate."""
+    stream_requests: bool = True
+    """Receive each reply as it is written (streaming). The reply starts within seconds, so a proxy
+    that cuts a connection after a silent while (the user's: 120 s) does not cut a long reply. An API
+    that refuses streaming, or streams without token counts, gets requests without it."""
     memory_dir: str = ""
     """One folder for the glossary, characters and story summary of every chapter. Empty keeps them
     in each chapter's ``manga_translator_work/agent/memory`` (shared through the work's memory, see

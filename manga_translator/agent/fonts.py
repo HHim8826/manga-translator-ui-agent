@@ -946,9 +946,9 @@ class FontService:
         from .revise import json_center, locked_centers
 
         side = store.load_sidecar(stem)
-        users_fonts = locked_centers(side, "user_font") | locked_centers(side, "locked")
-        """Regions whose font the user chose in the editor, and the user's locked regions (a chapter
-        checked again): left as they are."""
+        users_fonts = locked_centers(side, "user_font")
+        """Regions whose font the user chose in the editor: left as they are. The user's locked regions
+        (a chapter checked again) get the stand-in for a thin font, so they are measured like the rest."""
         changes: List[Dict[str, Any]] = []
         """Font changes of a whole region: an agent's font that moves the text goes back to the user's."""
         borrowed: List[Dict[str, Any]] = []

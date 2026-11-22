@@ -172,6 +172,7 @@
         "agent.fix_missing_glyphs",
         "agent.choose_fonts",
         "agent.revise_lock_user_edits",
+        "agent.stream_requests",
         "agent.show_page_on_start",
         {
           "kind": "divider",
