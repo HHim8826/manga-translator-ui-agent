@@ -44,7 +44,7 @@ import cv2
 import numpy as np
 
 from .page import PageDoc, Region, custom_frame
-from .review import flag_agent, match_region, region_bbox
+from .review import RegionBoxes, flag_agent, region_bbox
 from .store import AgentStore, _read_json
 
 logger = logging.getLogger("manga_translator.agent")
@@ -144,6 +144,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
             return False
         return not any(same(font, f) for f in {side_font, default_font, *agent_fonts} if f)
     json_regions = [doc.regions[rid].data for rid in doc.order]
+    boxes = RegionBoxes(json_regions)  # the JSON's boxes do not move while the page loads
 
     # the agent's regions that are still there, and the ones the user deleted
     matched: Dict[int, dict] = {}
@@ -153,7 +154,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
         if entry.get("skipped") or entry.get("merged_into") is not None:
             continue
         match = entry.get("match") or {}
-        index = match_region(match.get("center"), match.get("bbox"), json_regions)
+        index = boxes.match(match.get("center"), match.get("bbox"))
         if index is None:
             if match.get("bbox"):
                 removed.append({"bbox": [int(v) for v in match["bbox"]],
@@ -166,7 +167,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
             entry_rid[entry.get("id")] = rid
     for item in side.get("removed") or []:  # deleted before an earlier check
         box = item.get("bbox") if isinstance(item, dict) else None
-        if box and len(box) == 4 and match_region(None, [float(v) for v in box], json_regions) is None:
+        if box and len(box) == 4 and boxes.match(None, [float(v) for v in box]) is None:
             removed.append({"bbox": [int(v) for v in box], "text": str(item.get("text") or "")})
     doc.removed = removed
 
@@ -220,7 +221,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
         if not entry.get("skipped") or entry.get("merged_into") is not None:
             continue
         match = entry.get("match") or {}
-        if match.get("bbox") and match_region(match.get("center"), match.get("bbox"), json_regions) is not None:
+        if match.get("bbox") and boxes.match(match.get("center"), match.get("bbox")) is not None:
             continue  # the user put it back in the editor
         data = _skipped_data(entry)
         if data is None:

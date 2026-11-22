@@ -413,3 +413,51 @@ def test_an_attempt_switch_that_cannot_be_written_leaves_every_file_as_it_was(tm
     assert leftovers == []
     assert review.use_attempt(page, "1", 2) == target  # works once the file can be written
     assert store.load_sidecar("001")["inpaint"]["units"]["1"]["chosen"] == 2
+
+
+# --- perf: many regions matched at once ----------------------------------------------------------
+def test_matching_many_boxes_at_once_finds_what_one_at_a_time_finds():
+    """``RegionBoxes`` (a check matches every region of the earlier run) gives ``match_region``'s answer
+    for every box: overlapping, nested, touching, equal (the first wins), empty and missing boxes,
+    centers on an edge, and the odd values that go the slow way."""
+    import random
+
+    rng = random.Random(7)
+
+    def region(x1, y1, x2, y2):
+        return {"lines": _quad(x1, y1, x2, y2)}
+
+    regions = []
+    for _ in range(120):
+        x, y = rng.randrange(0, 900, 10), rng.randrange(0, 1300, 10)
+        regions.append(region(x, y, x + rng.choice([0, 10, 40, 80, 200]), y + rng.choice([0, 10, 60, 150])))
+    regions += [regions[5], regions[17], {"lines": []}, {"texts": ["no box"]}, region(0, 0, 1000, 1400)]
+    boxes = review.RegionBoxes(regions)
+    queries = []
+    for _ in range(600):
+        x, y = rng.randrange(-20, 950, 5), rng.randrange(-20, 1350, 5)
+        bbox = [x, y, x + rng.choice([0, 5, 40, 120]), y + rng.choice([0, 5, 60, 160])]
+        center = rng.choice([None, [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], [x, y]])
+        queries.append((center, bbox))
+    for r in regions[:40]:  # each box itself, and its corner as the center
+        box = review.region_bbox(r)
+        if box:
+            queries += [(None, box), ([box[0], box[1]], box), ([box[2], box[3]], [box[2], box[3], box[2] + 1, box[3] + 1])]
+    queries += [(None, None), ([1, 2], None), (["x", 1], [0, 0, 10, 10]), (None, [0, 0, float("nan"), 5])]
+    def outcome(call):
+        try:
+            return call()
+        except TypeError:  # a text where a number goes: both fail alike
+            return "error"
+
+    found = 0
+    for center, bbox in queries:
+        expected = outcome(lambda: review.match_region(center, bbox, regions))
+        got = outcome(lambda: boxes.match(center, bbox))
+        assert got == expected, (center, bbox)
+        found += got not in (None, "error")
+    assert found > 100  # most queries hit a box: the comparison means something
+
+    odd = review.RegionBoxes([region(0, 0, 10, 10), {"lines": [[[0, 0], [float("inf"), 5]]]}])
+    assert odd.match(None, [0, 0, 10, 10]) == review.match_region(None, [0, 0, 10, 10], [region(0, 0, 10, 10)])
+    assert review.RegionBoxes([]).match([1, 1], [0, 0, 2, 2]) is None

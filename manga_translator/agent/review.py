@@ -18,6 +18,7 @@ import copy
 import io
 import json
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -211,9 +212,12 @@ def match_region(center: Optional[Sequence[float]], bbox: Optional[Box], regions
     the agent's center. None when no region is there (deleted or moved in the editor)."""
     if bbox is None:
         return None
+    return _best_box(center, bbox, [region_bbox(region) for region in regions])
+
+
+def _best_box(center, bbox: Box, boxes: Sequence[Optional[Box]]) -> Optional[int]:
     best, best_score = None, 0.0
-    for index, region in enumerate(regions):
-        box = region_bbox(region)
+    for index, box in enumerate(boxes):
         if box is None:
             continue
         score = _overlap(bbox, box)
@@ -222,6 +226,50 @@ def match_region(center: Optional[Sequence[float]], bbox: Optional[Box], regions
         if score > best_score:
             best, best_score = index, score
     return best if best_score >= 0.3 else None
+
+
+def _plain(values, n: int) -> bool:
+    try:
+        return len(values) >= n and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values[:n])
+    except TypeError:
+        return False
+
+
+class RegionBoxes:
+    """``match_region`` for many boxes against the same regions (a check matches every region of the
+    earlier run): each region's box is worked out once and all of them are scored together, with the
+    same scores, the same 0.3 and the first of equal boxes. Anything but plain numbers goes the way
+    ``match_region`` goes. 250 regions against 250 built 62,500 boxes before."""
+
+    def __init__(self, regions: Sequence[dict]):
+        self.boxes = [region_bbox(region) for region in regions]
+        self.valid = np.array([b is not None for b in self.boxes], dtype=bool)
+        self.array = np.array([b if b is not None else [0.0] * 4 for b in self.boxes],
+                              dtype=np.float64).reshape(-1, 4)
+        self.plain = bool(np.isfinite(self.array).all())
+
+    def match(self, center: Optional[Sequence[float]], bbox: Optional[Box]) -> Optional[int]:
+        if bbox is None:
+            return None
+        if not self.plain or not _plain(bbox, 4) or (center is not None and not _plain(center, 2)):
+            return _best_box(center, bbox, self.boxes)
+        if not self.boxes:
+            return None
+        a0, a1, a2, a3 = (float(v) for v in bbox[:4])
+        b0, b1, b2, b3 = self.array.T
+        w = np.minimum(a2, b2) - np.maximum(a0, b0)
+        h = np.minimum(a3, b3) - np.maximum(a1, b1)
+        inter = w * h
+        union = (a2 - a0) * (a3 - a1) + (b2 - b0) * (b3 - b1) - inter
+        with np.errstate(divide="ignore", invalid="ignore"):
+            score = np.where((w > 0) & (h > 0) & (union > 0), inter / union, 0.0)
+        if center is not None:
+            c0, c1 = float(center[0]), float(center[1])
+            inside = (b0 <= c0) & (c0 <= b2) & (b1 <= c1) & (c1 <= b3)
+            score = np.where(inside, np.maximum(score, 0.3), score)
+        score = np.where(self.valid, score, 0.0)
+        best = int(np.argmax(score))  # the first of equal scores, like the loop
+        return best if score[best] >= 0.3 else None
 
 
 def flag_region(flag: Flag, regions: Sequence[dict]) -> Optional[int]:
