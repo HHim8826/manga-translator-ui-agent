@@ -44,6 +44,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from . import redo as redo_steps
 from .store import AgentStore, _read_json, write_json_atomic
 
 logger = logging.getLogger("manga_translator.agent")
@@ -121,6 +122,10 @@ class PageState:
     """No AI Agent result, but the JSON has translations: another translation mode or the editor."""
     busy: bool = False
     """Another run is working on the page's chapter (its journal's owner is alive)."""
+    pending: Tuple[str, ...] = ()
+    """Steps an earlier run could not do on the page (``redo.py``: ``inpaint_review``, ``proofread``)."""
+    resets: str = ""
+    """When the API's usage limit that stopped them resets (HH:MM), if it said."""
 
     @property
     def stem(self) -> str:
@@ -241,6 +246,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
     stats: Dict[str, dict] = {}
     log_times: Dict[str, Optional[float]] = {}
     journals: Dict[str, Tuple[dict, bool]] = {}
+    pending_steps: Dict[str, dict] = {}
     states = []
     for path in paths:
         store = _store(path)
@@ -254,6 +260,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
             journal = _read_journal(store)
             journals[key] = ((journal.get("pages") or {}) if journal else {},
                              bool(journal) and owner_alive(journal.get("owner")))
+            pending_steps[key] = redo_steps.read(store)
         stem = os.path.splitext(os.path.basename(path))[0]
         pending, busy = journals[key]
         entry = pending.get(stem) if not busy and isinstance(pending.get(stem), dict) else None
@@ -279,7 +286,9 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
                 edited = os.path.getmtime(read_json) > log_times[key] + EDIT_MARGIN
         elif exists:
             translated = has_translation(read_json)
-        states.append(PageState(path, status, edited, json_path, translated, busy))
+        steps = redo_steps.steps_of(pending_steps[key], stem) if status else ()
+        states.append(PageState(path, status, edited, json_path, translated, busy, steps,
+                                redo_steps.resets_of(pending_steps[key], stem) if steps else ""))
     return states
 
 

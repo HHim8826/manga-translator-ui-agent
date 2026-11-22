@@ -92,10 +92,15 @@ PAGE_STATE_KEYS = {
     "inpaint_failed": "Agent Page Inpaint Failed",
     "inpaint_unknown": "Agent Page Inpaint Unknown",
     "output_kept": "Agent Page Output Kept",
+    "redo_failed": "Agent Page Redo Failed",
+    "redo_none": "Agent Page Redo None",
 }
 HELD_STATES = ("inpaint_failed", "inpaint_unknown", "output_kept")
 """Pages a check finished but did not render again: their inpainted image is not up to their mask, or
 their output image could not be backed up."""
+REDO_STATES = ("redo_failed", "redo_none")
+"""Pages a redo (``manga_translator.agent.redo``) did not render again: their step failed again, or
+nothing was left to do on them. They keep their output, like the held pages."""
 WARN = QColor(214, 140, 0)
 ERROR = QColor(210, 50, 50)
 MUTED = QColor(130, 130, 130)
@@ -446,11 +451,11 @@ class AgentsPage(QWidget):
 
     def _on_stage(self, event: dict) -> None:
         """What a run does before its first chapter has a run log: starting, checking the API, the
-        preprocess or the backups of a check (``revise``); how it ended when it ended there (stopped,
+        preprocess, the backups of a check (``revise``) or of a redo; how it ended when it ended there (stopped,
         failed); and pages it could not put back at its end (``restore_failed``). The stop button
         stays on while the run is in one of the first stages."""
         stage = str(event.get("stage") or "")
-        self._agent_task = stage in ("start", "api_check", "preprocess", "revise")
+        self._agent_task = stage in ("start", "api_check", "preprocess", "revise", "redo")
         if stage == "start":  # a new run: the last run's summary goes
             self._live_events = []
             self._live_batch = None
@@ -464,6 +469,7 @@ class AgentsPage(QWidget):
                  "api_check": ("Agents Stage API Check", {"model": event.get("model") or "-"}),
                  "preprocess": ("Agents Stage Preprocess", {"pages": event.get("pages", 0)}),
                  "revise": ("Agents Stage Revise", {"pages": event.get("pages", 0)}),
+                 "redo": ("Agents Stage Redo", {"pages": event.get("pages", 0)}),
                  "stopped": ("Agents Stage Stopped", {}),
                  "failed": ("Agents Stage Failed", {"error": event.get("error") or ""}),
                  "restore_failed": ("Agents Stage Restore Failed", {
@@ -670,8 +676,8 @@ class AgentsPage(QWidget):
                     return separator.join(f"{stem}（{self._t(PAGE_STATE_KEYS.get(status, 'Agent Page Not Reached'))}）"
                                           for stem, status in items)
 
-                held = [(s, v) for s, v in skipped.items() if v in HELD_STATES]
-                other = [(s, v) for s, v in skipped.items() if v not in HELD_STATES]
+                held = [(s, v) for s, v in skipped.items() if v in HELD_STATES + REDO_STATES]
+                other = [(s, v) for s, v in skipped.items() if v not in HELD_STATES + REDO_STATES]
                 reason = "; ".join(([self._t("Agents Render Skipped", pages=names(other))] if other else []) +
                                    ([self._t("Agents Render Held", pages=names(held))] if held else []))
             row = self._add_row(event, self._t("Agents Render"), text, reason, problem=bool(skipped))
@@ -724,7 +730,11 @@ class AgentsPage(QWidget):
                 error = self._t("Agent Error Preprocess", reason=error.split("preprocess failed: ", 1)[-1])
                 if page:
                     self._set_page(page, state="error")
-            row = self._add_row(event, self._t("Agents Error"), error, "", problem=True)
+            hint = ""
+            if event.get("redo"):  # the step is written down: starting the chapter again offers to redo it
+                hint = self._t("Agents Redo Hint Resets", time=event["resets"]) if event.get("resets") else \
+                    self._t("Agents Redo Hint")
+            row = self._add_row(event, self._t("Agents Error"), error, hint, problem=True)
             self._paint(row, ERROR)
             if event.get("agent") == "proofread":
                 self._proofreading = False
@@ -849,6 +859,12 @@ class AgentsPage(QWidget):
         self._rebuild_page_list()
         self.status_label.setText(self._t("Agents Running", model=event.get("model") or "-"))
         self._update_memory(event.get("memory"))
+        redo = event.get("redo")
+        if isinstance(redo, dict):  # a redo run: only the steps an earlier run could not do
+            row = self._add_row(event, self._t("Agents Redo"), self._t(
+                "Agents Redo Start", review=int(redo.get("inpaint_review") or 0),
+                proofread=int(redo.get("proofread") or 0)), "")
+            self._paint(row, MUTED)
         seeded = event.get("work_memory")
         if isinstance(seeded, dict):  # the chapter's first run starts with what the earlier chapters learned
             row = self._add_row(event, self._t("Agents Work Memory"), self._t(
@@ -982,7 +998,7 @@ class AgentsPage(QWidget):
             return
         item.setText(self._page_text(key))
         state = self._pages.get(key, {}).get("state")
-        if state in ("error", "incomplete", "stopped", *HELD_STATES):
+        if state in ("error", "incomplete", "stopped", "redo_failed", *HELD_STATES):
             item.setForeground(QBrush(ERROR if state in ("error", "inpaint_failed") else WARN))
         else:
             item.setData(Qt.ItemDataRole.ForegroundRole, None)

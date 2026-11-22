@@ -32,7 +32,7 @@ def cli(monkeypatch, tmp_path):
     from manga_translator.agent import workflow
     from manga_translator.mode import local, subprocess_manager
 
-    calls = {"translate_batch": 0, "agent": [], "subprocess": 0}
+    calls = {"translate_batch": 0, "agent": [], "redo": [], "subprocess": 0}
 
     class FakeTranslator:
         def __init__(self, params):
@@ -44,6 +44,7 @@ def cli(monkeypatch, tmp_path):
 
     async def fake_agent(translator, images, save_info, **kwargs):
         calls["agent"].append(kwargs.get("revise"))
+        calls["redo"].append(kwargs.get("redo"))
         return []
 
     async def fake_subprocess(**kwargs):
@@ -99,4 +100,20 @@ def test_subprocess_mode_refuses_agent_revise_before_touching_files(cli, capsys)
     assert calls["subprocess"] == 0 and calls["translate_batch"] == 0 and calls["agent"] == []
     assert "--agent-revise" in capsys.readouterr().out
     assert not (chapter.parent / "第1話-translated").exists()  # the default output folder was never made
+    assert sorted(p.name for p in chapter.iterdir()) == ["001.png"]
+
+
+def test_agent_redo_does_the_steps_left_with_the_default_config(cli, tmp_path):
+    """``--agent-redo``: only the steps an earlier run could not do (``agent/redo.py``)."""
+    run, _chapter, _calls = cli
+    calls = run("--agent-redo", "-o", str(tmp_path / "out"))
+    assert calls["translate_batch"] == 0 and calls["agent"] == [False] and calls["redo"] == [True]
+
+
+def test_subprocess_mode_refuses_agent_redo_before_touching_files(cli, capsys):
+    run, chapter, calls = cli
+    with pytest.raises(SystemExit) as stop:
+        run("--agent-redo", "--subprocess")
+    assert stop.value.code == 2 and calls["subprocess"] == 0 and calls["agent"] == []
+    assert "--agent-redo" in capsys.readouterr().out
     assert sorted(p.name for p in chapter.iterdir()) == ["001.png"]

@@ -1927,7 +1927,7 @@ class MainAppLogic(QObject):
 
         # AI Agent 流程：这一话已有 Agent 结果时先询问，避免重跑覆盖翻译和编辑器里的修改
         if (task_config.get("cli") or {}).get("agent_workflow", False):
-            from ui.main_page.pages.agent_rerun import ask_rerun
+            from ui.main_page.pages.agent_rerun import REDO, ask_rerun
 
             lock = (task_config.get("agent") or {}).get("revise_lock_user_edits", True) is not False
             chosen = ask_rerun(getattr(self, "main_view", None), self._t, resolved_files, lock=lock)
@@ -1937,7 +1937,10 @@ class MainAppLogic(QObject):
                 self.state_manager.set_status_message("就绪")
                 return
             chosen_files, revise = chosen
-            if revise:  # check the finished pages again (only for this run, never saved to the config)
+            if revise == REDO:  # only the steps an earlier run could not do (only for this run)
+                self._ui_log(f"AI Agent: redoing the steps that were not done on {len(chosen_files)} page(s)")
+                task_config = {**task_config, "agent_redo": True}
+            elif revise:  # check the finished pages again (only for this run, never saved to the config)
                 self._ui_log(f"AI Agent: checking {len(chosen_files)} finished page(s) again")
                 task_config = {**task_config, "agent_revise": True}
             elif len(chosen_files) != len(resolved_files):
@@ -3177,6 +3180,7 @@ class TranslationWorker(QObject):
                         log=self._log_info,
                         progress=agent_progress,
                         revise=bool(self.config_dict.get('agent_revise')),
+                        redo=bool(self.config_dict.get('agent_redo')),
                     )
                 else:
                     contexts = await translator.translate_batch(

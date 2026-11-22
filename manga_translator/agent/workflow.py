@@ -17,7 +17,9 @@
    inpainted image; other pages ignore older inpainted images (the agent may
    have changed the mask).
 
-The editor opens the same JSON files afterwards.
+The editor opens the same JSON files afterwards. A step that could not be done (the inpaint review
+of a page, the proofreading: the API's usage limit, most often) is written down and done again by
+hand later (``redo.py``, ``run_agent_workflow(redo=True)``).
 """
 from __future__ import annotations
 
@@ -28,6 +30,8 @@ import os
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+from . import redo as redo_steps
+from .client import quota_resets
 from .events import EventLog, broadcast, new_run_id
 from .font_styles import load_work_styles, save_work_styles, work_fonts_path
 from .inpaint_review import InpaintReviewer
@@ -181,19 +185,46 @@ class PipelineInpaintBackend:
 
 
 async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLog, log) -> dict:
-    """The proofreading pass; an API failure is logged and the chapter goes on to render as it is."""
+    """The proofreading pass; an API failure is logged and the chapter goes on to render as it is. The
+    pages are written down for a redo (``redo.py``) until a proofreading of them ends."""
+    stems = [os.path.splitext(os.path.basename(p))[0] for p in pages]
     try:
         result = await proofreader.run(pages)
     except (AgentStopped, asyncio.CancelledError):
         raise
     except Exception as exc:
         logger.exception("proofreading failed")
-        events.emit("error", agent="proofread", error=f"proofreading failed: {type(exc).__name__}: {str(exc)[:300]}")
-        return {"status": "error", "error": str(exc)}
+        resets = quota_resets(exc)
+        events.emit("error", agent="proofread", error=f"proofreading failed: {type(exc).__name__}: {str(exc)[:300]}",
+                    redo=True, **resets)
+        _note(redo_steps.failed, proofreader.store, redo_steps.PROOFREAD, stems, str(exc), resets.get("resets", ""))
+        log(f"[Agent] Proofread failed; it can be done again by hand: start the AI Agent on the chapter and "
+            f"choose to redo the steps that were not done"
+            + (f" (the API usage limit resets about {resets['resets']})" if resets else ""))
+        return {"status": "error", "error": str(exc), **resets}
+    _note(redo_steps.done, proofreader.store, redo_steps.PROOFREAD, stems)
     totals = proofreader.totals
     log(f"[Agent] Proofread: {result.get('revised', 0)} revised, {result.get('flagged', 0)} flagged, "
         f"{totals['requests']} requests, {totals['prompt_tokens']} prompt tokens ({totals['cached_tokens']} cached)")
     return result
+
+
+def _note(change, store, *args) -> None:
+    """A change to the list of steps left to redo; a failure to write it does not stop the run."""
+    try:
+        change(store, *args)
+    except Exception:
+        logger.warning("agent: could not update the steps left to redo", exc_info=True)
+
+
+def _note_review(store: AgentStore, review: List[dict]) -> None:
+    """The pages whose inpaint review failed are written down for a redo, the reviewed ones taken off."""
+    for item in review:
+        if item.get("status") == "reviewed":
+            _note(redo_steps.done, store, redo_steps.INPAINT_REVIEW, [item["page"]])
+        elif item.get("status") == "error":
+            _note(redo_steps.failed, store, redo_steps.INPAINT_REVIEW, [item["page"]], str(item.get("error") or ""),
+                  str(item.get("resets") or ""))
 
 
 def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events: EventLog, log,
@@ -558,6 +589,13 @@ def _left_out_context(path: str, status: str, error: str = ""):
             f"AI Agent: {why}; the page keeps its inpainted and output images and was not rendered again "
             f"(check it again to retry)")
         return ctx
+    if status in ("redo_failed", "redo_none"):
+        ctx.skipped = True
+        ctx.skip_reason = f"agent_{status}"
+        ctx.skip_message = ("AI Agent: the step to redo failed again; the page keeps its output and its step "
+                            "stays to redo" if status == "redo_failed" else
+                            "AI Agent: nothing was redone on this page; it keeps its output")
+        return ctx
     if status in ("error", "no_json"):
         ctx.success = False
         ctx.translation_error = ctx.error = (f"AI Agent: {error}" if error else
@@ -609,6 +647,98 @@ class _BatchProgress:
         _report(self.progress, self.stage, min(self.offset + done, self.total), self.total)
 
 
+async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, client, settings: AgentSettings,
+                        target_lang: str, work_prompt, font_service, line_breaks: bool,
+                        should_stop: Callable[[], bool], backend, guard: Optional[RunGuard], log,
+                        run_info: Dict[str, Any]) -> Tuple[List[dict], set]:
+    """The steps an earlier run could not do on a chapter's pages (``redo.py``): the inpaint review of
+    each page, then the proofreading, then the font check of the proofread pages. No translation:
+    the pages keep their text, and the proofreader leaves the boxes the user changed in the editor.
+    Returns (each page's outcome for the render, the pages whose render reuses their inpainted image:
+    every page a step was done on, since a redo does not change the masks the image was made for, and
+    the review saved its own). A page is rendered again when a step was done on it; one whose steps
+    failed again (``redo_failed``) keeps its output and stays on the list, and so does one with
+    nothing done (``redo_none``: its only step was the review of a page the user changed)."""
+    from .resume import previous_states
+    from .revise import load_page
+
+    pending = redo_steps.read(store)
+    stems = {p: os.path.splitext(os.path.basename(p))[0] for p in pages}
+    states = {_key(s.path): s for s in previous_states(pages)}
+    events.emit("run_start", pages=[os.path.basename(p) for p in pages], model=getattr(client, "model_label", ""),
+                target_lang=target_lang, redo=redo_steps.summary(
+                    {step: {k: v for k, v in pending.get(step, {}).items() if k in stems.values()}
+                     for step in redo_steps.STEPS}), **run_info)
+    worked: Dict[str, bool] = {}
+    """Page -> a step was done on it (rendered again); False: its steps failed again."""
+    requests = 0
+    ended = ""
+    try:
+        to_review = []
+        for path in pages:
+            if stems[path] not in pending.get(redo_steps.INPAINT_REVIEW, {}):
+                continue
+            if getattr(states.get(_key(path)), "edited", False):
+                # its inpainted image may hold the user's repairs: the review would paint over them
+                log(f"[Agent] {stems[path]}: changed in the editor after the run; its inpainting is yours, the "
+                    f"inpaint review is not done again")
+                _note(redo_steps.done, store, redo_steps.INPAINT_REVIEW, [stems[path]])
+                continue
+            to_review.append(path)
+        if to_review:
+            log(f"[Agent] Redo: inpaint review of {len(to_review)} page(s)")
+            reviewer = InpaintReviewer(settings, client, store, events, target_lang, backend, should_stop,
+                                       save_image=getattr(backend, "save", None))
+            review = await reviewer.run(to_review)
+            _note_review(store, review)
+            requests += reviewer.totals["requests"]
+            for item in review:
+                ok = item.get("status") == "reviewed"
+                worked[_key(item["image"])] = worked.get(_key(item["image"]), False) or ok
+        to_proofread = [p for p in pages if stems[p] in pending.get(redo_steps.PROOFREAD, {})]
+        if to_proofread:
+            log(f"[Agent] Redo: proofreading {len(to_proofread)} page(s); the boxes you changed are "
+                f"{'left alone' if settings.revise_lock_user_edits else 'not locked'}")
+            locked: Dict[str, set] = {}
+            if settings.revise_lock_user_edits:
+                for path in to_proofread:
+                    try:
+                        doc = load_page(path, store)
+                    except Exception:
+                        logger.warning("agent: cannot tell which boxes of %s the user changed", path, exc_info=True)
+                        continue
+                    locked[stems[path]] = {rid for rid, r in doc.regions.items() if r.locked and not r.was_skipped}
+            proofreader = Proofreader(settings, client, store, events, target_lang, store.memory(), work_prompt,
+                                      should_stop, line_breaks=line_breaks, locked=locked)
+            result = await _proofread(proofreader, to_proofread, events, log)
+            requests += proofreader.totals["requests"]
+            ok = result.get("status") != "error"
+            for path in to_proofread:
+                worked[_key(path)] = worked.get(_key(path), False) or ok
+            if ok and font_service is not None:  # the proofreading may change the text
+                await _check_fonts(font_service, to_proofread, store, events, settings, log)
+    except (AgentStopped, asyncio.CancelledError):
+        ended = "stopped"
+        raise
+    finally:
+        outcomes = []
+        for path in pages:
+            side = store.load_sidecar(stems[path]) or {}
+            status = str(side.get("status") or "done")
+            if not worked.get(_key(path)):
+                status = "redo_failed" if _key(path) in worked else "redo_none"
+            elif guard is not None:
+                guard.page_finished(path)
+            flags = len(side.get("review_flags") or [])
+            outcomes.append({"page": stems[path], "image": path, "status": status, "flags": flags})
+            if ended != "stopped":
+                events.emit("page_done", page=stems[path], status=status, flags=flags, image=path)
+        events.emit("run_end", pages=len(outcomes), total=len(pages), reason=ended,
+                    done=sum(1 for o in outcomes if o["status"] in RENDERED), flagged=0,
+                    totals={"requests": requests}, redo=True)
+    return outcomes, {key for key, ok in worked.items() if ok}
+
+
 async def run_agent_workflow(
     translator,
     images_with_configs: List[tuple],
@@ -624,11 +754,15 @@ async def run_agent_workflow(
     inpaint_backend=None,
     fonts=None,
     revise: bool = False,
+    redo: bool = False,
 ) -> list:
     """``revise`` checks again pages an earlier run finished (``revise.py``): no preprocess, the
-    user's changes stay, only what changed is inpainted again."""
+    user's changes stay, only what changed is inpainted again. ``redo`` does only the steps an
+    earlier run could not do on the pages (``redo.py``), then renders them again."""
     settings = agent_settings if isinstance(agent_settings, AgentSettings) else AgentSettings(**(agent_settings or {}))
-    if revise:
+    if redo:
+        revise = False
+    if revise or redo:
         preprocess = False
     if not images_with_configs:
         return []
@@ -697,6 +831,16 @@ async def run_agent_workflow(
             log(f"[Agent] Check again: {len(paths)} page(s) keep their translations and your changes; copies of "
                 f"them are in agent/backups. Your edited boxes are "
                 f"{'locked' if settings.revise_lock_user_edits else 'not locked'}.")
+        elif redo:
+            # like a check: the pages change in place, copies first
+            broadcast("workflow_stage", stage="redo", pages=len(paths))
+            guard = RunGuard.begin(paths, revise=True)
+            from ..utils.path_manager import find_json_path as _find_json
+
+            for path in paths:
+                json_guard.note(_find_json(path))
+            log(f"[Agent] Redo: the steps an earlier run could not do on {len(paths)} page(s); the pages keep "
+                f"their translations and your changes (copies in agent/backups)")
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
@@ -732,110 +876,120 @@ async def run_agent_workflow(
                 run_id = f"{base}~{number}"
             events = EventLog(store.run_log_path(run_id), run_id)
             chapter_logs[work_dir] = (events.path, run_id)
+            if preprocess:  # translated again: what was left to do on these pages goes with their old text
+                _note(redo_steps.forget, store, [os.path.splitext(os.path.basename(p))[0] for p in pages])
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
             if hasattr(client, "session_id"):  # one session per chapter run on the API side
                 client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"
             try:
-                reviewer = None
-                # a check keeps the inpainted image (the user's repairs are in it): only what changed is
-                # inpainted again, after the agent (_inpaint_changes)
-                if settings.inpaint_review and not revise:
-                    backend = inpaint_backend or PipelineInpaintBackend(translator, config)
-                    reviewer = InpaintReviewer(settings, client, store, events, target_lang, backend, should_stop,
-                                               save_image=getattr(backend, "save", None))
-                queue: asyncio.Queue = asyncio.Queue()
-                review_task: Optional[asyncio.Future] = None
-                if reviewer is not None and settings.review_while_translating:
-                    log("[Agent] 3/4 Inpaint review: each page as soon as the agent finishes it")
-                    review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
+                if redo:
+                    chapter, redone = await _redo_chapter(
+                        pages, store, events, client, settings, target_lang, work_prompt, font_service, bool(breaks),
+                        should_stop, inpaint_backend or PipelineInpaintBackend(translator, config), guard, log,
+                        {"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
+                    reviewed |= redone
+                else:
+                    reviewer = None
+                    # a check keeps the inpainted image (the user's repairs are in it): only what changed is
+                    # inpainted again, after the agent (_inpaint_changes)
+                    if settings.inpaint_review and not revise:
+                        backend = inpaint_backend or PipelineInpaintBackend(translator, config)
+                        reviewer = InpaintReviewer(settings, client, store, events, target_lang, backend, should_stop,
+                                                   save_image=getattr(backend, "save", None))
+                    queue: asyncio.Queue = asyncio.Queue()
+                    review_task: Optional[asyncio.Future] = None
+                    if reviewer is not None and settings.review_while_translating:
+                        log("[Agent] 3/4 Inpaint review: each page as soon as the agent finishes it")
+                        review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
 
-                def page_done(outcome: dict) -> None:
-                    if guard is not None:
-                        guard.page_finished(outcome["image"])
-                        if revise and outcome.get("status") in RENDERED:
-                            # its JSON keeps this check's mask from now on: until the inpainted image
-                            # is brought up to it, the mask it matches is kept (a stop or a failure)
-                            entry = guard.entries.get(_key(outcome["image"])) or {}
-                            try:
-                                mark_pending(store, outcome["page"], outcome["image"], entry.get("json_copy") or "")
-                            except Exception:
-                                logger.warning("agent: could not mark the inpainting as pending", exc_info=True)
-                    translated[0] += 1
-                    _report(progress, "translate", translated[0], len(paths))
-                    if review_task is not None and outcome.get("status") in ("done", "incomplete"):
-                        queue.put_nowait(outcome["image"])
+                    def page_done(outcome: dict) -> None:
+                        if guard is not None:
+                            guard.page_finished(outcome["image"])
+                            if revise and outcome.get("status") in RENDERED:
+                                # its JSON keeps this check's mask from now on: until the inpainted image
+                                # is brought up to it, the mask it matches is kept (a stop or a failure)
+                                entry = guard.entries.get(_key(outcome["image"])) or {}
+                                try:
+                                    mark_pending(store, outcome["page"], outcome["image"], entry.get("json_copy") or "")
+                                except Exception:
+                                    logger.warning("agent: could not mark the inpainting as pending", exc_info=True)
+                        translated[0] += 1
+                        _report(progress, "translate", translated[0], len(paths))
+                        if review_task is not None and outcome.get("status") in ("done", "incomplete"):
+                            queue.put_nowait(outcome["image"])
 
-                use_styles = work_prompt is not None and settings.choose_fonts and font_service is not None
-                styles_path = work_fonts_path(work_prompt.path) if use_styles else ""
-                runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
-                                     on_page_done=page_done, work_prompt=work_prompt,
-                                     fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
-                                     font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
-                                     run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
-                                               **({"work_memory": seeded} if seeded else {})},
-                                     preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
-                                     default_font=getattr(getattr(config, "render", None), "font_family", "") or "")
-                review: List[dict] = []
-                proof_task: Optional[asyncio.Future] = None
-                try:
+                    use_styles = work_prompt is not None and settings.choose_fonts and font_service is not None
+                    styles_path = work_fonts_path(work_prompt.path) if use_styles else ""
+                    runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
+                                         on_page_done=page_done, work_prompt=work_prompt,
+                                         fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
+                                         font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
+                                         run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
+                                                   **({"work_memory": seeded} if seeded else {})},
+                                         preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
+                                         default_font=getattr(getattr(config, "render", None), "font_family", "") or "")
+                    review: List[dict] = []
+                    proof_task: Optional[asyncio.Future] = None
                     try:
-                        chapter = await runner.run()
-                        finished = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
-                        if settings.proofread and finished:
-                            # text only, so it runs while the review is still busy with the last pages
-                            log(f"[Agent] Proofread: {len(finished)} page(s)")
-                            _report(progress, "proofread", translated[0], len(paths))
-                            proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
-                                                      work_prompt, should_stop, line_breaks=bool(breaks))
-                            proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
-                        if review_task is not None:
-                            queue.put_nowait(None)
-                            review = await review_task
-                        elif reviewer is not None and finished:
-                            log(f"[Agent] 3/4 Inpaint review: {len(finished)} page(s)")
-                            review = await reviewer.run(finished)
-                        if proof_task is not None:
-                            await proof_task
-                        if font_service is not None and finished:
-                            # after the proofreading: it may change the text
-                            await _check_fonts(font_service, finished, store, events, settings, log)
-                        if styles_path and finished:
-                            _save_work_styles(styles_path, runner.memory, work_dir, events, log)
-                        if settings.update_work_glossary and work_prompt is not None and work_prompt.path \
-                                and finished and _save_work_terms(work_prompt.path, runner.memory, finished,
-                                                                  work_dir, events, log, target_lang):
-                            # the next chapter reads the file again, with the new terms
-                            work_prompt = load_work_prompt(work_prompt.path, language_name(target_lang)) \
-                                or work_prompt
-                        if work_memory:
-                            _save_memory(work_memory, runner.memory, work_dir, events, log)
-                        if revise and finished and guard is not None:
-                            backend = inpaint_backend or PipelineInpaintBackend(translator, config)
-                            reuse, kept_back = await _inpaint_changes(finished, guard, backend, store, events, log,
-                                                                      should_stop)
-                            reviewed |= reuse
-                            held.update(kept_back)
-                    except BaseException:
-                        for task in (review_task, proof_task):
-                            if task is not None and not task.done():
-                                task.cancel()
-                                await asyncio.gather(task, return_exceptions=True)
-                        raise
-                except AgentStopped:
-                    raise asyncio.CancelledError("Agent workflow stopped by user")
-                if reviewer is not None:
-                    for item in review:
-                        if item.get("status") == "reviewed":
-                            reviewed.add(_key(item["image"]))
-                            log(f"[Agent] {item['page']}: inpaint reviewed, {item.get('filled', 0)} flat-filled, "
-                                f"{item.get('retried', 0)} redone, {item.get('flagged', 0)} flagged")
-                        else:
-                            log(f"[Agent] {item['page']}: inpaint {item.get('status')} "
-                                f"({item.get('reason') or item.get('error', '')})")
-                    totals = reviewer.totals
-                    log(f"[Agent] Inpaint review tokens: {totals['prompt_tokens']} prompt "
-                        f"({totals['cached_tokens']} cached), {totals['completion_tokens']} completion, "
-                        f"{totals['requests']} requests")
+                        try:
+                            chapter = await runner.run()
+                            finished = [o["image"] for o in chapter if o.get("status") in ("done", "incomplete")]
+                            if settings.proofread and finished:
+                                # text only, so it runs while the review is still busy with the last pages
+                                log(f"[Agent] Proofread: {len(finished)} page(s)")
+                                _report(progress, "proofread", translated[0], len(paths))
+                                proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
+                                                          work_prompt, should_stop, line_breaks=bool(breaks))
+                                proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
+                            if review_task is not None:
+                                queue.put_nowait(None)
+                                review = await review_task
+                            elif reviewer is not None and finished:
+                                log(f"[Agent] 3/4 Inpaint review: {len(finished)} page(s)")
+                                review = await reviewer.run(finished)
+                            if proof_task is not None:
+                                await proof_task
+                            if font_service is not None and finished:
+                                # after the proofreading: it may change the text
+                                await _check_fonts(font_service, finished, store, events, settings, log)
+                            if styles_path and finished:
+                                _save_work_styles(styles_path, runner.memory, work_dir, events, log)
+                            if settings.update_work_glossary and work_prompt is not None and work_prompt.path \
+                                    and finished and _save_work_terms(work_prompt.path, runner.memory, finished,
+                                                                      work_dir, events, log, target_lang):
+                                # the next chapter reads the file again, with the new terms
+                                work_prompt = load_work_prompt(work_prompt.path, language_name(target_lang)) \
+                                    or work_prompt
+                            if work_memory:
+                                _save_memory(work_memory, runner.memory, work_dir, events, log)
+                            if revise and finished and guard is not None:
+                                backend = inpaint_backend or PipelineInpaintBackend(translator, config)
+                                reuse, kept_back = await _inpaint_changes(finished, guard, backend, store, events, log,
+                                                                          should_stop)
+                                reviewed |= reuse
+                                held.update(kept_back)
+                        except BaseException:
+                            for task in (review_task, proof_task):
+                                if task is not None and not task.done():
+                                    task.cancel()
+                                    await asyncio.gather(task, return_exceptions=True)
+                            raise
+                    except AgentStopped:
+                        raise asyncio.CancelledError("Agent workflow stopped by user")
+                    if reviewer is not None:
+                        _note_review(store, review)
+                        for item in review:
+                            if item.get("status") == "reviewed":
+                                reviewed.add(_key(item["image"]))
+                                log(f"[Agent] {item['page']}: inpaint reviewed, {item.get('filled', 0)} flat-filled, "
+                                    f"{item.get('retried', 0)} redone, {item.get('flagged', 0)} flagged")
+                            else:
+                                log(f"[Agent] {item['page']}: inpaint {item.get('status')} "
+                                    f"({item.get('reason') or item.get('error', '')})")
+                        totals = reviewer.totals
+                        log(f"[Agent] Inpaint review tokens: {totals['prompt_tokens']} prompt "
+                            f"({totals['cached_tokens']} cached), {totals['completion_tokens']} completion, "
+                            f"{totals['requests']} requests")
             except asyncio.CancelledError:  # the stop button: pages still working or in review are stopped
                 events.emit("stopped", agent="workflow", stage="agent")
                 raise
@@ -875,7 +1029,7 @@ async def run_agent_workflow(
                 render_items.append((image, cfg))
             else:
                 left_out[path] = "no_json" if status in RENDERED else status
-        if revise and render_items:  # the output images are the user's exports: a copy first, or no render
+        if (revise or redo) and render_items:  # the output images are the user's exports: a copy first, or no render
             unsaved = _keep_outputs(translator, render_items, save_info, log)
             if unsaved:
                 render_items = [item for item in render_items if _key(_image_path(item[0])) not in unsaved]

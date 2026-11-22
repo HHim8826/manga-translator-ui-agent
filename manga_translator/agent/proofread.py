@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from . import checks, images, json_guard
 from .events import EventLog
@@ -274,7 +274,7 @@ def _short(text: str, limit: int = 24) -> str:
 class Proofreader:
     def __init__(self, settings: AgentSettings, client, store: AgentStore, events: EventLog, target_lang: str,
                  memory: AgentMemory, work_prompt=None, should_stop: Callable[[], bool] = lambda: False,
-                 line_breaks: bool = False):
+                 line_breaks: bool = False, locked: Optional[Dict[str, Iterable[int]]] = None):
         self.settings = settings
         self.client = client
         self.store = store
@@ -285,6 +285,9 @@ class Proofreader:
         self.should_stop = should_stop
         self.line_breaks = line_breaks
         """AI line breaks (render setting disable_auto_wrap): revisions keep [BR] line breaks."""
+        self.locked = {str(stem): set(ids) for stem, ids in (locked or {}).items()}
+        """Page stem -> the regions the user changed in the editor, which the proofreader leaves (a
+        redo of the proofreading: no check ran before it to lock them in the sidecar)."""
         self.totals = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "requests": 0}
 
     def system_prompt(self) -> str:
@@ -323,6 +326,7 @@ class Proofreader:
                 logger.warning(f"proofread: cannot open {path}: {exc}")
                 continue
             page.match_sidecar(self.store.load_sidecar(page.stem))
+            page.locked |= {rid for rid in self.locked.get(page.stem, ()) if rid in page.regions}
             pages[page.stem] = page
         regions = sum(len(p.listing()) for p in pages.values())
         if not regions:

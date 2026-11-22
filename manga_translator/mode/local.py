@@ -198,8 +198,8 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
         cli_config['batch_concurrent'] = True
     # 如果命令行没有指定，保留配置文件中的 batch_concurrent 值（已在 cli_config 中）
 
-    # --agent-revise 明确要求 AI Agent 重新检查：不论 cli.agent_workflow 怎么设，都走 Agent 流程
-    if getattr(args, 'agent_revise', False):
+    # --agent-revise / --agent-redo 明确要求 AI Agent 重新检查或补做：不论 cli.agent_workflow 怎么设，都走 Agent 流程
+    if getattr(args, 'agent_revise', False) or getattr(args, 'agent_redo', False):
         cli_config['agent_workflow'] = True
     
     config_dict['cli'] = cli_config
@@ -367,6 +367,7 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
                 agent_settings=config_dict.get('agent'),
                 log=print,
                 revise=bool(getattr(args, 'agent_revise', False)),
+                redo=bool(getattr(args, 'agent_redo', False)),
             )
         else:
             contexts = await translator.translate_batch(
@@ -469,9 +470,10 @@ async def run_local_mode(args):
     verbose = getattr(args, 'verbose', False)
     overwrite = getattr(args, 'overwrite', False)
     
-    if use_subprocess and getattr(args, 'agent_revise', False):
+    if use_subprocess and (getattr(args, 'agent_revise', False) or getattr(args, 'agent_redo', False)):
         # 子进程只跑一般翻译；在收集或写入任何文件前就拒绝，避免把已完成的话数重新翻译
-        print("❌ --agent-revise 不支持 --subprocess：AI Agent 重新检查只能在直接模式执行，请去掉 --subprocess")
+        flag = '--agent-redo' if getattr(args, 'agent_redo', False) else '--agent-revise'
+        print(f"❌ {flag} 不支持 --subprocess：AI Agent 重新检查和补做只能在直接模式执行，请去掉 --subprocess")
         sys.exit(2)
 
     if use_subprocess:

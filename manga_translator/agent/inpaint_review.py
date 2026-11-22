@@ -626,7 +626,11 @@ class InpaintReviewer:
             except AgentStopped:
                 raise
             except Exception as exc:
+                from .client import quota_resets
+
                 logger.exception(f"inpaint review of {stem} failed")
-                self.events.emit("error", page=stem, agent="inpaint", error=f"{type(exc).__name__}: {str(exc)[:300]}")
-                outcomes.append({"page": stem, "image": path, "status": "error", "error": str(exc)})
+                resets = quota_resets(exc)  # a usage limit: when to do it again by hand (redo.py)
+                self.events.emit("error", page=stem, agent="inpaint", error=f"{type(exc).__name__}: {str(exc)[:300]}",
+                                 redo=True, **resets)
+                outcomes.append({"page": stem, "image": path, "status": "error", "error": str(exc), **resets})
         return outcomes

@@ -4,11 +4,13 @@ The preprocess writes every page's JSON again, so a rerun replaces the agent's t
 changes made in the editor. When pages of the run already have a translation (an agent result, or
 one from another mode or the editor), the user chooses: only the pages that are not done, every
 page, checking the finished pages again (``manga_translator.agent.revise``: they keep their
-translations and the user's changes), or nothing.
+translations and the user's changes), or nothing. When an earlier run could not do a step on some
+pages (the inpaint review, the proofreading: most often the API's usage limit), the first choice is to
+redo only those steps (``manga_translator.agent.redo``).
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
@@ -16,6 +18,10 @@ MAX_NAMES = 8
 REVISABLE = ("done", "incomplete", "edited")
 """Agent statuses of pages a check can go over: the agent finished them (``edited``: the user saved
 the page during a run)."""
+REDO = "redo"
+"""What ``ask_rerun`` returns as the mode for "redo the steps that were not done"."""
+STEP_KEYS = (("inpaint_review", "Agents Inpaint"), ("proofread", "Agents Proofread"))
+"""The steps ``redo.py`` keeps, in its order, with the names the question shows."""
 
 
 def _names(stems: Sequence[str], separator: str) -> str:
@@ -46,6 +52,7 @@ def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional
     done = [s for s in seen if s.status in ("done", "edited")]  # edited: the user saved it during a run
     edited = [s for s in seen if s.edited]
     revisable = [s for s in seen if s.status in REVISABLE]
+    redo = [s for s in revisable if getattr(s, "pending", ())]
     separator = t("Agent Result Separator")
     parts = []
     if seen:
@@ -54,6 +61,13 @@ def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional
         parts.append(t("Agent Rerun Translated", count=len(others), pages=_names([s.stem for s in others], separator)))
     if edited:
         parts.append(t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)))
+    if redo:
+        steps = separator.join(t(key) for step, key in STEP_KEYS if any(step in s.pending for s in redo))
+        parts.append(t("Agent Rerun Redo Note", count=len(redo), steps=steps,
+                       pages=_names([s.stem for s in redo], separator)))
+        resets = max((getattr(s, "resets", "") for s in redo), default="")
+        if resets:
+            parts.append(t("Agent Rerun Redo Resets", time=resets))
     keep = {id(s) for s in done + others}
     unfinished = [s for s in states if id(s) not in keep]
     if revisable:
@@ -65,13 +79,15 @@ def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional
     parts.append(t("Agent Rerun Stop Note"))
     return {"text": "\n\n".join(parts), "unfinished": [s.path for s in unfinished],
             "all": [s.path for s in states], "revise": [s.path for s in revisable],
+            "redo": [s.path for s in redo],
             "edited": len(edited), "translated": len(others), "lock": lock}
 
 
 def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
-              states=None, lock: bool = True) -> Optional[Tuple[List[str], bool]]:
-    """(the files to process, whether to check them again) — all of them, only the ones not done, or
-    the finished ones checked again; None when the user cancels. ``lock``: the run's
+              states=None, lock: bool = True) -> Optional[Tuple[List[str], Union[bool, str]]]:
+    """(the files to process, the mode: False, True to check them again, or ``REDO`` to redo the steps
+    an earlier run could not do) — all of them, only the ones not done, the finished ones checked
+    again, or the pages with steps to redo; None when the user cancels. ``lock``: the run's
     ``revise_lock_user_edits``, so the check-again button says what happens to the user's boxes.
     ``parent``: a widget, or the main page's ``MainView`` (see ``_window``)."""
     parent = _window(parent)
@@ -94,6 +110,9 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
     box.setIcon(QMessageBox.Icon.Warning)
     box.setWindowTitle(t("Agent Rerun Title"))
     box.setText(question["text"])
+    again = None
+    if question["redo"]:
+        again = box.addButton(t("Agent Rerun Redo", count=len(question["redo"])), QMessageBox.ButtonRole.ActionRole)
     revise = None
     if question["revise"]:
         revise = box.addButton(t("Agent Rerun Revise" if lock else "Agent Rerun Revise Unlocked",
@@ -105,10 +124,12 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
                              QMessageBox.ButtonRole.AcceptRole)
     redo = box.addButton(t("Agent Rerun All", count=len(question["all"])), QMessageBox.ButtonRole.DestructiveRole)
     cancel = box.addButton(t("Cancel"), QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(only or cancel)
+    box.setDefaultButton(again or only or cancel)
     box.setEscapeButton(cancel)
     box.exec()
     clicked = box.clickedButton()
+    if again is not None and clicked is again:
+        return question["redo"], REDO
     if revise is not None and clicked is revise:
         return question["revise"], True
     if only is not None and clicked is only:
