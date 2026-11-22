@@ -47,8 +47,11 @@ class Stream:
         self.closed = True
 
 
-def _client(monkeypatch, pieces=PIECES, refuse="", **settings):
+def _client(monkeypatch, pieces=PIECES, refuse="", replies=None, attempts=1, **settings):
+    """``replies``: the pieces of each stream in turn (otherwise every stream sends ``pieces``);
+    ``attempts``: how often the request is sent when it fails, like the API rotation's retries."""
     sent, streams = [], []
+    replies = list(replies or [])
 
     class Completions:
         async def create(self, **kwargs):
@@ -57,14 +60,19 @@ def _client(monkeypatch, pieces=PIECES, refuse="", **settings):
                 response = httpx.Response(400, request=httpx.Request("POST", "http://api/chat/completions"))
                 raise openai.BadRequestError(refuse, response=response, body=None)
             if kwargs.get("stream"):
-                streams.append(Stream(pieces))
+                streams.append(Stream(replies.pop(0) if replies else pieces))
                 return streams[-1]
             call = SimpleNamespace(id="c0", function=SimpleNamespace(name="zoom", arguments="{}"))
             message = SimpleNamespace(content=None, tool_calls=[call], refusal=None)
             return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=USAGE)
 
     async def run(*, endpoints, operation, **_):
-        return await operation(endpoints[0])
+        for attempt in range(attempts):
+            try:
+                return await operation(endpoints[0])
+            except RuntimeError:
+                if attempt == attempts - 1:
+                    raise
 
     monkeypatch.setattr(api_key_rotation, "run_with_api_candidates", run)
     endpoint = SimpleNamespace(model_name="m", base_url="u", status_key="k", api_key="x")
@@ -128,3 +136,33 @@ def test_an_empty_stream_is_an_error(monkeypatch):
         assert "empty reply" in str(err)
     else:
         raise AssertionError("an empty reply was accepted")
+
+
+DONE_CALL = [_piece(calls=[(0, "c9", "mark_page_done", '{"summary": "ok"}')])]
+
+
+def test_a_stream_cut_before_its_end_hands_on_no_tool_call(monkeypatch):
+    """Review item 12: a complete-looking ``mark_page_done`` and then the stream stops, with no finish
+    reason and no token counts. Nothing is handed on, streaming stays on for the next try."""
+    client, sent, streams = _client(monkeypatch, pieces=DONE_CALL)
+    try:
+        asyncio.run(client.complete([], [], "required"))
+    except RuntimeError as err:
+        assert "stopped before its end" in str(err)
+    else:
+        raise AssertionError("half a reply was handed on")
+    assert streams[0].closed and not client._no_stream
+
+    # sent again (the API rotation retries an error): the whole reply comes this time
+    client, sent, _ = _client(monkeypatch, replies=[DONE_CALL, PIECES], attempts=2)
+    reply = asyncio.run(client.complete([], [], "required"))
+    assert [c.name for c in reply.tool_calls] == ["zoom", "set_text"] and reply.prompt_tokens == 5482
+    assert [k.get("stream", False) for k in sent] == [True, True]
+
+
+def test_the_token_counts_that_close_a_stream_are_its_end_too(monkeypatch):
+    """An API that sends no finish reason still ends its stream with the token counts."""
+    pieces = [_piece(calls=[(0, "c0", "zoom", '{"box": [1, 2, 3, 4]}')]), _piece(usage=USAGE)]
+    client, sent, _ = _client(monkeypatch, pieces=pieces)
+    reply = asyncio.run(client.complete([], [], "required"))
+    assert reply.tool_calls[0].name == "zoom" and reply.prompt_tokens == 5482 and not client._no_stream

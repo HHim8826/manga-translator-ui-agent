@@ -125,16 +125,22 @@ class OpenAIChatClient:
         """The reply sent in pieces (``stream_requests``), put together as one message, with the token
         counts of its last piece. The reply starts within seconds and keeps coming while the model
         writes, so a proxy that cuts a silent connection (the user's: 120 s, Cloudflare 524) does not
-        cut a long reply. Without token counts the endpoint gets requests without streaming."""
+        cut a long reply. Without token counts the endpoint gets requests without streaming.
+
+        A stream that stops before its end (neither a finish reason nor the token counts that close it)
+        is an error, so the request is sent again: the tool calls it brought may be only the first part
+        of the reply, even when their arguments happen to parse (review item 12)."""
         response = await api.create(stream=True, stream_options={"include_usage": True}, **args)
         content: List[str] = []
         refusal: List[str] = []
         calls: Dict[int, Dict[str, str]] = {}
         usage = None
+        finish = None
         try:
             async for chunk in response:
                 usage = getattr(chunk, "usage", None) or usage
                 for choice in getattr(chunk, "choices", None) or []:
+                    finish = getattr(choice, "finish_reason", None) or finish
                     delta = getattr(choice, "delta", None)
                     if delta is None:
                         continue
@@ -152,6 +158,9 @@ class OpenAIChatClient:
             close = getattr(response, "close", None)
             if close is not None:
                 await close()
+        if finish is None and usage is None:
+            raise RuntimeError("the streamed reply stopped before its end (no finish reason, no token counts); "
+                               "if this API never ends its streams, turn off stream_requests")
         if usage is None:
             self._no_stream.add(self._key(endpoint))
             logger.warning("The API at %s streams without token counts; its requests go without streaming",
