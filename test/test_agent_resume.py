@@ -88,13 +88,30 @@ def test_the_question_names_the_edited_pages():
 
     states = _states(__import__("pathlib").Path("x"))
     question = rerun_question(_t, states)
+    pages = ("Agent Rerun Pages revise=001Agent Result Separator002 "
+             "unfinished=003Agent Result Separator004")
     assert question["text"] == ("Agent Rerun Text done=2 pages=4 seen=3\n\n"
                                 "Agent Rerun Edited count=1 pages=002\n\nAgent Rerun Revise Note\n\n"
-                                "Agent Rerun Stop Note")
+                                f"Agent Rerun Revise Locked\n\n{pages}\n\nAgent Rerun Stop Note")
     assert [os.path.basename(p) for p in question["unfinished"]] == ["003.png", "004.png"]
     # a check goes over the finished pages only: 003 failed, 004 was never run
     assert [os.path.basename(p) for p in question["revise"]] == ["001.png", "002.png"]
     assert rerun_question(_t, [PageState("a/001.png", "")]) is None
+    # review item 14: with the lock off the question says the agent may change the user's boxes
+    unlocked = rerun_question(_t, states, lock=False)["text"]
+    assert "Agent Rerun Revise Unlocked Note" in unlocked and "Agent Rerun Revise Locked" not in unlocked
+
+
+def test_the_check_again_button_follows_the_lock_setting(tmp_path, monkeypatch, app):  # noqa: F811
+    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages.agent_rerun import ask_rerun
+
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append([b.text() for b in box.buttons()]) or 0)
+    states = _states(tmp_path)
+    for lock in (True, False):
+        ask_rerun(None, _t, [s.path for s in states], states, lock=lock)
+    assert "Agent Rerun Revise count=2" in seen[0] and "Agent Rerun Revise Unlocked count=2" in seen[1]
 
 
 @pytest.mark.parametrize("button,expected", [

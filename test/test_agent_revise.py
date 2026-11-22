@@ -138,6 +138,46 @@ def test_the_lock_can_be_turned_off_and_the_agents_change_is_its_own(tmp_path):
     assert "render_box_rect_local" not in out[0]
 
 
+def test_a_changed_source_text_or_white_frame_is_the_users_too(tmp_path):
+    """Review item 01: the translation stays, only the OCR text of #1 or the white frame of #2 changed
+    (the editor sets a custom frame when the frame is dragged or the font size changes)."""
+    folder, (path,) = _first_run(tmp_path)
+    side = _store(folder).load_sidecar("001")
+    assert all("frame" in e["match"] and e["match"]["frame"] is None for e in side["regions"])
+    raw, page = _read(folder)
+    page["regions"][0]["text"] = page["regions"][0]["texts"][0] = "我改的原文"
+    page["regions"][1].update(white_frame_rect_local=[-30, -60, 30, 60], has_custom_white_frame=True)
+    _write(folder, raw)
+    doc = load_page(path, _store(folder))
+    first, second, third = (doc.regions[i] for i in doc.order if not doc.regions[i].skipped)
+    assert (first.locked, second.locked, third.locked) == (True, True, False)
+    for region in (first, second):
+        for call in (lambda: doc.set_text(region.id, "x", "新的"), lambda: doc.skip(region.id, "other", "r"),
+                     lambda: doc.split(region.id, region.bbox, "r")):
+            with pytest.raises(RegionError, match="the user's"):
+                call()
+    # the next check: the frame the run left is not a change; moving it again is
+    doc.status = "done"
+    _store(folder).save_sidecar(doc.stem, doc.sidecar())
+    side = _store(folder).load_sidecar("001")
+    frames = [e["match"]["frame"] for e in side["regions"] if not e.get("skipped")]
+    assert frames == [None, [-30.0, -60.0, 30.0, 60.0], None]
+    for entry in side["regions"]:
+        entry.pop("user_edited", None)
+    _store(folder).save_sidecar(doc.stem, side)
+    assert not load_page(path, _store(folder)).regions[second.id].locked
+    page["regions"][1]["white_frame_rect_local"] = [-30, -50, 30, 70]
+    _write(folder, raw)
+    assert load_page(path, _store(folder)).regions[second.id].locked
+    # a sidecar from before frames were kept: a custom frame there is the user's
+    for entry in side["regions"]:
+        entry["match"].pop("frame", None)
+    _store(folder).save_sidecar(doc.stem, side)
+    page["regions"][1]["white_frame_rect_local"] = [-30, -60, 30, 60]
+    _write(folder, raw)
+    assert load_page(path, _store(folder)).regions[second.id].locked
+
+
 def test_deleted_boxes_stay_deleted(tmp_path):
     folder, (path,) = _first_run(tmp_path)
     _user_edits(folder)

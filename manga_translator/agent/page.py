@@ -146,6 +146,20 @@ def line_groups(region: "Region") -> List[List[int]]:
     return sorted(groups.values(), key=lambda g: g[0])
 
 
+def custom_frame(data: Optional[dict]) -> Optional[List[float]]:
+    """The white frame the user set for a JSON region in the editor (``has_custom_white_frame``): the
+    editor sets it when the frame is dragged or resized, and when the font, its size, the stroke,
+    the spacing or the text change (it fits the frame to the new text). None for the box the render
+    measured (``render_box_rect_local``); the agent never sets one."""
+    frame = (data or {}).get("white_frame_rect_local")
+    if not (data or {}).get("has_custom_white_frame") or not isinstance(frame, (list, tuple)) or len(frame) != 4:
+        return None
+    try:
+        return [round(float(v), 1) for v in frame]
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Region:
     id: int
@@ -173,7 +187,8 @@ class Region:
     """The agent's font style for this region (``font_styles.py``); empty for normal dialogue."""
     # --- a page checked again (``revise.py``) ---------------------------------
     user_edited: bool = False
-    """The user changed the region in the editor after the agent (its text or place), or drew it."""
+    """The user changed the region in the editor after the agent (its translation, its source text,
+    its place, or its white frame: font size, stroke, a dragged frame ...), or drew it."""
     user_font: bool = False
     """The user gave the region its font in the editor: the thin-font replacement and the font check
     leave it."""
@@ -735,7 +750,10 @@ class PageDoc:
             "regions": [
                 {
                     "id": r.id,
-                    "match": {"center": r.center, "bbox": r.bbox},
+                    # frame: the user's white frame as the JSON has it now, so the next check can
+                    # tell a frame the user moves later from one that was there already
+                    "match": {"center": r.center, "bbox": r.bbox,
+                              "frame": None if r.skipped else custom_frame(r.loaded if r.unchanged else r.data)},
                     "origin": r.origin,
                     "category": r.category,
                     "ocr_local": r.ocr_local,

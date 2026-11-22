@@ -8,8 +8,10 @@ fixes translations and line breaks. A region it leaves alone is written back exa
 
 The user's own work stays:
 
-* a region the user changed in the editor after the run (its text or its place), or drew there,
-  counts as the user's (``Region.user_edited``). With ``revise_lock_user_edits`` (on by default) it
+* a region the user changed in the editor after the run, or drew there, counts as the user's
+  (``Region.user_edited``): its translation, its source text (the OCR), its place, or its white
+  frame (``page.custom_frame``: the editor sets one when the frame is dragged or resized and when the
+  font size, the stroke or the spacing change). With ``revise_lock_user_edits`` (on by default) it
   is locked: the write tools refuse it and the proofreader leaves it;
 * a box the user deleted stays deleted (``PageDoc.removed``): neither the recall check nor
   add_region boxes its text again;
@@ -41,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import cv2
 import numpy as np
 
-from .page import PageDoc, Region
+from .page import PageDoc, Region, custom_frame
 from .review import match_region, region_bbox
 from .store import AgentStore, _read_json
 
@@ -68,6 +70,19 @@ def _moved(box: Optional[Sequence[float]], other: Optional[Sequence[float]]) -> 
     if not box or not other or len(box) != 4 or len(other) != 4:
         return False
     return any(abs(float(a) - float(b)) > MOVED_PX for a, b in zip(box, other))
+
+
+def _frame_changed(match: dict, data: dict) -> bool:
+    """The user's white frame (``page.custom_frame``) is not the one the run left: set, moved, resized
+    or removed. A sidecar from before frames were kept has none: a frame there is the user's, since
+    the agent never sets one."""
+    frame = custom_frame(data)
+    if "frame" not in match:
+        return frame is not None
+    earlier = match.get("frame")
+    if earlier is None or frame is None:
+        return (earlier is None) != (frame is None)
+    return _moved(earlier, frame)
 
 
 def _borrow_only(rich: Any, fallbacks: set) -> bool:
@@ -178,9 +193,12 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
             region.origin = str(entry.get("origin") or "detector")
             region.style = str(entry.get("style") or "")
             side_font = str(entry.get("font") or "")
+            match = entry.get("match") or {}
             region.user_edited = bool(entry.get("user_edited")) \
                 or text_key(entry.get("translation")) != text_key(translation) \
-                or _moved((entry.get("match") or {}).get("bbox"), region_bbox(data))
+                or text_key(entry.get("ocr_agent") or entry.get("ocr_local")) != text_key(source) \
+                or _moved(match.get("bbox"), region_bbox(data)) \
+                or _frame_changed(match, data)
             region.user_font = bool(entry.get("user_font")) or users_font(font, side_font)
             if font and not region.user_font and default_font and not same(font, default_font):
                 region.font = font  # the agent's font, kept in the sidecar

@@ -23,10 +23,11 @@ def _names(stems: Sequence[str], separator: str) -> str:
     return shown + ("…" if len(stems) > MAX_NAMES else "")
 
 
-def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
+def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional[dict]:
     """Texts and page lists of the question; None when no page has a translation yet. A page
     translated outside the AI Agent (another mode, the editor) counts as done: processing only the
-    pages not done leaves it alone."""
+    pages not done leaves it alone. ``lock`` is the setting ``revise_lock_user_edits``: what a check
+    does with the boxes the user changed."""
     seen = [s for s in states if s.status]
     others = [s for s in states if not s.status and getattr(s, "translated", False)]
     if not seen and not others:
@@ -42,23 +43,29 @@ def rerun_question(t: Callable[..., str], states) -> Optional[dict]:
         parts.append(t("Agent Rerun Translated", count=len(others), pages=_names([s.stem for s in others], separator)))
     if edited:
         parts.append(t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)))
+    keep = {id(s) for s in done + others}
+    unfinished = [s for s in states if id(s) not in keep]
     if revisable:
         parts.append(t("Agent Rerun Revise Note"))
+        parts.append(t("Agent Rerun Revise Locked") if lock else t("Agent Rerun Revise Unlocked Note"))
+        if unfinished:  # two choices that take different pages, maybe as many of them
+            parts.append(t("Agent Rerun Pages", revise=_names([s.stem for s in revisable], separator),
+                           unfinished=_names([s.stem for s in unfinished], separator)))
     parts.append(t("Agent Rerun Stop Note"))
-    keep = {id(s) for s in done + others}
-    return {"text": "\n\n".join(parts), "unfinished": [s.path for s in states if id(s) not in keep],
+    return {"text": "\n\n".join(parts), "unfinished": [s.path for s in unfinished],
             "all": [s.path for s in states], "revise": [s.path for s in revisable],
-            "edited": len(edited), "translated": len(others)}
+            "edited": len(edited), "translated": len(others), "lock": lock}
 
 
 def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
-              states=None) -> Optional[Tuple[List[str], bool]]:
+              states=None, lock: bool = True) -> Optional[Tuple[List[str], bool]]:
     """(the files to process, whether to check them again) — all of them, only the ones not done, or
-    the finished ones checked again; None when the user cancels."""
+    the finished ones checked again; None when the user cancels. ``lock``: the run's
+    ``revise_lock_user_edits``, so the check-again button says what happens to the user's boxes."""
     if states is None:
         from manga_translator.agent.resume import previous_states
         states = previous_states(files)
-    question = rerun_question(t, states)
+    question = rerun_question(t, states, lock)
     if question is None:
         return list(files), False
     box = QMessageBox(parent)
@@ -67,7 +74,8 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
     box.setText(question["text"])
     revise = None
     if question["revise"]:
-        revise = box.addButton(t("Agent Rerun Revise", count=len(question["revise"])),
+        revise = box.addButton(t("Agent Rerun Revise" if lock else "Agent Rerun Revise Unlocked",
+                                 count=len(question["revise"])),
                                QMessageBox.ButtonRole.ActionRole)
     only = None
     if question["unfinished"]:

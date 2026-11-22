@@ -1929,7 +1929,8 @@ class MainAppLogic(QObject):
         if (task_config.get("cli") or {}).get("agent_workflow", False):
             from ui.main_page.pages.agent_rerun import ask_rerun
 
-            chosen = ask_rerun(getattr(self, "main_view", None), self._t, resolved_files)
+            lock = (task_config.get("agent") or {}).get("revise_lock_user_edits", True) is not False
+            chosen = ask_rerun(getattr(self, "main_view", None), self._t, resolved_files, lock=lock)
             if chosen is None:
                 self._ui_log("AI Agent: the run was cancelled, earlier results stay as they are")
                 self.state_manager.set_translating(False)
