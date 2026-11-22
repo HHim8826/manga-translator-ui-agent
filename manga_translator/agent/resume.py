@@ -47,6 +47,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import redo as redo_steps
 from .store import AgentStore, _read_json, write_json_atomic
+from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -191,7 +192,7 @@ class PageState:
 
     @property
     def stem(self) -> str:
-        return os.path.splitext(os.path.basename(self.path))[0]
+        return page_stem(self.path)
 
     @property
     def users(self) -> bool:
@@ -338,7 +339,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
             journals[key] = ((journal.get("pages") or {}) if journal else {},
                              bool(journal) and owner_alive(journal.get("owner")))
             pending_steps[key] = redo_steps.read(store)
-        stem = os.path.splitext(os.path.basename(path))[0]
+        stem = page_stem(path)
         pending, busy = journals[key]
         entry = pending.get(stem) if not busy and isinstance(pending.get(stem), dict) else None
         restorable = entry is not None and bool(entry.get("json_copy")) and os.path.exists(entry["json_copy"])
@@ -390,7 +391,7 @@ def record_saved(paths: Sequence[str]) -> None:
         inpainted_target = os.path.join(store.agent_dir, INPAINTED)
         inpainted = _read_json(inpainted_target, {})
         for path in pages:
-            stem = os.path.splitext(os.path.basename(path))[0]
+            stem = page_stem(path)
             image = find_inpainted_path(path)
             signature = _stat(image) if image else None
             if signature is not None:
@@ -679,7 +680,7 @@ class RunGuard:
         if entry is None:
             return
         store = _store(image_path)
-        stem = os.path.splitext(os.path.basename(image_path))[0]
+        stem = page_stem(image_path)
         done = self.finished.setdefault(store.work_dir, set())
         if stem in done:
             return
@@ -713,7 +714,7 @@ class RunGuard:
                 entries = {}
                 for entry in self.entries.values():
                     if _store(entry["image"]).work_dir == work_dir:
-                        stem = os.path.splitext(os.path.basename(entry["image"]))[0]
+                        stem = page_stem(entry["image"])
                         entries[stem] = entry
                         if stem in done:
                             finished_paths.append(entry["image"])

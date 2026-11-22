@@ -18,6 +18,7 @@ from manga_translator.utils.path_manager import (
     find_txt_files,
     get_original_txt_path,
     get_translated_txt_path,
+    json_image_candidates,
 )
 from manga_translator.utils.translation_template import (
     ensure_translation_template_exists,
@@ -364,8 +365,7 @@ def generate_original_text(
             work_dir = os.path.dirname(json_dir)
             image_dir = os.path.dirname(work_dir)
             image_name = json_basename.replace('_translations.json', '')
-            for ext in SUPPORTED_IMAGE_EXTENSIONS:
-                image_path = os.path.join(image_dir, image_name + ext)
+            for image_path in json_image_candidates(image_dir, image_name, detailed_json_path):
                 if os.path.exists(image_path):
                     output_path = get_original_txt_path(
                         image_path,
@@ -452,8 +452,7 @@ def generate_translated_text(
             work_dir = os.path.dirname(json_dir)
             image_dir = os.path.dirname(work_dir)
             image_name = json_basename.replace('_translations.json', '')
-            for ext in SUPPORTED_IMAGE_EXTENSIONS:
-                image_path = os.path.join(image_dir, image_name + ext)
+            for image_path in json_image_candidates(image_dir, image_name, detailed_json_path):
                 if os.path.exists(image_path):
                     output_path = get_translated_txt_path(
                         image_path,
@@ -1170,8 +1169,7 @@ def batch_update_directory_translations(
             image_name = json_basename.replace('_translations.json', '')
 
             image_path = None
-            for ext in SUPPORTED_IMAGE_EXTENSIONS:
-                candidate = os.path.join(image_dir, image_name + ext)
+            for candidate in json_image_candidates(image_dir, image_name, json_path):
                 if os.path.exists(candidate):
                     image_path = candidate
                     break

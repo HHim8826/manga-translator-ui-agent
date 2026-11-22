@@ -5,8 +5,9 @@
 提供统一的文件路径生成和查找功能，支持新的目录结构和向后兼容
 """
 
+import json
 import os
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from manga_translator.image_formats import SUPPORTED_IMAGE_EXTENSIONS
 from manga_translator.utils.translation_template import (
@@ -34,6 +35,85 @@ WORK_DIR_RESERVED_NAMES = {
     TRANSLATED_IMAGES_SUBDIR,
     EDITOR_BASE_SUBDIR,
 }
+
+
+_SHARED_STEMS: Dict[str, Tuple[int, frozenset]] = {}
+_OWNERS: Dict[Tuple[str, int, int], frozenset] = {}
+
+
+def _shared_stems(folder: str) -> frozenset:
+    """Stems (case folded) that more than one image of ``folder`` has, as ``001.jpg`` and ``001.png``.
+    Kept until the folder changes (its time changes when a file is added, removed or renamed)."""
+    try:
+        stamp = os.stat(folder).st_mtime_ns
+    except OSError:
+        return frozenset()
+    key = os.path.normcase(os.path.abspath(folder))
+    cached = _SHARED_STEMS.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    counts: Dict[str, int] = {}
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                stem, ext = os.path.splitext(entry.name)
+                if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS and entry.is_file():
+                    counts[stem.casefold()] = counts.get(stem.casefold(), 0) + 1
+    except OSError:
+        pass
+    shared = frozenset(stem for stem, count in counts.items() if count > 1)
+    _SHARED_STEMS[key] = (stamp, shared)
+    return shared
+
+
+def page_name(image_path: str) -> str:
+    """The name a page's work files go by: its stem (``001``), or its file name (``001.png``) when
+    another image of its folder has the same stem (``001.jpg``): the two would share one JSON, one
+    text export and one AI Agent record otherwise."""
+    original = resolve_original_image_path(image_path)
+    base = os.path.basename(original)
+    stem, ext = os.path.splitext(base)
+    if ext and stem.casefold() in _shared_stems(os.path.dirname(original)):
+        return base
+    return stem
+
+
+def _json_names(json_path: str) -> frozenset:
+    """The file names (case folded) of the images a JSON has entries for."""
+    try:
+        stat = os.stat(json_path)
+    except OSError:
+        return frozenset()
+    key = (os.path.normcase(os.path.abspath(json_path)), stat.st_mtime_ns, stat.st_size)
+    if key not in _OWNERS:
+        try:
+            with open(json_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = {}
+        names = data if isinstance(data, dict) else {}
+        _OWNERS.clear() if len(_OWNERS) > 256 else None
+        _OWNERS[key] = frozenset(os.path.basename(str(name).replace("\\", "/")).casefold() for name in names)
+    return _OWNERS[key]
+
+
+def json_is_for(json_path: str, image_path: str) -> bool:
+    """The JSON has an entry for this image (by its file name, so also after the folder moved)."""
+    return os.path.basename(resolve_original_image_path(image_path)).casefold() in _json_names(json_path)
+
+
+def json_image_candidates(image_dir: str, name: str, json_path: Optional[str] = None) -> list:
+    """The images a work file named ``name`` (``page_name``) can be of: ``name`` itself when it has an
+    image extension (``001.png``), then ``name`` with each extension (``001`` -> ``001.png`` ...). With
+    ``json_path``, the images its entries are of come first (an old JSON ``001`` of ``001.jpg``, next
+    to ``001.png``)."""
+    candidates = []
+    if os.path.splitext(name)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS:
+        candidates.append(os.path.join(image_dir, name))
+    candidates.extend(os.path.join(image_dir, name + ext) for ext in SUPPORTED_IMAGE_EXTENSIONS)
+    if json_path and sum(1 for c in candidates if os.path.exists(c)) > 1:
+        candidates.sort(key=lambda c: not json_is_for(json_path, c))
+    return candidates
 
 
 def normalize_image_path(image_path: str) -> str:
@@ -165,8 +245,7 @@ def get_json_path(image_path: str, create_dir: bool = True) -> str:
     if create_dir:
         os.makedirs(json_dir, exist_ok=True)
     
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    return os.path.join(json_dir, f"{base_name}_translations.json")
+    return os.path.join(json_dir, f"{page_name(image_path)}_translations.json")
 
 
 def _resolve_text_output_format(output_format: Optional[str] = None) -> str:
@@ -196,7 +275,7 @@ def get_original_txt_path(
     if create_dir:
         os.makedirs(originals_dir, exist_ok=True)
     
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    base_name = page_name(image_path)
     extension = _resolve_text_output_format(output_format)
     return os.path.join(originals_dir, f"{base_name}_original.{extension}")
 
@@ -222,7 +301,7 @@ def get_translated_txt_path(
     if create_dir:
         os.makedirs(translations_dir, exist_ok=True)
     
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    base_name = page_name(image_path)
     extension = _resolve_text_output_format(output_format)
     return os.path.join(translations_dir, f"{base_name}_translated.{extension}")
 
@@ -259,8 +338,7 @@ def get_yolo_label_path(image_path: str, create_dir: bool = True) -> str:
         YOLO 标注文件的绝对路径
     """
     yolo_labels_dir = get_yolo_labels_dir(image_path, create_dir=create_dir)
-    base_name = os.path.splitext(os.path.basename(resolve_original_image_path(image_path)))[0]
-    return os.path.join(yolo_labels_dir, f"{base_name}.txt")
+    return os.path.join(yolo_labels_dir, f"{page_name(image_path)}.txt")
 
 
 def find_yolo_label_path(image_path: str) -> Optional[str]:
@@ -381,10 +459,17 @@ def find_json_path(image_path: str) -> Optional[str]:
     if os.path.exists(new_json_path):
         return new_json_path
     
+    stem = os.path.splitext(os.path.basename(original_path))[0]
+    shared = page_name(original_path) != stem
+    candidates = []
+    if shared:
+        # 同目录有同名不同扩展名的图（001.jpg / 001.png）：旧的共用名称只在它记的就是这张图时沿用
+        candidates.append(os.path.join(os.path.dirname(new_json_path), f"{stem}_translations.json"))
     # 2. 向后兼容：查找旧位置（图片同目录）
-    old_json_path = os.path.splitext(original_path)[0] + '_translations.json'
-    if os.path.exists(old_json_path):
-        return old_json_path
+    candidates.append(os.path.splitext(original_path)[0] + '_translations.json')
+    for candidate in candidates:
+        if os.path.exists(candidate) and (not shared or json_is_for(candidate, original_path)):
+            return candidate
     
     return None
 
@@ -427,8 +512,7 @@ def get_paint_overlay_path(image_path: str, create_dir: bool = True) -> str:
     if create_dir:
         os.makedirs(overlay_dir, exist_ok=True)
 
-    base_name = os.path.splitext(os.path.basename(original_path))[0]
-    return os.path.join(overlay_dir, f"{base_name}_overlay.png")
+    return os.path.join(overlay_dir, f"{page_name(original_path)}_overlay.png")
 
 
 def find_paint_overlay_path(image_path: str) -> Optional[str]:

@@ -20,6 +20,7 @@ from .events import EventLog
 from .page import BREAK, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
 from .store import AgentMemory, AgentStore, normalize, write_json_atomic
+from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -78,7 +79,7 @@ class ProofPage:
         from ..utils.path_manager import find_json_path
 
         self.image_path = image_path
-        self.stem = os.path.splitext(os.path.basename(image_path))[0]
+        self.stem = page_stem(image_path)
         self.json_path = find_json_path(image_path)
         if not self.json_path or not os.path.exists(self.json_path):
             raise FileNotFoundError(f"no translation JSON for {image_path}")

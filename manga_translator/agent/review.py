@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from .store import AgentStore
+from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -127,7 +128,7 @@ def flag_agent(flag: dict, side: dict) -> str:
 def load(image_path: str) -> Optional[PageReview]:
     """The page's review lists; None when the AI Agent has not worked on it."""
     store = _store(image_path)
-    stem = os.path.splitext(os.path.basename(image_path))[0]
+    stem = page_stem(image_path)
     side = store.load_sidecar(stem)
     if not isinstance(side, dict):
         return None

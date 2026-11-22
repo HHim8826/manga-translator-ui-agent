@@ -73,6 +73,39 @@ def test_the_editor_exports_a_page_without_a_record_to_its_chapter_folder(tmp_pa
     assert _export_path(tmp_path, other_image) == str(tmp_path / "output" / "ch34" / "001.png")
 
 
+def test_the_editor_never_exports_over_the_source_image(tmp_path):
+    """The project review of 2026-11-22 (P1-02): a new setup, no output folder, the format kept and
+    overwrite off; the export replaced the source PNG."""
+    from services.export_service import ExportService
+
+    chapter, image = _chapter(tmp_path)
+    result = chapter / "manga_translator_work" / "result" / "001.png"
+    service = ExportService()
+    assert service.build_output_path({"cli": {"format": "", "overwrite": False}, "app": {}}, str(image)) == \
+        str(result)
+    # an output folder that was removed
+    gone = {"cli": {"format": ""}, "app": {"last_output_path": str(tmp_path / "removed")}}
+    assert service.build_output_path(gone, str(image)) == str(result)
+    # the output folder is the source folder: the same name and format would be the source
+    same = {"cli": {"format": ""}, "app": {"last_output_path": str(chapter)}}
+    assert service.build_output_path(same, str(image)) == str(result)
+    assert service.build_output_path({**same, "cli": {"format": "jpg"}}, str(image)) == str(chapter / "001.jpg")
+    _write_json(image, last_export_dir=str(chapter))  # a saved folder that is the source folder
+    assert service.build_output_path({"cli": {"format": ""}, "app": {}}, str(image)) == str(result)
+    assert service.is_source_file(str(chapter / "." / "001.png"), str(image))
+
+
+def test_an_export_job_over_its_source_is_refused(tmp_path):
+    from services.export_service import ExportService
+
+    chapter, image = _chapter(tmp_path)
+    before = image.read_bytes()
+    job = type("Job", (), {"source_path": str(image), "output_path": str(image)})()
+    result = ExportService().execute_export_job(job)
+    assert result.error and "source image" in result.error
+    assert image.read_bytes() == before
+
+
 def test_the_editor_keeps_its_other_choices(tmp_path):
     chapter, image = _chapter(tmp_path)
     _write_json(image)

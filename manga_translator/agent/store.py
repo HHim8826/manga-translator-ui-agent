@@ -21,6 +21,14 @@ import tempfile
 import unicodedata
 from typing import Any, Dict, List, Optional
 
+
+def page_stem(image_path: str) -> str:
+    """The name the agent knows a page by (its record, events and lists): its stem, or its file name
+    when another image of its folder has the same stem (``path_manager.page_name``)."""
+    from ..utils.path_manager import page_name
+
+    return page_name(image_path)
+
 SIDECAR_VERSION = 1
 
 

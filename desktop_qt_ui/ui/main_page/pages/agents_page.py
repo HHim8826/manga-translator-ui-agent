@@ -851,8 +851,12 @@ class AgentsPage(QWidget):
         self._batch = batch
         self._prefix[run] = f"{run}|" if self._chapters else ""
         self._chapters[run] = str(event.get("chapter") or "")
-        for name in event.get("pages", []):
-            stem = os.path.splitext(name)[0]
+        names = list(event.get("pages", []))
+        stems = event.get("stems")  # the agent's page names (with the extension when two pages share a stem)
+        if not isinstance(stems, list) or len(stems) != len(names):
+            stems = [os.path.splitext(name)[0] for name in names]
+        for stem in stems:
+            stem = str(stem)
             key = self._prefix[run] + stem
             if key not in self._pages:
                 self._order.append(key)

@@ -42,6 +42,7 @@ from . import json_guard
 from .runner import AgentRunner, AgentStopped, language_name
 from .settings import AgentSettings
 from .store import AgentStore
+from .store import page_stem
 from .work_glossary import update_work_glossary
 from .work_memory import bootstrap, save_chapter, seed_chapter, work_memory_dir
 from .work_prompt import load_work_prompt, resolve_path
@@ -187,7 +188,7 @@ class PipelineInpaintBackend:
 async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLog, log) -> dict:
     """The proofreading pass; an API failure is logged and the chapter goes on to render as it is. The
     pages are written down for a redo (``redo.py``) until a proofreading of them ends."""
-    stems = [os.path.splitext(os.path.basename(p))[0] for p in pages]
+    stems = [page_stem(p) for p in pages]
     try:
         result = await proofreader.run(pages)
     except (AgentStopped, asyncio.CancelledError):
@@ -345,7 +346,7 @@ async def _check_fonts(service, pages: List[str], store: AgentStore, events: Eve
             raise
         except Exception as exc:
             logger.exception("font check failed")
-            events.emit("error", page=os.path.splitext(os.path.basename(path))[0], agent="fonts",
+            events.emit("error", page=page_stem(path), agent="fonts",
                         error=f"font check failed: {type(exc).__name__}: {str(exc)[:300]}")
             continue
         changed += result.get("changed", 0)
@@ -429,7 +430,7 @@ class _RenderEvents:
         for work_dir, pages in group_by_chapter(list(paths) + list(left_out)):
             log = self._log(pages[0])
             if log is not None:
-                skipped = {os.path.splitext(os.path.basename(p))[0]: left_out[p]
+                skipped = {page_stem(p): left_out[p]
                            for p in pages if _key(p) not in rendered and p in left_out}
                 log.emit("render_start", agent="render", pages=sum(1 for p in pages if _key(p) in rendered),
                          **({"skipped": skipped} if skipped else {}))
@@ -443,7 +444,7 @@ class _RenderEvents:
         self.pending.pop(_key(image), None)
         log = self._log(image)
         if log is not None:
-            log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
+            log.emit("render_done", page=page_stem(image), agent="render",
                      image=image, output=getattr(ctx, "output_path", None), inpainted=find_inpainted_path(image),
                      result="saved")
 
@@ -451,7 +452,7 @@ class _RenderEvents:
         self.pending.pop(_key(image), None)
         log = self._log(image)
         if log is not None:
-            log.emit("render_done", page=os.path.splitext(os.path.basename(image))[0], agent="render",
+            log.emit("render_done", page=page_stem(image), agent="render",
                      image=image, result=result, **fields)
 
     def finish(self, results: Sequence) -> None:
@@ -512,7 +513,7 @@ async def _inpaint_changes(pages: List[str], guard: RunGuard, backend, store: Ag
             raise asyncio.CancelledError("Agent workflow stopped by user")
         if json_guard.taken(find_json_path(path)):  # saved in the editor: the user's, not rendered
             continue
-        page = os.path.splitext(os.path.basename(path))[0]
+        page = page_stem(path)
         # an earlier check that stopped before this step left the mask its image still matches
         before = pending_before(store, page, path) or (guard.entries.get(_key(path)) or {}).get("json_copy") or ""
         events.emit("inpaint_changes", page=page, agent="inpaint", status="working")
@@ -673,9 +674,10 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
     from .revise import load_page
 
     pending = redo_steps.read(store)
-    stems = {p: os.path.splitext(os.path.basename(p))[0] for p in pages}
+    stems = {p: page_stem(p) for p in pages}
     states = {_key(s.path): s for s in previous_states(pages)}
-    events.emit("run_start", pages=[os.path.basename(p) for p in pages], model=getattr(client, "model_label", ""),
+    events.emit("run_start", pages=[os.path.basename(p) for p in pages], stems=[stems[p] for p in pages],
+                model=getattr(client, "model_label", ""),
                 target_lang=target_lang, redo=redo_steps.summary(
                     {step: {k: v for k, v in pending.get(step, {}).items() if k in stems.values()}
                      for step in redo_steps.STEPS}), **run_info)
@@ -893,7 +895,7 @@ async def run_agent_workflow(
             events = EventLog(store.run_log_path(run_id), run_id)
             chapter_logs[work_dir] = (events.path, run_id)
             if preprocess:  # translated again: what was left to do on these pages goes with their old text
-                _note(redo_steps.forget, store, [os.path.splitext(os.path.basename(p))[0] for p in pages])
+                _note(redo_steps.forget, store, [page_stem(p) for p in pages])
             log(f"[Agent] {os.path.basename(os.path.dirname(work_dir))}: event log {events.path}")
             if hasattr(client, "session_id"):  # one session per chapter run on the API side
                 client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"

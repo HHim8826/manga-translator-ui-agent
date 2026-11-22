@@ -35,6 +35,7 @@ from .page import PageDoc
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentStore
+from .store import page_stem
 from .tools import TOOLS, AgentSession, ToolRegistry
 from .work_prompt import WorkPrompt
 
@@ -297,7 +298,7 @@ class AgentRunner:
         """Earlier results of this chapter (previous runs) for search_past_translations."""
         if not os.path.isdir(self.store.pages_dir):
             return
-        current = {os.path.splitext(os.path.basename(p))[0] for p in self.pages}
+        current = {page_stem(p) for p in self.pages}
         for name in sorted(os.listdir(self.store.pages_dir)):
             stem = name[: -len(".agent.json")] if name.endswith(".agent.json") else None
             if not stem or stem in current:
@@ -583,6 +584,7 @@ class AgentRunner:
 
     async def run(self) -> List[Dict[str, Any]]:
         self.events.emit("run_start", pages=[os.path.basename(p) for p in self.pages],
+                         stems=[page_stem(p) for p in self.pages],
                          model=getattr(self.client, "model_label", ""), target_lang=self.target_lang,
                          memory=self.memory.counts(),
                          work_prompt={"name": self.work_prompt.name, "terms": len(self.work_prompt.terms)}
@@ -596,7 +598,7 @@ class AgentRunner:
             for index, path in enumerate(self.pages):
                 if self.should_stop():
                     raise AgentStopped()
-                stem = os.path.splitext(os.path.basename(path))[0]
+                stem = page_stem(path)
                 failed = self.preprocess_failed.get(os.path.normcase(os.path.abspath(path)))
                 if failed:  # its JSON is the one from before the run: no model call for it
                     error = f"preprocess failed: {failed}"

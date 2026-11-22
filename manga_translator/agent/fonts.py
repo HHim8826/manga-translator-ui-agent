@@ -37,6 +37,7 @@ import numpy as np
 
 from . import json_guard
 from .store import write_json_atomic
+from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
 
@@ -962,7 +963,7 @@ class FontService:
         from ..utils.path_manager import find_json_path
 
         json_path = find_json_path(image_path)
-        stem = os.path.splitext(os.path.basename(image_path))[0]
+        stem = page_stem(image_path)
         if not json_path or not os.path.exists(json_path) or json_guard.taken(json_path):
             return {"page": stem, "changed": 0, "unfixed": 0}  # no JSON, or the user saved it during the run
         with open(json_path, "r", encoding="utf-8") as fh:

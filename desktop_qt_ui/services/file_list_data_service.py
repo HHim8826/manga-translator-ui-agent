@@ -390,8 +390,13 @@ class _CatalogBuilder:
         return new_index, old_index
 
     def _find_json_path(self, source_path: str) -> Optional[str]:
+        from manga_translator.utils.path_manager import find_json_path, page_name
+
         folder = os.path.dirname(source_path)
-        stem = os.path.splitext(os.path.basename(source_path))[0].casefold()
+        stem = os.path.splitext(os.path.basename(source_path))[0]
+        if page_name(source_path) != stem:  # 001.jpg and 001.png: which JSON is whose takes reading them
+            return find_json_path(source_path)
+        stem = stem.casefold()
         new_index, old_index = self._json_index(folder)
         return new_index.get(stem) or old_index.get(stem)
 

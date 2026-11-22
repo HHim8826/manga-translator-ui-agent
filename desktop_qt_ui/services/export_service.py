@@ -194,17 +194,34 @@ class ExportService:
                     return os.path.normpath(folder)  # the map sits beside the pages it lists
         return None
 
+    @staticmethod
+    def source_result_directory(source_path: str) -> str:
+        """The folder of the source's own results (``save_to_source_dir``, and the export of a page
+        with no output folder): beside the source, never the source folder itself."""
+        return os.path.join(os.path.dirname(source_path), "manga_translator_work", "result")
+
+    @staticmethod
+    def is_source_file(output_path: str, source_path: str) -> bool:
+        """``output_path`` is the source image (also through another spelling of the same file)."""
+        def key(path: str) -> str:
+            return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+        if key(output_path) == key(source_path):
+            return True
+        try:
+            return os.path.exists(output_path) and os.path.samefile(output_path, source_path)
+        except OSError:
+            return False
+
     def build_output_path(self, config: Dict[str, Any], source_path: str) -> str:
-        """Resolve the editor output path from persisted and current configuration."""
+        """Resolve the editor output path from persisted and current configuration. It is never the
+        source image: with no output folder, or one that would put the result over the source (the
+        source folder, the same name and format), the result goes to ``source_result_directory``."""
         cli = config.get("cli", {})
         app = config.get("app", {})
         output_dir = self.get_saved_export_directory(source_path)
         if not output_dir and cli.get("save_to_source_dir", False):
-            output_dir = os.path.join(
-                os.path.dirname(source_path),
-                "manga_translator_work",
-                "result",
-            )
+            output_dir = self.source_result_directory(source_path)
         if not output_dir:
             configured = app.get("last_output_path")
             if configured and os.path.exists(configured):
@@ -212,9 +229,8 @@ class ExportService:
                     self._mapped_output_directory(configured, source_path)
                     or configured
                 )
-            else:
-                output_dir = os.path.dirname(source_path)
-        os.makedirs(output_dir, exist_ok=True)
+            else:  # no output folder (a new setup, or the folder was removed): not over the source
+                output_dir = self.source_result_directory(source_path)
 
         base_name = os.path.splitext(os.path.basename(source_path))[0]
         output_format = str(cli.get("format") or "").strip().lower()
@@ -222,7 +238,16 @@ class ExportService:
             output_format = (
                 os.path.splitext(source_path)[1].lower().lstrip(".") or "png"
             )
-        return os.path.join(output_dir, f"{base_name}.{output_format}")
+        output_path = os.path.join(output_dir, f"{base_name}.{output_format}")
+        if self.is_source_file(output_path, source_path):
+            self.logger.warning(
+                f"Export of {os.path.basename(source_path)} would replace the source image; "
+                f"it goes to {self.source_result_directory(source_path)} instead"
+            )
+            output_dir = self.source_result_directory(source_path)
+            output_path = os.path.join(output_dir, f"{base_name}.{output_format}")
+        os.makedirs(output_dir, exist_ok=True)
+        return output_path
 
     def execute_export_job(self, job: "ExportJob") -> BackendExportResult:
         """Render, persist, and report one worker-owned export job."""
@@ -230,6 +255,10 @@ class ExportService:
         export_started = time.perf_counter()
 
         try:
+            if job.source_path and self.is_source_file(job.output_path, job.source_path):
+                message = f"Export refused: {job.output_path} is the source image"
+                self.logger.error(message)
+                return BackendExportResult(error=message)
             self.logger.info(f"Exporting image to: {job.output_path}")
             output_dir = os.path.dirname(job.output_path)
             if output_dir:

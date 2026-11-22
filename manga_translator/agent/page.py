@@ -29,6 +29,7 @@ import numpy as np
 
 from .snap import SnapResult
 from .store import write_json_atomic
+from .store import page_stem
 
 CATEGORIES = ("dialogue", "narration", "sfx", "sign", "handwritten", "note", "other")
 FLAG_TYPES = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "missing_text",
@@ -314,7 +315,7 @@ class PageDoc:
 
     @property
     def stem(self) -> str:
-        return os.path.splitext(os.path.basename(self.image_path))[0]
+        return page_stem(self.image_path)
 
     # --- lookup -------------------------------------------------------------
     def get(self, rid) -> Region:

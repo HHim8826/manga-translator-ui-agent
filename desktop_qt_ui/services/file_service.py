@@ -72,11 +72,22 @@ class FileService:
             image_key = os.path.abspath(image_path)
             
             if image_key not in data:
-                if data:
+                from manga_translator.utils.path_manager import page_name
+
+                name = os.path.basename(image_key).casefold()
+                same = [key for key in data if os.path.basename(str(key).replace("\\", "/")).casefold() == name]
+                stem = os.path.splitext(os.path.basename(image_key))[0]
+                if same:  # the folder moved: the entry of the image with this file name
+                    image_data = data[same[0]]
+                elif data and page_name(image_path) == stem:
                     first_key = next(iter(data))
                     self.logger.warning(f"Exact image path '{image_key}' not found in JSON. Using first available key '{first_key}'.")
                     image_data = data[first_key]
                 else:
+                    # another image of the folder has the same stem: an entry of another file name is its own
+                    if data:
+                        self.logger.warning(f"No entry for '{image_key}' in {os.path.basename(json_path)}; "
+                                            f"its entries are of another image with the same name")
                     image_data = {}
             else:
                 image_data = data[image_key]

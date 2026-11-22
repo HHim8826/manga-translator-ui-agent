@@ -30,6 +30,7 @@ from . import json_guard
 from .page import PageDoc
 from .settings import AgentSettings
 from .store import AgentStore, write_json_atomic
+from .store import page_stem
 from .tools import CELL, REASON, Tool, ToolRegistry, ToolResult, _obj
 
 logger = logging.getLogger("manga_translator.agent")
@@ -620,7 +621,7 @@ class InpaintReviewer:
         for path in image_paths:
             if self.should_stop():
                 raise AgentStopped()
-            stem = os.path.splitext(os.path.basename(path))[0]
+            stem = page_stem(path)
             try:
                 outcomes.append(await self.review_page(path))
             except AgentStopped:
