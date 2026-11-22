@@ -39,6 +39,27 @@ def test_the_stop_button_follows_the_task(app):  # noqa: F811
     assert not page.stop_button.isEnabled() and page.stop_button.text() == "Agents Stop"
 
 
+def test_the_stop_button_stays_while_a_check_makes_its_backups(app):  # noqa: F811
+    """Review item 15: start, API check, then a check's backups (``revise``): the status says so and the
+    stop button works until the first chapter starts."""
+    page = _page()
+    asked = []
+    page.stop_requested.connect(lambda: asked.append(True))
+    page.set_task_running(True)
+    enabled = []
+    for event in ({"stage": "start", "pages": 2}, {"stage": "api_check", "model": "m"},
+                  {"stage": "revise", "pages": 2}):
+        page._handle_live({"type": "workflow_stage", **event})
+        enabled.append(page.stop_button.isEnabled())
+    assert enabled == [True, True, True]
+    assert page.status_label.text() == "Agents Stage Revise pages=2"
+    page.stop_button.click()
+    assert asked == [True]
+    page.set_task_running(False)
+    page._handle_live({"type": "workflow_stage", "stage": "restore_failed", "pages": ["002.png"]})
+    assert page.status_label.text() == "Agents Stage Restore Failed count=1 pages=002.png"
+
+
 def test_open_the_page_in_the_editor_and_the_output_folder(app, tmp_path):  # noqa: F811
     page = _page()
     opened = []

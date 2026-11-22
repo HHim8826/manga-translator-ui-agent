@@ -91,9 +91,11 @@ PAGE_STATE_KEYS = {
     "edited": "Agent Page Edited",
     "inpaint_failed": "Agent Page Inpaint Failed",
     "inpaint_unknown": "Agent Page Inpaint Unknown",
+    "output_kept": "Agent Page Output Kept",
 }
-HELD_STATES = ("inpaint_failed", "inpaint_unknown")
-"""Pages a check finished but did not render again: their inpainted image is not up to their mask."""
+HELD_STATES = ("inpaint_failed", "inpaint_unknown", "output_kept")
+"""Pages a check finished but did not render again: their inpainted image is not up to their mask, or
+their output image could not be backed up."""
 WARN = QColor(214, 140, 0)
 ERROR = QColor(210, 50, 50)
 MUTED = QColor(130, 130, 130)
@@ -442,9 +444,11 @@ class AgentsPage(QWidget):
 
     def _on_stage(self, event: dict) -> None:
         """What a run does before its first chapter has a run log: starting, checking the API, the
-        preprocess; and how it ended when it ended there (stopped, failed)."""
+        preprocess or the backups of a check (``revise``); how it ended when it ended there (stopped,
+        failed); and pages it could not put back at its end (``restore_failed``). The stop button
+        stays on while the run is in one of the first stages."""
         stage = str(event.get("stage") or "")
-        self._agent_task = stage in ("start", "api_check", "preprocess")
+        self._agent_task = stage in ("start", "api_check", "preprocess", "revise")
         if stage == "start":  # a new run: the last run's summary goes
             self._live_events = []
             self._live_batch = None
@@ -453,16 +457,20 @@ class AgentsPage(QWidget):
                 self._show_subtitle()
             self._batch = None
             self._reset()
+        names = event.get("pages") if stage == "restore_failed" and isinstance(event.get("pages"), list) else []
         texts = {"start": ("Agents Stage Start", {"pages": event.get("pages", 0)}),
                  "api_check": ("Agents Stage API Check", {"model": event.get("model") or "-"}),
                  "preprocess": ("Agents Stage Preprocess", {"pages": event.get("pages", 0)}),
+                 "revise": ("Agents Stage Revise", {"pages": event.get("pages", 0)}),
                  "stopped": ("Agents Stage Stopped", {}),
-                 "failed": ("Agents Stage Failed", {"error": event.get("error") or ""})}
+                 "failed": ("Agents Stage Failed", {"error": event.get("error") or ""}),
+                 "restore_failed": ("Agents Stage Restore Failed", {
+                     "count": len(names), "pages": self._t("Agent Result Separator").join(map(str, names))})}
         if stage not in texts:
             return
         key, fields = texts[stage]
         text = self._t(key, **fields)
-        self._stage = "" if stage in ("stopped", "failed") else text
+        self._stage = "" if stage in ("stopped", "failed", "restore_failed") else text
         if not self._viewing_log:
             self.status_label.setText(text)
 

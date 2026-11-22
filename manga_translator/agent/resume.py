@@ -15,12 +15,19 @@ after the chapter's last run log entry.
 During a run, ``RunGuard`` keeps the pages safe:
 
 * before the preprocess, each page's JSON and sidecar are copied to ``agent/backups/``, and a journal
-  (``agent/run_journal.json``) lists the pages the run has not finished yet;
+  (``agent/run_journal.json``, written once) lists them; each page the run finishes is added to
+  ``agent/run_journal.done``, so the pages left are the journal's without those;
 * a page the preprocess did not write again (it failed there) is not given to the agent: its JSON is
   the earlier one, maybe for another image or other boxes;
 * when the run stops or fails, the pages it did not finish get their JSON and sidecar back, so a page
-  the agent never reached keeps its earlier translation and status;
+  the agent never reached keeps its earlier translation and status. A page whose files cannot be put
+  back (a file in use) keeps its copies and its journal entry, and is put back later;
 * a journal left by a run that was killed is restored before the next run (``recover``).
+
+The journal names the run that owns the chapter (``owner``: process, computer, start time). Only
+that run changes the chapter's pages: reading the state (``previous_states``) writes nothing, and a
+journal is restored only once its run has ended (``owner_alive``); a second run on a chapter that
+another one is working on does not start (``ChapterBusy``).
 
 Copies of the user's own work (edited after a run, or translated outside the AI Agent) stay in
 ``backups``; the copies of the agent's own results are removed when the run ends.
@@ -31,9 +38,11 @@ import hashlib
 import logging
 import os
 import shutil
+import socket
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .store import AgentStore, _read_json, write_json_atomic
 
@@ -42,6 +51,57 @@ logger = logging.getLogger("manga_translator.agent")
 EDIT_MARGIN = 30.0
 FINGERPRINTS = "saved_json.json"
 JOURNAL = "run_journal.json"
+
+_ACTIVE: Set[str] = set()
+"""Owner tokens of the runs of this process that have not ended (their guard has not finished)."""
+
+
+class ChapterBusy(RuntimeError):
+    """Another run is working on the chapter: a second one would change the same pages."""
+
+
+def _process_start(pid: int) -> Optional[float]:
+    try:
+        import psutil
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _new_owner() -> dict:
+    owner = {"pid": os.getpid(), "host": socket.gethostname(), "token": uuid.uuid4().hex,
+             "process_started": _process_start(os.getpid())}
+    _ACTIVE.add(owner["token"])
+    return owner
+
+
+def owner_alive(owner: Any) -> bool:
+    """The run that wrote a journal is still going: one of this process that has not ended, or another
+    process on this computer that is still running (the same process: the same id and start time). A
+    journal of another computer counts as alive (its process cannot be checked); a journal without an
+    owner was written before owners were kept, by a run that is over."""
+    if not isinstance(owner, dict):
+        return False
+    if owner.get("host") and owner.get("host") != socket.gethostname():
+        return True
+    try:
+        pid = int(owner.get("pid"))
+    except (TypeError, ValueError):
+        return False
+    if pid == os.getpid():
+        return owner.get("token") in _ACTIVE
+    try:
+        import psutil
+    except ImportError:  # cannot be checked: like before owners were kept
+        return False
+    try:
+        if not psutil.pid_exists(pid):
+            return False
+        started, recorded = _process_start(pid), owner.get("process_started")
+        return started is None or recorded is None or abs(started - float(recorded)) < 1.0
+    except Exception:
+        return True  # cannot tell: leave the chapter alone
 
 
 @dataclass
@@ -55,6 +115,8 @@ class PageState:
     json_path: str = ""
     translated: bool = False
     """No AI Agent result, but the JSON has translations: another translation mode or the editor."""
+    busy: bool = False
+    """Another run is working on the page's chapter (its journal's owner is alive)."""
 
     @property
     def stem(self) -> str:
@@ -115,15 +177,36 @@ def has_translation(json_path: str) -> bool:
     return False
 
 
+def _done_path(store: AgentStore) -> str:
+    """The pages of the journal the run finished, one name per line (``RunGuard.page_finished``)."""
+    return os.path.join(store.agent_dir, JOURNAL[:-len(".json")] + ".done")
+
+
+def _read_journal(store: AgentStore) -> Optional[dict]:
+    """The chapter's journal with only the pages its run has not finished; None when there is none."""
+    journal = _read_json(_journal_path(store), None) if os.path.isdir(store.agent_dir) else None
+    if not isinstance(journal, dict):
+        return None
+    try:
+        with open(_done_path(store), encoding="utf-8") as fh:
+            done = {line.strip() for line in fh if line.strip()}
+    except OSError:
+        done = set()
+    if done:
+        journal["pages"] = {stem: e for stem, e in (journal.get("pages") or {}).items() if stem not in done}
+    return journal
+
+
 def previous_states(paths: Sequence[str]) -> List[PageState]:
-    """Every page's state from the earlier runs of its chapter (a run that was killed is restored
-    first)."""
+    """Every page's state from the earlier runs of its chapter. Nothing is written: a page of a run
+    that was killed is told as it will be once its journal is restored (from the copies), and the
+    pages of a chapter another run is working on are ``busy``."""
     from ..utils.path_manager import find_json_path
 
-    recover(paths)
     stores: Dict[str, AgentStore] = {}
     prints: Dict[str, dict] = {}
     log_times: Dict[str, Optional[float]] = {}
+    journals: Dict[str, Tuple[dict, bool]] = {}
     states = []
     for path in paths:
         store = _store(path)
@@ -133,21 +216,33 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
             prints[key] = _read_json(_fingerprints_path(store), {}) if os.path.isdir(store.agent_dir) else {}
             latest = store.latest_run_log() if os.path.isdir(store.agent_dir) else None
             log_times[key] = os.path.getmtime(latest) if latest else None
+            journal = _read_journal(store)
+            journals[key] = ((journal.get("pages") or {}) if journal else {},
+                             bool(journal) and owner_alive(journal.get("owner")))
         stem = os.path.splitext(os.path.basename(path))[0]
-        side = store.load_sidecar(stem) if os.path.isdir(store.pages_dir) else None
-        status = str((side or {}).get("status") or "")
+        pending, busy = journals[key]
+        entry = pending.get(stem) if not busy and isinstance(pending.get(stem), dict) else None
+        restorable = entry is not None and bool(entry.get("json_copy")) and os.path.exists(entry["json_copy"])
+        side_path = store.sidecar_path(stem)
         json_path = find_json_path(path) or ""
+        read_json = json_path
+        saved = prints[key].get(stem)
+        if restorable:  # what the restore of the killed run's journal will put back
+            side_path = entry.get("sidecar_copy") or ""
+            read_json = entry["json_copy"]
+            saved = entry.get("print")
+        side = _read_json(side_path, None) if side_path and os.path.exists(side_path) else None
+        status = str((side or {}).get("status") or "") if isinstance(side, dict) else ""
         edited = translated = False
-        exists = bool(json_path) and os.path.exists(json_path)
+        exists = bool(read_json) and os.path.exists(read_json)
         if status and exists:
-            saved = prints[key].get(stem)
             if saved:
-                edited = _fingerprint(json_path) != saved
+                edited = _fingerprint(read_json) != saved
             elif log_times[key] is not None:
-                edited = os.path.getmtime(json_path) > log_times[key] + EDIT_MARGIN
+                edited = os.path.getmtime(read_json) > log_times[key] + EDIT_MARGIN
         elif exists:
-            translated = has_translation(json_path)
-        states.append(PageState(path, status, edited, json_path, translated))
+            translated = has_translation(read_json)
+        states.append(PageState(path, status, edited, json_path, translated, busy))
     return states
 
 
@@ -226,14 +321,17 @@ def _set_prints(store: AgentStore, prints_by_stem: Dict[str, Optional[str]]) -> 
 
 
 def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
-           keep_current: bool = False) -> List[str]:
+           keep_current: bool = False) -> Tuple[List[str], List[str]]:
     """Put back the pages of a journal that were not finished, drop the agent's own copies and the
-    journal; returns the restored pages. A page the user saved in the editor during the run stays as
-    they saved it; ``keep_current`` (a run that was killed: nobody knows who wrote what) keeps a copy
-    of each JSON it replaces."""
+    journal; returns (the restored pages, the pages that could not be put back). A page the user
+    saved in the editor during the run stays as they saved it; ``keep_current`` (a run that was
+    killed: nobody knows who wrote what) keeps a copy of each JSON it replaces.
+
+    A page whose files cannot be put back (one is in use) keeps its copies, and the journal stays
+    with only its entries and no owner, so the next run puts it back (``recover``)."""
     from . import json_guard
 
-    restored, prints = [], {}
+    restored, failed, prints = [], [], {}
     for stem, entry in entries.items():
         if stem in finished or json_guard.taken(entry.get("json")):
             continue
@@ -249,22 +347,30 @@ def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
                 prints[stem] = entry.get("print")
         except OSError:
             logger.exception(f"agent: could not restore {entry.get('json')}")
-            continue
+            failed.append(stem)
     if prints:
         _set_prints(store, prints)
-    for entry in entries.values():
-        if entry.get("kind") == "revise":  # a check keeps every copy: the page as it was before it
+    for stem, entry in entries.items():
+        if stem in failed or entry.get("kind") == "revise":  # still needed / a check keeps every copy
             continue
         _remove(entry.get("sidecar_copy", ""))
         if entry.get("kind") == "agent":
             _remove(entry.get("json_copy", ""))
-    _remove(_journal_path(store))
-    return restored
+    if failed:
+        try:
+            write_json_atomic(_journal_path(store), {"started": time.strftime("%Y%m%d-%H%M%S"),
+                                                     "pages": {stem: entries[stem] for stem in failed}})
+        except OSError:
+            logger.exception(f"agent: could not keep the journal of {store.work_dir}")
+    else:
+        _remove(_journal_path(store))
+    _remove(_done_path(store))
+    return restored, [entries[stem]["image"] for stem in failed]
 
 
 def recover(paths: Sequence[str]) -> List[str]:
-    """Restore the unfinished pages of a run that was killed (its journal is still there); returns
-    them."""
+    """Restore the unfinished pages of a run that was killed (its journal is still there, and its
+    run has ended: ``owner_alive``); returns them. A chapter another run is working on is left."""
     restored: List[str] = []
     seen = set()
     for path in paths:
@@ -272,14 +378,20 @@ def recover(paths: Sequence[str]) -> List[str]:
         if store.work_dir in seen:
             continue
         seen.add(store.work_dir)
-        journal = _read_json(_journal_path(store), None) if os.path.isdir(store.agent_dir) else None
-        if not isinstance(journal, dict):
+        journal = _read_journal(store)
+        if journal is None:
+            continue
+        if owner_alive(journal.get("owner")):
+            logger.warning(f"agent: another run is working on {store.work_dir}; its journal is left alone")
             continue
         entries = {stem: e for stem, e in (journal.get("pages") or {}).items() if isinstance(e, dict)}
-        pages = _close(store, entries, (), keep_current=True)
+        pages, failed = _close(store, entries, (), keep_current=True)
         if pages:
             logger.warning(f"agent: an earlier run ended without finishing {len(pages)} page(s); "
                            f"their translations from before it are back: {', '.join(map(os.path.basename, pages))}")
+        if failed:
+            logger.warning(f"agent: {len(failed)} page(s) of an earlier run still cannot be put back (a file is "
+                           f"in use): {', '.join(map(os.path.basename, failed))}")
         restored += pages
     return restored
 
@@ -297,6 +409,10 @@ class RunGuard:
         """Work dir -> stems the run finished."""
         self.users_copies: List[str] = []
         """Copies of the user's own work, kept in ``backups``."""
+        self.owner: dict = {}
+        """The run in the journals (``owner_alive``)."""
+        self.not_restored: List[str] = []
+        """Pages ``finish`` could not put back (a file in use): their copies and journal entries stay."""
 
     @classmethod
     def begin(cls, paths: Sequence[str], revise: bool = False) -> "RunGuard":
@@ -305,13 +421,32 @@ class RunGuard:
         from ..utils.path_manager import find_inpainted_path, find_json_path, get_json_path
 
         guard = cls(paths)
+        for path in paths:  # nothing is written while another run works on one of the chapters
+            store = _store(path)
+            journal = _read_journal(store)
+            if journal is not None and owner_alive(journal.get("owner")):
+                raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
+                                  f"wait for it to end, or stop it")
+        recover(paths)  # a run that was killed: its pages are put back first
+        guard.owner = _new_owner()
+        try:
+            guard._begin(paths, revise)
+        except BaseException:
+            _ACTIVE.discard(guard.owner["token"])
+            raise
+        return guard
+
+    def _begin(self, paths: Sequence[str], revise: bool) -> None:
+        from ..utils.path_manager import find_inpainted_path, find_json_path, get_json_path
+
+        guard = self
         states = previous_states(paths)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         journals: Dict[str, dict] = {}
         for state in states:
             store = _store(state.path)
             guard.stores.setdefault(store.work_dir, store)
-            journal = journals.setdefault(store.work_dir, {"started": stamp, "pages": {},
+            journal = journals.setdefault(store.work_dir, {"started": stamp, "owner": guard.owner, "pages": {},
                                                            "_prints": _read_json(_fingerprints_path(store), {})})
             json_path = state.json_path or find_json_path(state.path) or get_json_path(state.path, create_dir=False)
             sidecar = store.sidecar_path(state.stem)
@@ -334,8 +469,9 @@ class RunGuard:
             journal["pages"][state.stem] = entry
         for work_dir, journal in journals.items():
             journal.pop("_prints", None)
-            write_json_atomic(_journal_path(guard.stores[work_dir]), journal)
-        return guard
+            store = guard.stores[work_dir]
+            _remove(_done_path(store))
+            write_json_atomic(_journal_path(store), journal)
 
     def preprocess_failures(self, results: Optional[Sequence[Any]] = None) -> Dict[str, str]:
         """Pages the preprocess did not write again → why. Their JSON is the one from before the
@@ -378,30 +514,38 @@ class RunGuard:
         if stem in done:
             return
         done.add(stem)
-        journal_path = _journal_path(store)
-        journal = _read_json(journal_path, None)
-        if isinstance(journal, dict) and stem in (journal.get("pages") or {}):
-            journal["pages"].pop(stem)
-            try:
-                write_json_atomic(journal_path, journal)
-            except OSError:
-                logger.warning(f"agent: could not update {journal_path}", exc_info=True)
+        # one line per finished page: the journal itself is written once, at the start (rewriting it
+        # for each page wrote it n times over)
+        done_path = _done_path(store)
+        try:
+            with open(done_path, "a", encoding="utf-8") as fh:
+                fh.write(stem + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            logger.warning(f"agent: could not update {done_path}", exc_info=True)
 
     def finish(self, delete_txt: Optional[Callable[[str], Any]] = None) -> List[str]:
         """End of the run (also when it stopped or failed): the unfinished pages get their earlier
-        JSON and sidecar back, the finished ones are fingerprinted. Returns the restored pages."""
+        JSON and sidecar back, the finished ones are fingerprinted. Returns the restored pages; the
+        pages that could not be put back are in ``not_restored``."""
         restored: List[str] = []
         finished_paths = []
-        for work_dir, store in self.stores.items():
-            done = self.finished.get(work_dir, set())
-            entries = {}
-            for entry in self.entries.values():
-                if _store(entry["image"]).work_dir == work_dir:
-                    stem = os.path.splitext(os.path.basename(entry["image"]))[0]
-                    entries[stem] = entry
-                    if stem in done:
-                        finished_paths.append(entry["image"])
-            restored += _close(store, entries, done)
+        try:
+            for work_dir, store in self.stores.items():
+                done = self.finished.get(work_dir, set())
+                entries = {}
+                for entry in self.entries.values():
+                    if _store(entry["image"]).work_dir == work_dir:
+                        stem = os.path.splitext(os.path.basename(entry["image"]))[0]
+                        entries[stem] = entry
+                        if stem in done:
+                            finished_paths.append(entry["image"])
+                pages, failed = _close(store, entries, done)
+                restored += pages
+                self.not_restored += failed
+        finally:
+            _ACTIVE.discard(self.owner.get("token"))
         if finished_paths:
             record_saved(finished_paths)
         if delete_txt is not None:  # the preprocess exported the original text of every page

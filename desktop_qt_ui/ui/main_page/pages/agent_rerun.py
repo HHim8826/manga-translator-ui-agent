@@ -65,6 +65,15 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
     if states is None:
         from manga_translator.agent.resume import previous_states
         states = previous_states(files)
+    busy = [s for s in states if getattr(s, "busy", False)]
+    if busy:  # another run works on the chapter: a second one would change the same pages
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(t("Agent Rerun Title"))
+        box.setText(t("Agent Rerun Busy", pages=_names([s.stem for s in busy], t("Agent Result Separator"))))
+        box.addButton(t("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return None
     question = rerun_question(t, states, lock)
     if question is None:
         return list(files), False

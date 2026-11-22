@@ -255,9 +255,86 @@ def test_a_run_that_was_killed_is_put_back_before_the_next_one(tmp_path):
         make_page(tmp_path, stem)
     guard.page_finished(paths[0])
     assert (_agent_dir(folder) / "run_journal.json").exists()
-    # the app was killed here: no guard.finish()
-    states = previous_states(paths)
+    # the app was killed here: no guard.finish(), and its process is gone
+    resume._ACTIVE.discard(guard.owner["token"])
+    written = _json(folder, "002").read_bytes()
+    states = previous_states(paths)  # tells the pages as the restore will put them back, writes nothing
+    assert [s.status for s in states] == ["done", "done"] and not states[1].edited
+    assert _json(folder, "002").read_bytes() == written
+    assert (_agent_dir(folder) / "run_journal.json").exists()
+    # the next run puts them back before it starts
+    resume.RunGuard.begin(paths).finish()
     assert _json(folder, "002").read_bytes() == before["002"]
     assert _json(folder, "001").read_bytes() != before["001"]  # the run finished 001
-    assert [s.status for s in states] == ["done", "done"]
+    assert not (_agent_dir(folder) / "run_journal.json").exists()
+    assert not (_agent_dir(folder) / "run_journal.done").exists()
+
+
+def test_reading_the_state_of_a_chapter_another_run_works_on_changes_nothing(tmp_path, monkeypatch, app):  # noqa: F811
+    """Review item 03: a second caller reads the state while a run works on the chapter. Nothing is
+    put back, the run's journal stays, the dialog says the chapter is busy, and a second run does
+    not start."""
+    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages.agent_rerun import ask_rerun
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    guard = resume.RunGuard.begin(paths)
+    for stem in ("001", "002"):  # the running run wrote both again
+        make_page(tmp_path, stem)
+    written = {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")}
+    states = previous_states(paths)
+    assert all(s.busy for s in states)
+    assert {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")} == written
+    assert (_agent_dir(folder) / "run_journal.json").exists()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: shown.append(box.text()) or 0)
+    assert ask_rerun(None, _t, paths) is None
+    assert shown and shown[0].startswith("Agent Rerun Busy")
+    with pytest.raises(resume.ChapterBusy):
+        resume.RunGuard.begin(paths)
+    # another process that is still running owns it too; one that has ended does not
+    journal_path = _agent_dir(folder) / "run_journal.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert resume.owner_alive({**journal["owner"], "pid": os.getppid(), "process_started": None})
+    assert not resume.owner_alive({**journal["owner"], "pid": 2 ** 22 + 7})
+    guard.finish()
+    assert not journal_path.exists() and not any(s.busy for s in previous_states(paths))
+
+
+def test_a_page_that_cannot_be_put_back_keeps_its_copies_for_the_next_run(tmp_path, monkeypatch):
+    """Review item 04: putting a page back fails once (its JSON is in use). Its copies and journal entry
+    stay, the run names it, and the next run puts it back."""
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    before = {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")}
+    sidecar_before = (_agent_dir(folder) / "pages" / "002.agent.json").read_bytes()
+    guard = resume.RunGuard.begin(paths)
+    for stem in ("001", "002"):
+        make_page(tmp_path, stem)
+    (_agent_dir(folder) / "pages" / "002.agent.json").write_text("{}", encoding="utf-8")
+    real_copy = resume.shutil.copy2
+
+    def locked(source, target, *args, **kwargs):
+        if str(target).endswith("002_translations.json"):
+            raise PermissionError(13, "in use", str(target))
+        return real_copy(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(resume.shutil, "copy2", locked)
+    restored = guard.finish()
+    assert [os.path.basename(p) for p in restored] == ["001.png"]
+    assert [os.path.basename(p) for p in guard.not_restored] == ["002.png"]
+    journal = json.loads((_agent_dir(folder) / "run_journal.json").read_text(encoding="utf-8"))
+    assert list(journal["pages"]) == ["002"] and "owner" not in journal
+    assert os.path.exists(journal["pages"]["002"]["json_copy"])
+    monkeypatch.setattr(resume.shutil, "copy2", real_copy)  # the file is free again
+    states = previous_states(paths)
+    assert [(s.status, s.edited) for s in states] == [("done", False), ("done", False)]
+    resume.RunGuard.begin(paths).finish()
+    assert {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")} == before
+    assert (_agent_dir(folder) / "pages" / "002.agent.json").read_bytes() == sidecar_before
     assert not (_agent_dir(folder) / "run_journal.json").exists()

@@ -60,7 +60,7 @@ def test_only_pages_the_agent_translated_are_rendered(tmp_path):
     assert failed == {name: "AI Agent: RuntimeError: connection lost" for name in ("002.png", "003.png", "004.png")}
     assert all(c.success is False and not getattr(c, "skipped", False) for c in result[1:4])
     assert result[4].skip_reason == "agent_not_reached" and "not rendered" in result[4].skip_message
-    assert any("Not rendered (no agent translation): 002.png (error)" in line for line in logs)
+    assert any("Not rendered (no agent translation, or kept as it was): 002.png (error)" in line for line in logs)
     events = _chapter_log(folder)
     start = next(e for e in events if e["type"] == "render_start")
     assert start["pages"] == 1

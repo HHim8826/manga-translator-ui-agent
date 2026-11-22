@@ -418,6 +418,74 @@ def test_a_check_run_keeps_the_page_and_reuses_the_inpainted_image(tmp_path):
     assert not (folder / "manga_translator_work" / "agent" / "run_journal.json").exists()
 
 
+class OutputTranslator(FakeTranslator):
+    """Has output images (the user's exports) and records the pages each render typesets."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.rendered = []
+
+    def _calculate_output_path(self, image_path, save_info):
+        return str(self.tmp_path / "out" / os.path.basename(image_path))
+
+    async def translate_batch(self, images_with_configs, save_info=None):
+        if self.load_text:
+            self.rendered += [os.path.basename(p) for p, _ in images_with_configs]
+        return await super().translate_batch(images_with_configs, save_info)
+
+
+def test_a_page_whose_output_image_cannot_be_backed_up_is_not_rendered_over_it(tmp_path, monkeypatch):
+    """Review item 05: copying 001's output image to the backups fails; 001 is not typeset (its output
+    stays byte for byte) and says why, 002 is."""
+    import shutil
+
+    folder, paths = _first_run(tmp_path, n_pages=2)
+    out = tmp_path / "out"
+    out.mkdir()
+    for path in paths:
+        cv2.imwrite(str(out / os.path.basename(path)), np.full((24, 32, 3), 60, np.uint8))
+    before = (out / "001.png").read_bytes()
+    real = shutil.copy2
+
+    def copy(source, target, *args, **kwargs):
+        if os.path.normcase(str(source)) == os.path.normcase(str(out / "001.png")):
+            raise PermissionError(13, "in use", str(source))
+        return real(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", copy)
+    translator = OutputTranslator(tmp_path)
+    results = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {},
+                                             client=ScriptedClient([_calls(("mark_page_done", {"confidence": 0.9}))] * 2),
+                                             log=lambda m: None, revise=True, inpaint_backend=PaintBackend(),
+                                             agent_settings={"inpaint_review": True, "recall_pass": False}))
+    assert translator.rendered == ["002.png"]
+    assert (out / "001.png").read_bytes() == before
+    held = [r for r in results if not isinstance(r, str)]
+    assert len(held) == 1 and "output image could not be backed up" in held[0].translation_error
+    backups = os.listdir(folder / "manga_translator_work" / "agent" / "backups")
+    assert any(n.startswith("002.output.") for n in backups) and not any(n.startswith("001.output.") for n in backups)
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_a_check_leaves_the_users_original_text_file(tmp_path, stop):
+    """Review item 06: a check has no preprocess, so an original TXT next to the page is the user's: it
+    stays when the check finishes and when it stops."""
+    from manga_translator.utils.path_manager import get_original_txt_path
+
+    folder, (path,) = _first_run(tmp_path)
+    txt = get_original_txt_path(path, create_dir=True)
+    with open(txt, "w", encoding="utf-8") as fh:
+        fh.write("我校訂過的原文\n")
+    script = [asyncio.CancelledError()] if stop else [_calls(("mark_page_done", {"confidence": 0.9}))]
+    if stop:
+        with pytest.raises(asyncio.CancelledError):
+            _check(tmp_path, path, script)
+    else:
+        _check(tmp_path, path, script)
+    with open(txt, encoding="utf-8") as fh:
+        assert fh.read() == "我校訂過的原文\n"
+
+
 class DiskBackend(PaintBackend):
     """Writes the image where the render reads it, the way the translator does (PIL from the array:
     an RGBA array stays RGBA)."""

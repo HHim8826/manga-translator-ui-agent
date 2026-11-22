@@ -50,9 +50,9 @@ MODE_FLAGS = ("template", "save_text", "load_text", "translate_json_only", "gene
 RENDERED = ("done", "incomplete")
 """Page statuses that are typeset; the other pages have no agent translation, or the user saved
 them in the editor during the run (``edited``: theirs, exported from the editor)."""
-HELD = ("inpaint_failed", "inpaint_unknown")
+HELD = ("inpaint_failed", "inpaint_unknown", "output_kept")
 """Pages a check finished but does not typeset: their inpainted image is not up to their mask
-(``_inpaint_changes``)."""
+(``_inpaint_changes``), or their output image could not be backed up (``_keep_outputs``)."""
 
 
 def _image_path(image: Any) -> str:
@@ -498,16 +498,17 @@ async def _inpaint_changes(pages: List[str], guard: RunGuard, backend, store: Ag
     return reuse, held
 
 
-def _keep_outputs(translator, items: List[tuple], save_info: Optional[dict], log) -> None:
+def _keep_outputs(translator, items: List[tuple], save_info: Optional[dict], log) -> Dict[str, str]:
     """A check renders the pages again over their output images (the user's exports from the editor):
-    a copy of each goes to ``agent/backups`` first."""
+    a copy of each goes to ``agent/backups`` first. Returns the pages whose output image could not be
+    copied (key -> image path): they are not rendered, so the image is not overwritten."""
     import shutil
     import time
 
     from ..utils.path_manager import get_work_dir
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    kept = 0
+    kept, unsaved = 0, {}
     for image, _cfg in items:
         path = _image_path(image)
         try:
@@ -517,15 +518,19 @@ def _keep_outputs(translator, items: List[tuple], save_info: Optional[dict], log
         if not target or not os.path.exists(target):
             continue
         folder = os.path.join(AgentStore(get_work_dir(path)).agent_dir, "backups")
-        os.makedirs(folder, exist_ok=True)
         base, ext = os.path.splitext(os.path.basename(target))
         try:
+            os.makedirs(folder, exist_ok=True)
             shutil.copy2(target, os.path.join(folder, f"{base}.output.{stamp}{ext}"))
             kept += 1
-        except OSError:
+        except OSError as exc:
             logger.warning(f"agent: could not copy {target}", exc_info=True)
+            log(f"[Agent] {os.path.basename(path)}: the output image could not be copied to agent/backups "
+                f"({type(exc).__name__}: {exc}); it is not rendered again, so the image stays as it is")
+            unsaved[_key(path)] = path
     if kept:
         log(f"[Agent] {kept} output image(s) from before the check copied to agent/backups")
+    return unsaved
 
 
 def _left_out_context(path: str, status: str, error: str = ""):
@@ -537,10 +542,12 @@ def _left_out_context(path: str, status: str, error: str = ""):
     ctx.image_name = path
     if status in HELD:
         ctx.success = False
+        why = {"inpaint_failed": "inpainting the changed areas failed",
+               "inpaint_unknown": "the page has no mask to compare and its text boxes changed",
+               "output_kept": "its output image could not be backed up"}[status]
         ctx.translation_error = ctx.error = (
-            "AI Agent: inpainting the changed areas failed" if status == "inpaint_failed" else
-            "AI Agent: the page has no mask to compare and its text boxes changed") + \
-            "; the page keeps its inpainted and output images and was not rendered again (check it again to retry)"
+            f"AI Agent: {why}; the page keeps its inpainted and output images and was not rendered again "
+            f"(check it again to retry)")
         return ctx
     if status in ("error", "no_json"):
         ctx.success = False
@@ -668,7 +675,9 @@ async def run_agent_workflow(
                     f"{os.path.basename(p)} ({why})" for p, why in preprocess_failed.items()))
         elif revise:
             # the pages change in place: copies first (JSON, sidecar, inpainted image), and the pages
-            # the check does not finish get theirs back
+            # the check does not finish get theirs back. The AI Agent page shows this stage (with
+            # its stop button) until the first chapter starts.
+            broadcast("workflow_stage", stage="revise", pages=len(paths))
             guard = RunGuard.begin(paths, revise=True)
             from ..utils.path_manager import find_json_path as _find_json
 
@@ -677,7 +686,6 @@ async def run_agent_workflow(
             log(f"[Agent] Check again: {len(paths)} page(s) keep their translations and your changes; copies of "
                 f"them are in agent/backups. Your edited boxes are "
                 f"{'locked' if settings.revise_lock_user_edits else 'not locked'}.")
-            broadcast("workflow_stage", stage="revise", pages=len(paths))
         if should_stop():
             raise asyncio.CancelledError("Agent workflow stopped by user")
 
@@ -824,9 +832,10 @@ async def run_agent_workflow(
                 events.close()
             for outcome in chapter:
                 log(f"[Agent] {outcome['page']}: {outcome.get('status')}, flags {outcome.get('flags', 0)}")
-                if outcome.get("status") in ("done", "incomplete"):
-                    # Same as "Translate JSON Only": the exported original TXT would
-                    # otherwise be imported over the agent's JSON later.
+                if preprocess and outcome.get("status") in ("done", "incomplete"):
+                    # Same as "Translate JSON Only": the original TXT this run's preprocess exported
+                    # would otherwise be imported over the agent's JSON later. A check has no
+                    # preprocess: a TXT there is the user's, and the render does not import it.
                     translator._delete_original_txt_after_json_translation(outcome["image"])
             outcomes.extend(chapter)
             if translated[0] != len(outcomes):  # pages that failed count as handled too
@@ -855,9 +864,15 @@ async def run_agent_workflow(
                 render_items.append((image, cfg))
             else:
                 left_out[path] = "no_json" if status in RENDERED else status
+        if revise and render_items:  # the output images are the user's exports: a copy first, or no render
+            unsaved = _keep_outputs(translator, render_items, save_info, log)
+            if unsaved:
+                render_items = [item for item in render_items if _key(_image_path(item[0])) not in unsaved]
+                for path in unsaved.values():
+                    left_out[path] = "output_kept"
         log(f"[Agent] 4/4 Render: typesetting {len(render_items)} page(s)")
         if left_out:
-            log("[Agent] Not rendered (no agent translation): " + ", ".join(
+            log("[Agent] Not rendered (no agent translation, or kept as it was): " + ", ".join(
                 f"{os.path.basename(p)} ({s})" for p, s in left_out.items()))
         results: list = []
         render_events = _RenderEvents(chapter_logs)
@@ -871,8 +886,6 @@ async def run_agent_workflow(
         region_hook = getattr(translator, "load_text_region_hook", None)
         translator.load_text_region_hook = editor_box_center  # text where the editor puts it
         try:
-            if revise:
-                _keep_outputs(translator, render_items, save_info, log)
             render_events.start([_image_path(image) for image, _ in render_items], left_out)
             # Reviewed pages reuse the inpainted image the review saved; the others
             # must not pick up an older one made before the agent changed the mask.
@@ -911,13 +924,22 @@ async def run_agent_workflow(
                 + ", ".join(sorted(os.path.basename(p) for p in users)))
         if guard is not None:  # also when stopped or failed: unfinished pages get their copies back
             try:
-                restored = guard.finish(getattr(translator, "_delete_original_txt_after_json_translation", None))
+                # only the TXT files this run's preprocess exported (a check has none of its own)
+                restored = guard.finish(getattr(translator, "_delete_original_txt_after_json_translation", None)
+                                        if preprocess else None)
             except Exception:
                 logger.exception("restoring the pages the run did not finish failed")
             else:
                 if restored:
                     log(f"[Agent] {len(restored)} page(s) not finished: their translations from before the run "
                         f"are back: {', '.join(os.path.basename(p) for p in restored)}")
+                if guard.not_restored:
+                    log(f"[Agent] {len(guard.not_restored)} page(s) could not be put back as they were before the "
+                        f"run (a file was in use): {', '.join(os.path.basename(p) for p in guard.not_restored)}. "
+                        f"Their copies and the run journal stay; they are put back when the chapter is opened "
+                        f"for the next run")
+                    broadcast("workflow_stage", stage="restore_failed",
+                              pages=[os.path.basename(p) for p in guard.not_restored])
         json_guard.reset()
         if isinstance(hooks, list) and batch_progress in hooks:
             hooks.remove(batch_progress)
