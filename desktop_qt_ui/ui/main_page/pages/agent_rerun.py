@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QWidget
 
 MAX_NAMES = 8
 REVISABLE = ("done", "incomplete", "edited")
@@ -21,6 +21,17 @@ the page during a run)."""
 def _names(stems: Sequence[str], separator: str) -> str:
     shown = separator.join(stems[:MAX_NAMES])
     return shown + ("…" if len(stems) > MAX_NAMES else "")
+
+
+def _window(parent) -> Optional[QWidget]:
+    """The widget the question shows over. The start button passes the main page's ``MainView``, a
+    QObject that is not a widget (a QMessageBox cannot take it as its parent, the run crashed with a
+    TypeError): its ``_dialog_parent()`` is the main window. Anything else: no parent."""
+    if isinstance(parent, QWidget):
+        return parent
+    get = getattr(parent, "_dialog_parent", None)
+    window = get() if callable(get) else None
+    return window if isinstance(window, QWidget) else None
 
 
 def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional[dict]:
@@ -61,7 +72,9 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
               states=None, lock: bool = True) -> Optional[Tuple[List[str], bool]]:
     """(the files to process, whether to check them again) — all of them, only the ones not done, or
     the finished ones checked again; None when the user cancels. ``lock``: the run's
-    ``revise_lock_user_edits``, so the check-again button says what happens to the user's boxes."""
+    ``revise_lock_user_edits``, so the check-again button says what happens to the user's boxes.
+    ``parent``: a widget, or the main page's ``MainView`` (see ``_window``)."""
+    parent = _window(parent)
     if states is None:
         from manga_translator.agent.resume import previous_states
         states = previous_states(files)

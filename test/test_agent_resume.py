@@ -183,6 +183,38 @@ def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app): 
     assert ask_rerun(None, _t, files, states) == (files, False)
 
 
+def test_the_question_shows_over_the_main_window_when_the_main_page_asks(tmp_path, monkeypatch, app):  # noqa: F811
+    """The start button passes the main page's MainView, a QObject that is not a widget. Taken as
+    the box's parent, QMessageBox raised a TypeError and the app crashed whenever a chapter had
+    earlier results. The box now shows over the main window, or on its own without one."""
+    from PyQt6.QtCore import QObject
+    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from ui.main_page.pages.agent_rerun import ask_rerun
+
+    class View(QObject):  # as MainView: not a widget, _dialog_parent() is the main window
+        def _dialog_parent(self):
+            parent = self.parent()
+            return parent if isinstance(parent, QWidget) else None
+
+    parents = []
+
+    def cancel(box):
+        parents.append(box.parent())
+        next(b for b in box.buttons() if b.text() == "Cancel").click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", cancel)
+    window = QWidget()
+    states = _states(tmp_path)
+    paths = [s.path for s in states]
+    busy = [PageState(paths[0], "done", busy=True)]
+    for parent in (View(window), View(), QObject(), window, None):
+        assert ask_rerun(parent, _t, paths, states) is None
+        assert ask_rerun(parent, _t, paths[:1], busy) is None  # the box that says another run works on it
+    assert parents == [window, window, None, None, None, None, window, window, None, None]
+    window.deleteLater()
+
+
 def _translations(folder, stem):
     raw = json.loads(_json(folder, stem).read_text(encoding="utf-8"))
     return [r.get("translation") for r in next(iter(raw.values()))["regions"]]
