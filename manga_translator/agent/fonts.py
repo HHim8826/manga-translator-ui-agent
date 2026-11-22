@@ -150,6 +150,32 @@ def vertical_marks() -> str:
     return "".join(sorted(set(rendered_chars(_PUNCTUATION, "v")) - set(rendered_chars(_PUNCTUATION, "h"))))
 
 
+def replacements_done(page: Any) -> bool:
+    """The page's JSON says its translations already have the text replacements
+    (``skip_text_replacements``, as ``load_text`` reads it): the render and the editor take
+    ``translation`` as it is. The render sets it on every page it typesets, the editor on save."""
+    value = page.get("skip_text_replacements", False) if isinstance(page, dict) else False
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def as_rendered(text: str, region: dict) -> str:
+    """``text`` with the text replacements of the region's direction (vertical text turns … into ︙,
+    ， into ︐ ...), as the renderer and the editor store a page's ``translation``. A translation
+    the agents write on a page that has them already (``replacements_done``) is drawn as it is:
+    with … it came out as three dots across a vertical line (ch33 p9, checked again)."""
+    reps = _replacements()
+    if not text or reps is None:
+        return text
+    try:
+        from ..rendering.text_replacements import apply_replacements
+        return apply_replacements(text, _direction_code(region), reps)
+    except Exception:
+        logger.warning("fonts: the text replacements failed", exc_info=True)
+        return text
+
+
 def rendered_chars(text: str, direction: Any = "auto") -> str:
     """The significant characters the renderer will draw for ``text``, after the text replacements
     of the direction (vertical text turns 。 into ︒ ...); both directions when it is not fixed."""

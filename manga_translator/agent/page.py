@@ -625,6 +625,9 @@ class PageDoc:
     def to_json_regions(self) -> List[dict]:
         """Regions for the JSON. Unfinished regions stay with an empty translation
         so they show up in the editor instead of silently disappearing."""
+        from .fonts import as_rendered, replacements_done
+
+        done = replacements_done(self.page_data)  # the render takes ``translation`` as it is
         out = []
         for region in self.active_regions():
             if region.skipped:
@@ -635,14 +638,19 @@ class PageDoc:
                     data.pop("translation_rich", None)
                 if region.font and region.font != data.get("font_family"):
                     data["font_family"] = region.font
+                shown = data.get("translation")
+                if done and not region.user_edited and not data.get("translation_rich") and isinstance(shown, str) \
+                        and shown and shown == data.get("translation_raw"):
+                    # the agent's text an earlier check wrote without the replacements: drawn as it was
+                    data["translation"] = as_rendered(shown, data)
                 out.append(data)
                 continue
             data = copy.deepcopy(region.data)
             source = region.source_text if region.source_text else region.ocr_local
             data["text"] = source
             data["texts"] = [source]
-            data["translation"] = region.translation or ""
             data["translation_raw"] = region.translation or ""
+            data["translation"] = as_rendered(data["translation_raw"], data) if done else data["translation_raw"]
             data.pop("translation_rich", None)
             if region.loaded_state is not None:  # new text: the box the last render measured is gone
                 data.pop("render_box_rect_local", None)

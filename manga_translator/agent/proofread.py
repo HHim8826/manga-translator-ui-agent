@@ -138,12 +138,16 @@ class ProofPage:
         data = raw[self.key]
         regions = data.get("regions", []) if isinstance(data, dict) else data
         entry = regions[rid - 1]
-        entry["translation"] = translation
+        from .fonts import as_rendered, replacements_done
+
+        # a page the render or the editor saved takes ``translation`` as it is: its vertical punctuation now
+        shown = as_rendered(translation, entry) if replacements_done(data) else translation
+        entry["translation"] = shown
         entry["translation_raw"] = translation
         entry.pop("translation_rich", None)
         write_json_atomic(self.json_path, raw)
         json_guard.note(self.json_path)
-        self.regions[rid].data.update(translation=translation, translation_raw=translation)
+        self.regions[rid].data.update(translation=shown, translation_raw=translation)
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".jxl")

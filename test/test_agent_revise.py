@@ -90,6 +90,33 @@ def _user_edits(folder):
     _write(folder, raw)
 
 
+def test_a_check_turns_the_punctuation_an_earlier_check_left_plain(tmp_path):
+    """ch33: earlier checks wrote the agents' text without the text replacements on pages that have
+    them (``skip_text_replacements``), so a … stayed three dots across a vertical line. A check that
+    leaves such a region alone now stores it the way the render does; the user's own text stays as
+    they wrote it."""
+    folder, (path,) = _first_run(tmp_path)
+    raw, page = _read(folder)
+    page["skip_text_replacements"] = True
+    regions = page["regions"]
+    assert regions[0]["translation"] == regions[0]["translation_raw"] == "譯1……"  # the agent's, plain
+    regions[1]["translation"] = regions[1]["translation_raw"] = "我改的…"  # the user's, in the editor
+    _write(folder, raw)
+    doc = load_page(path, _store(folder))
+    assert all(r.unchanged for r in doc.active_regions() if not r.skipped)
+    doc.save()
+    _raw, after = _read(folder)
+    assert [(r["translation"], r["translation_raw"]) for r in after["regions"]] == [
+        ("譯1︙", "譯1……"), ("我改的…", "我改的…"), ("譯4", "譯4")]
+    # a page whose render still does them: as it was
+    raw, page = _read(folder)
+    page["skip_text_replacements"] = False
+    page["regions"][0]["translation"] = "譯1……"
+    _write(folder, raw)
+    load_page(path, _store(folder)).save()
+    assert _read(folder)[1]["regions"][0]["translation"] == "譯1……"
+
+
 def test_text_key_ignores_what_the_render_and_line_breaks_change():
     assert text_key("……哦——……") == text_key("︙哦││︙")
     assert text_key("首先，暴雨一過[BR]草木。") == text_key("首先︐暴雨一過草木︒")

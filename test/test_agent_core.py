@@ -138,6 +138,46 @@ def test_sidecar_matches_regions_by_center_and_bbox(tmp_path):
     assert first["reasons"] == ["r"] and side["review_flags"][0]["type"] == "uncertain_ocr"
 
 
+
+def test_new_text_on_a_typeset_page_gets_its_vertical_punctuation(tmp_path):
+    """ch33 p9, checked again: a page the render (or the editor) saved says its translations have
+    the text replacements already (``skip_text_replacements``), so the next render takes
+    ``translation`` as it is. The agents wrote 「哇，[BR]好險…」 there as it was and the … came out
+    as three dots across the vertical line. They now store it as the render and the editor do: the
+    replacements of the region's direction in ``translation``, the plain text in ``translation_raw``."""
+    from manga_translator.agent.fonts import as_rendered
+    from manga_translator.agent.proofread import ProofPage
+
+    vertical = as_rendered("哇，[BR]好險…", {"direction": "v"})
+    assert vertical == "哇︐[BR]好險︙"  # the rules this install ships
+    assert as_rendered("哇，好險…", {"direction": "h"}) == "哇，好險…"
+
+    def saved():
+        return [(r["translation"], r.get("translation_raw")) for r in
+                next(iter(json.load(open(json_path, encoding="utf-8")).values()))["regions"]]
+
+    for i, (flag, done) in enumerate(((True, True), ("true", True), (False, False), (None, False))):
+        image_path, json_path = make_page(tmp_path / str(i))
+        raw = json.load(open(json_path, encoding="utf-8"))
+        page = next(iter(raw.values()))
+        page["regions"][2]["direction"] = "horizontal"
+        if flag is not None:
+            page["skip_text_replacements"] = flag
+        json.dump(raw, open(json_path, "w", encoding="utf-8"), ensure_ascii=False)
+        doc = PageDoc.load(image_path, json_path)
+        doc.set_text(1, "うわ、危な…", "哇，[BR]好險…", "dialogue", 0.9)
+        doc.set_text(3, "うわ", "哇，好險…", "dialogue", 0.9)
+        doc.save()
+        first, third = saved()[0], saved()[2]
+        assert first == ((vertical if done else "哇，[BR]好險…"), "哇，[BR]好險…"), flag
+        assert third == ("哇，好險…", "哇，好險…"), flag  # horizontal: nothing to turn
+
+        proof = ProofPage(image_path)  # the proofreading writes its revisions the same way
+        proof.write(1, "唔，[BR]好險…")
+        assert saved()[0] == ((as_rendered("唔，[BR]好險…", {"direction": "v"}) if done else "唔，[BR]好險…"),
+                              "唔，[BR]好險…"), flag
+        assert proof.translation(proof.regions[1]) == saved()[0][0]
+
 # --- memory and events ------------------------------------------------------------
 def test_memory_round_trip(tmp_path):
     memory = AgentMemory(str(tmp_path / "mem"))
