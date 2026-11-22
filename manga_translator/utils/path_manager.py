@@ -7,6 +7,7 @@
 
 import json
 import os
+import time
 from typing import Dict, Optional, Tuple
 
 from manga_translator.image_formats import SUPPORTED_IMAGE_EXTENSIONS
@@ -38,12 +39,17 @@ WORK_DIR_RESERVED_NAMES = {
 
 
 _SHARED_STEMS: Dict[str, Tuple[int, frozenset]] = {}
+SETTLED_NS = 2_000_000_000
+"""A folder's time moves in coarse steps (about 15 ms on Windows): files added or removed within one
+step leave it as it was, so a scan is only kept when the folder had not changed for this long."""
 _OWNERS: Dict[Tuple[str, int, int], frozenset] = {}
 
 
 def _shared_stems(folder: str) -> frozenset:
     """Stems (case folded) that more than one image of ``folder`` has, as ``001.jpg`` and ``001.png``.
-    Kept until the folder changes (its time changes when a file is added, removed or renamed)."""
+    Kept until the folder changes (its time changes when a file is added, removed or renamed), and
+    only when it had not changed for ``SETTLED_NS`` before the scan: a change within the same step of
+    the folder's time would not be seen."""
     try:
         stamp = os.stat(folder).st_mtime_ns
     except OSError:
@@ -62,7 +68,10 @@ def _shared_stems(folder: str) -> frozenset:
     except OSError:
         pass
     shared = frozenset(stem for stem, count in counts.items() if count > 1)
-    _SHARED_STEMS[key] = (stamp, shared)
+    if time.time_ns() - stamp > SETTLED_NS:
+        _SHARED_STEMS[key] = (stamp, shared)
+    else:
+        _SHARED_STEMS.pop(key, None)
     return shared
 
 
