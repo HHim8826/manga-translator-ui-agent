@@ -116,14 +116,6 @@ def _own_region(event: dict, value) -> Optional[int]:
     return _region_id(value) if (event.get("agent") or "translator") == "translator" else None
 
 
-def _minutes(event: dict) -> int:
-    """The wait for the API usage limit in whole minutes (at least 1)."""
-    try:
-        return max(1, round(int(event.get("seconds") or 0) / 60))
-    except (TypeError, ValueError):
-        return 1
-
-
 def _requests(event: dict) -> int:
     usage = event.get("usage")
     try:
@@ -151,9 +143,6 @@ class AgentsPage(QWidget):
         self._limit = 400_000
         self._translating = False
         self._proofreading = False
-        self._status_before_wait: Optional[str] = None
-        """The status line before the wait for the API usage limit (``api_wait``), shown again after it."""
-        self._wait_status = ""
         self._finished: Optional[dict] = None
         """``done`` and ``pages`` of the translators' run_end, added over the chapters; the status is
         built from it and the totals."""
@@ -461,7 +450,7 @@ class AgentsPage(QWidget):
         failed); and pages it could not put back at its end (``restore_failed``). The stop button
         stays on while the run is in one of the first stages."""
         stage = str(event.get("stage") or "")
-        self._agent_task = stage in ("start", "api_check", "api_wait", "preprocess", "revise")
+        self._agent_task = stage in ("start", "api_check", "preprocess", "revise")
         if stage == "start":  # a new run: the last run's summary goes
             self._live_events = []
             self._live_batch = None
@@ -473,8 +462,6 @@ class AgentsPage(QWidget):
         names = event.get("pages") if stage == "restore_failed" and isinstance(event.get("pages"), list) else []
         texts = {"start": ("Agents Stage Start", {"pages": event.get("pages", 0)}),
                  "api_check": ("Agents Stage API Check", {"model": event.get("model") or "-"}),
-                 "api_wait": ("Agents Stage API Wait", {"until": event.get("until") or "-",
-                                                        "minutes": _minutes(event)}),
                  "preprocess": ("Agents Stage Preprocess", {"pages": event.get("pages", 0)}),
                  "revise": ("Agents Stage Revise", {"pages": event.get("pages", 0)}),
                  "stopped": ("Agents Stage Stopped", {}),
@@ -771,22 +758,6 @@ class AgentsPage(QWidget):
                 self.status_label.setText(self._t("Agents Inpaint Progress", page=self._label(reviewing[0])))
             else:
                 self.status_label.setText(self._finished_status())
-        elif kind == "api_wait":  # the API's usage limit: the agents wait for its reset, then go on
-            if event.get("resumed"):
-                row = self._add_row(event, self._t("Agents API Wait"), self._t("Agents API Wait Done"), "")
-                self._paint(row, MUTED)
-                if self._status_before_wait is not None and self.status_label.text() == self._wait_status:
-                    self.status_label.setText(self._status_before_wait)
-                self._status_before_wait = None
-            else:
-                text = self._t("Agents API Wait Detail", until=event.get("until") or "-", minutes=_minutes(event))
-                row = self._add_row(event, self._t("Agents API Wait"), text, str(event.get("error") or ""),
-                                    problem=True)
-                self._paint(row, WARN)
-                if self._status_before_wait is None:
-                    self._status_before_wait = self.status_label.text()
-                self._wait_status = text
-                self.status_label.setText(text)
         elif kind == "stopped":
             self._mark_stopped(run)
         elif kind == "work_memory":
@@ -898,7 +869,6 @@ class AgentsPage(QWidget):
         self._prefix = {}
         self._finished_runs = {}
         self._finished = None
-        self._status_before_wait = None
         self._requests = 0
         self._unrendered = 0
         self._render_skipped = self._render_failed = 0

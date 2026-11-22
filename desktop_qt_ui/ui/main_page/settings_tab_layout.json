@@ -190,8 +190,7 @@
         "agent.inpaint_review_steps",
         "agent.inpaint_attempts_per_region",
         "agent.proofread_steps",
-        "agent.low_confidence_threshold",
-        "agent.quota_wait_minutes"
+        "agent.low_confidence_threshold"
       ]
     },
     {

@@ -70,11 +70,6 @@ class AgentSettings(BaseModel):
     """Seconds per API request."""
     retry_attempts: int = Field(default=3, ge=1)
     """Attempts per API candidate before moving to the next candidate."""
-    quota_wait_minutes: int = Field(default=300, ge=0)
-    """When the API answers that its usage limit is reached (429) and says when the limit resets, the
-    agents wait up to this long for the reset and go on (an API proxy with a 300-minute window, for example;
-    the ch37 proofread of 2026-11-22 failed 13 minutes before its reset). The stop button ends the
-    wait. 0 fails at once, as before; so does a limit without a reset time or one further off."""
     stream_requests: bool = True
     """Receive each reply as it is written (streaming). The reply starts within seconds, so a proxy
     that cuts a connection after a silent while (the user's: 120 s) does not cut a long reply. An API
