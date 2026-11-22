@@ -65,9 +65,11 @@ def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional
         steps = separator.join(t(key) for step, key in STEP_KEYS if any(step in s.pending for s in redo))
         parts.append(t("Agent Rerun Redo Note", count=len(redo), steps=steps,
                        pages=_names([s.stem for s in redo], separator)))
-        resets = max((getattr(s, "resets", "") for s in redo), default="")
-        if resets:
-            parts.append(t("Agent Rerun Redo Resets", time=resets))
+        from manga_translator.agent.redo import latest_reset, reset_label
+
+        resets = latest_reset(getattr(s, "resets", "") for s in redo)
+        if resets:  # still to come (a time that has passed is not shown)
+            parts.append(t("Agent Rerun Redo Resets", time=reset_label(resets)))
     keep = {id(s) for s in done + others}
     unfinished = [s for s in states if id(s) not in keep]
     if revisable:

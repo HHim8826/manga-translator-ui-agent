@@ -316,8 +316,9 @@ def test_a_run_that_was_killed_is_put_back_before_the_next_one(tmp_path):
         make_page(tmp_path, stem)
     guard.page_finished(paths[0])
     assert (_agent_dir(folder) / "run_journal.json").exists()
-    # the app was killed here: no guard.finish(), and its process is gone
+    # the app was killed here: no guard.finish(), and its process is gone (the system lets go of its lock)
     resume._ACTIVE.discard(guard.owner["token"])
+    guard.release()
     written = _json(folder, "002").read_bytes()
     states = previous_states(paths)  # tells the pages as the restore will put them back, writes nothing
     assert [s.status for s in states] == ["done", "done"] and not states[1].edited
@@ -363,6 +364,53 @@ def test_reading_the_state_of_a_chapter_another_run_works_on_changes_nothing(tmp
     assert not resume.owner_alive({**journal["owner"], "pid": 2 ** 22 + 7})
     guard.finish()
     assert not journal_path.exists() and not any(s.busy for s in previous_states(paths))
+
+
+def test_two_runs_that_start_at_once_do_not_both_take_the_chapter(tmp_path, monkeypatch):
+    """The review report of 2026-11-22 (P1-07): both callers read the chapter's state before either
+    wrote its journal. Only one takes the chapter; the other one's end does not remove its journal."""
+    import threading
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    meet = threading.Barrier(2, timeout=1)
+    real = resume._read_journal
+
+    def read(store):  # each caller waits here for the other one to have read it too
+        found = real(store)
+        try:
+            meet.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return found
+
+    monkeypatch.setattr(resume, "_read_journal", read)
+    results = []
+
+    def start():
+        try:
+            results.append(resume.RunGuard.begin(paths))
+        except resume.ChapterBusy as exc:
+            results.append(exc)
+
+    threads = [threading.Thread(target=start) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    guards = [r for r in results if isinstance(r, resume.RunGuard)]
+    assert len(guards) == 1 and sum(isinstance(r, resume.ChapterBusy) for r in results) == 1
+    journal = json.loads((_agent_dir(folder) / "run_journal.json").read_text(encoding="utf-8"))
+    assert set(journal["pages"]) == {"001", "002"} and journal["owner"] == guards[0].owner
+    assert all(s.busy for s in previous_states(paths))
+    with pytest.raises(resume.ChapterBusy):  # also later, while it runs
+        resume.RunGuard.begin(paths)
+    assert (_agent_dir(folder) / "run_journal.json").exists()
+    guards[0].finish()
+    assert not (_agent_dir(folder) / "run_journal.json").exists()
+    resume.RunGuard.begin(paths).finish()  # free again
 
 
 def test_a_page_that_cannot_be_put_back_keeps_its_copies_for_the_next_run(tmp_path, monkeypatch):

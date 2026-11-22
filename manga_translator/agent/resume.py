@@ -34,6 +34,7 @@ Copies of the user's own work (edited after a run, or translated outside the AI 
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
@@ -51,11 +52,18 @@ logger = logging.getLogger("manga_translator.agent")
 
 EDIT_MARGIN = 30.0
 FINGERPRINTS = "saved_json.json"
+INPAINTED = "saved_inpainted.json"
+"""Page stem -> [mtime_ns, size] of its inpainted image as the workflow left it: a redo does not
+review again an inpainted image the user changed (their repairs are in it)."""
 STATS = "saved_json.stat.json"
 """``[mtime_ns, size, fingerprint]`` of each page's JSON when its fingerprint was taken: the scan before
 the rerun question does not read a JSON again that still has its time and size (each read the whole
 file before: 100 pages of 1 MiB took about 0.34 s on the GUI thread)."""
 JOURNAL = "run_journal.json"
+LOCK = "run.lock"
+"""Locked by the run that works on the chapter, from before it reads the chapter's state until it
+ends (``_lock``): two runs that start at the same moment cannot both take it. The system lets go of
+the lock when the process ends, also when it is killed."""
 
 _ACTIVE: Set[str] = set()
 """Owner tokens of the runs of this process that have not ended (their guard has not finished)."""
@@ -72,6 +80,56 @@ def _process_start(pid: int) -> Optional[float]:
         return float(psutil.Process(pid).create_time())
     except Exception:
         return None
+
+
+def _lock(store: AgentStore):
+    """The chapter's ``LOCK``, held: an open file, or None when this file system cannot lock (the
+    journal's owner is all that tells a run is working on the chapter then). ChapterBusy when another
+    run holds it (also one of this process)."""
+    os.makedirs(store.agent_dir, exist_ok=True)
+    handle = open(os.path.join(store.agent_dir, LOCK), "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK, getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+                         getattr(errno, "EDEADLOCK", errno.EDEADLK)}:
+            raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
+                              f"wait for it to end, or stop it") from exc
+        logger.warning(f"agent: cannot lock {store.agent_dir}; only its journal tells a run works on it",
+                       exc_info=True)
+        return None
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+def _unlock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        logger.debug("agent: unlocking a chapter failed (closing it lets go too)", exc_info=True)
+    finally:
+        handle.close()
 
 
 def _new_owner() -> dict:
@@ -124,8 +182,12 @@ class PageState:
     """Another run is working on the page's chapter (its journal's owner is alive)."""
     pending: Tuple[str, ...] = ()
     """Steps an earlier run could not do on the page (``redo.py``: ``inpaint_review``, ``proofread``)."""
+    inpaint_edited: bool = False
+    """The inpainted image changed after the workflow left it (the user repaired it). Only told for a
+    page with an inpaint review to redo."""
     resets: str = ""
-    """When the API's usage limit that stopped them resets (HH:MM), if it said."""
+    """When the API's usage limit that stopped them resets (an ISO time), if it said and it is still
+    to come (``redo.resets_of``)."""
 
     @property
     def stem(self) -> str:
@@ -189,6 +251,20 @@ def _stat(path: str) -> Optional[list]:
     return [stat.st_mtime_ns, stat.st_size]
 
 
+def _inpainted_changed(image_path: str, saved: Any, log_time: Optional[float]) -> bool:
+    """The page's inpainted image is not the one the workflow left (``INPAINTED``); without a record
+    (a run before them), it was written more than ``EDIT_MARGIN`` seconds after the latest run log."""
+    from ..utils.path_manager import find_inpainted_path
+
+    inpainted = find_inpainted_path(image_path)
+    now = _stat(inpainted) if inpainted else None
+    if now is None:
+        return False
+    if isinstance(saved, list) and len(saved) == 2:
+        return list(saved) != now
+    return log_time is not None and now[0] / 1e9 > log_time + EDIT_MARGIN
+
+
 def _changed_since(path: str, saved: str, known: Any) -> bool:
     """The JSON's content is not the one fingerprinted ``saved``. Its time and size as they were when
     that fingerprint was taken (``known``, from ``STATS``) say it is without reading it."""
@@ -247,6 +323,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
     log_times: Dict[str, Optional[float]] = {}
     journals: Dict[str, Tuple[dict, bool]] = {}
     pending_steps: Dict[str, dict] = {}
+    inpainted: Dict[str, dict] = {}
     states = []
     for path in paths:
         store = _store(path)
@@ -287,14 +364,20 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
         elif exists:
             translated = has_translation(read_json)
         steps = redo_steps.steps_of(pending_steps[key], stem) if status else ()
-        states.append(PageState(path, status, edited, json_path, translated, busy, steps,
+        inpaint_edited = False
+        if redo_steps.INPAINT_REVIEW in steps:
+            if key not in inpainted:
+                inpainted[key] = _read_json(os.path.join(store.agent_dir, INPAINTED), {})
+            inpaint_edited = _inpainted_changed(path, inpainted[key].get(stem), log_times[key])
+        states.append(PageState(path, status, edited, json_path, translated, busy, steps, inpaint_edited,
                                 redo_steps.resets_of(pending_steps[key], stem) if steps else ""))
     return states
 
 
 def record_saved(paths: Sequence[str]) -> None:
-    """Fingerprints of the pages' JSON as the workflow leaves them."""
-    from ..utils.path_manager import find_json_path
+    """Fingerprints of the pages' JSON as the workflow leaves them, and the time and size of their
+    inpainted images (``INPAINTED``)."""
+    from ..utils.path_manager import find_inpainted_path, find_json_path
 
     by_store: Dict[str, List[str]] = {}
     for path in paths:
@@ -304,8 +387,16 @@ def record_saved(paths: Sequence[str]) -> None:
         target = _fingerprints_path(store)
         prints = _read_json(target, {})
         stats = _read_stats(store)
+        inpainted_target = os.path.join(store.agent_dir, INPAINTED)
+        inpainted = _read_json(inpainted_target, {})
         for path in pages:
             stem = os.path.splitext(os.path.basename(path))[0]
+            image = find_inpainted_path(path)
+            signature = _stat(image) if image else None
+            if signature is not None:
+                inpainted[stem] = signature
+            else:
+                inpainted.pop(stem, None)
             json_path = find_json_path(path)
             if json_path and os.path.exists(json_path):
                 before = _stat(json_path)
@@ -314,7 +405,7 @@ def record_saved(paths: Sequence[str]) -> None:
                     stats[stem] = [*before, prints[stem]]
                 else:
                     stats.pop(stem, None)
-        for name, data in ((target, prints), (_stats_path(store), stats)):
+        for name, data in ((target, prints), (_stats_path(store), stats), (inpainted_target, inpainted)):
             try:
                 write_json_atomic(name, data)
             except OSError:
@@ -385,7 +476,7 @@ def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
     with only its entries and no owner, so the next run puts it back (``recover``)."""
     from . import json_guard
 
-    restored, failed, prints = [], [], {}
+    restored, failed, prints, steps = [], [], {}, {}
     for stem, entry in entries.items():
         if stem in finished or json_guard.taken(entry.get("json")):
             continue
@@ -399,11 +490,18 @@ def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
             if _restore(entry):
                 restored.append(entry["image"])
                 prints[stem] = entry.get("print")
+                if isinstance(entry.get("pending"), dict):  # its steps to redo were for that JSON
+                    steps[stem] = entry["pending"]
         except OSError:
             logger.exception(f"agent: could not restore {entry.get('json')}")
             failed.append(stem)
     if prints:
         _set_prints(store, prints)
+    if steps:
+        try:
+            redo_steps.put_back(store, steps)
+        except Exception:
+            logger.warning("agent: could not put back the steps left to redo", exc_info=True)
     for stem, entry in entries.items():
         if stem in failed or entry.get("kind") == "revise":  # still needed / a check keeps every copy
             continue
@@ -467,6 +565,8 @@ class RunGuard:
         """The run in the journals (``owner_alive``)."""
         self.not_restored: List[str] = []
         """Pages ``finish`` could not put back (a file in use): their copies and journal entries stay."""
+        self.locks: Dict[str, Any] = {}
+        """Work dir -> the chapter's ``LOCK``, held until ``finish``."""
 
     @classmethod
     def begin(cls, paths: Sequence[str], revise: bool = False) -> "RunGuard":
@@ -475,20 +575,31 @@ class RunGuard:
         from ..utils.path_manager import find_inpainted_path, find_json_path, get_json_path
 
         guard = cls(paths)
-        for path in paths:  # nothing is written while another run works on one of the chapters
-            store = _store(path)
-            journal = _read_journal(store)
-            if journal is not None and owner_alive(journal.get("owner")):
-                raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
-                                  f"wait for it to end, or stop it")
-        recover(paths)  # a run that was killed: its pages are put back first
-        guard.owner = _new_owner()
         try:
+            for path in paths:  # nothing is written while another run works on one of the chapters
+                store = _store(path)
+                if store.work_dir in guard.locks:
+                    continue
+                # taken before the journal is read: two runs that start at once cannot both see none
+                guard.locks[store.work_dir] = _lock(store)
+                journal = _read_journal(store)
+                if journal is not None and owner_alive(journal.get("owner")):  # one that cannot lock
+                    raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
+                                      f"wait for it to end, or stop it")
+            recover(paths)  # a run that was killed: its pages are put back first
+            guard.owner = _new_owner()
             guard._begin(paths, revise)
         except BaseException:
-            _ACTIVE.discard(guard.owner["token"])
+            _ACTIVE.discard(guard.owner.get("token"))
+            guard.release()
             raise
         return guard
+
+    def release(self) -> None:
+        """Let go of the chapters' locks (``finish`` does; the system does when the process ends)."""
+        locks, self.locks = self.locks, {}
+        for handle in locks.values():
+            _unlock(handle)
 
     def _begin(self, paths: Sequence[str], revise: bool) -> None:
         from ..utils.path_manager import find_inpainted_path, find_json_path, get_json_path
@@ -497,6 +608,7 @@ class RunGuard:
         states = previous_states(paths)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         journals: Dict[str, dict] = {}
+        pending: Dict[str, dict] = {}
         for state in states:
             store = _store(state.path)
             guard.stores.setdefault(store.work_dir, store)
@@ -509,6 +621,10 @@ class RunGuard:
                      "kind": "revise" if revise else "edited" if state.edited else "other" if state.users else "agent",
                      "signature": _signature(json_path)}
             folder = os.path.join(store.agent_dir, "backups")
+            if not revise:  # the preprocess forgets the page's steps to redo; a page put back gets them back
+                if store.work_dir not in pending:
+                    pending[store.work_dir] = redo_steps.read(store)
+                entry["pending"] = redo_steps.of_page(pending[store.work_dir], state.stem)
             if entry["signature"] is not None:
                 entry["json_copy"] = _copy_to(folder, json_path, os.path.basename(json_path), stamp)
                 if entry["kind"] != "agent":
@@ -583,6 +699,12 @@ class RunGuard:
         """End of the run (also when it stopped or failed): the unfinished pages get their earlier
         JSON and sidecar back, the finished ones are fingerprinted. Returns the restored pages; the
         pages that could not be put back are in ``not_restored``."""
+        try:
+            return self._finish(delete_txt)
+        finally:
+            self.release()
+
+    def _finish(self, delete_txt: Optional[Callable[[str], Any]]) -> List[str]:
         restored: List[str] = []
         finished_paths = []
         try:

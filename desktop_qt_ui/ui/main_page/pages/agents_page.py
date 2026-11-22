@@ -94,11 +94,12 @@ PAGE_STATE_KEYS = {
     "output_kept": "Agent Page Output Kept",
     "redo_failed": "Agent Page Redo Failed",
     "redo_none": "Agent Page Redo None",
+    "redo_yours": "Agent Page Redo Yours",
 }
 HELD_STATES = ("inpaint_failed", "inpaint_unknown", "output_kept")
 """Pages a check finished but did not render again: their inpainted image is not up to their mask, or
 their output image could not be backed up."""
-REDO_STATES = ("redo_failed", "redo_none")
+REDO_STATES = ("redo_failed", "redo_none", "redo_yours")
 """Pages a redo (``manga_translator.agent.redo``) did not render again: their step failed again, or
 nothing was left to do on them. They keep their output, like the held pages."""
 WARN = QColor(214, 140, 0)
@@ -618,10 +619,14 @@ class AgentsPage(QWidget):
             self._requests += _requests(event)
             self._proofreading = False
             flagged = int(event.get("flagged") or 0)
+            unfinished = event.get("finished") is False and bool(event.get("redo"))  # stopped at its step limit
+            note = str(event.get("note") or "")
+            if unfinished:
+                note = self._t("Agents Proofread Unfinished") + (f" {note}" if note else "")
             row = self._add_row(event, self._t("Agents Proofread"),
                                 self._t("Agents Proofread Detail", revised=event.get("revised", 0), flagged=flagged),
-                                event.get("note", ""), problem=flagged > 0)
-            if flagged:
+                                note, problem=flagged > 0 or unfinished)
+            if flagged or unfinished:
                 self._paint(row, WARN)
             self._show_finished_if_idle()
         elif kind == "fonts":

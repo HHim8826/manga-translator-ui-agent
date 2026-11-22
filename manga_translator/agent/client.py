@@ -72,14 +72,21 @@ def quota_reset_seconds(error: BaseException, now: Optional[float] = None) -> Op
 
 
 def quota_resets(error: BaseException, now: Optional[float] = None) -> Dict[str, Any]:
-    """Event fields for a step that failed on the API's usage limit: ``resets`` (the local time, as
-    HH:MM) when the 429 said when the limit resets, so the user knows when to do the step again
-    (``redo``); empty for any other error."""
+    """Event fields for a step that failed on the API's usage limit, when the 429 said when the limit
+    resets, so the user knows when to do the step again (``redo``): ``resets`` (the local time as the
+    user reads it: HH:MM, with the date when it is not today) and ``resets_at`` (an ISO time with its
+    time zone, which ``redo.py`` keeps). Empty for any other error."""
+    import datetime as _dt
+
+    from .redo import reset_label
+
     now = time.time() if now is None else now
     seconds = quota_reset_seconds(error, now)
     if seconds is None:
         return {}
-    return {"resets": time.strftime("%H:%M", time.localtime(now + seconds + 59))}  # rounded up
+    when = _dt.datetime.fromtimestamp(now + seconds + 59).astimezone().replace(second=0, microsecond=0)  # rounded up
+    return {"resets": reset_label(when, _dt.datetime.fromtimestamp(now).astimezone()),
+            "resets_at": when.isoformat(timespec="minutes")}
 
 
 class OpenAIChatClient:

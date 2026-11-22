@@ -197,12 +197,18 @@ async def _proofread(proofreader: Proofreader, pages: List[str], events: EventLo
         resets = quota_resets(exc)
         events.emit("error", agent="proofread", error=f"proofreading failed: {type(exc).__name__}: {str(exc)[:300]}",
                     redo=True, **resets)
-        _note(redo_steps.failed, proofreader.store, redo_steps.PROOFREAD, stems, str(exc), resets.get("resets", ""))
+        _note(redo_steps.failed, proofreader.store, redo_steps.PROOFREAD, stems, str(exc), resets.get("resets_at", ""))
         log(f"[Agent] Proofread failed; it can be done again by hand: start the AI Agent on the chapter and "
             f"choose to redo the steps that were not done"
             + (f" (the API usage limit resets about {resets['resets']})" if resets else ""))
         return {"status": "error", "error": str(exc), **resets}
-    _note(redo_steps.done, proofreader.store, redo_steps.PROOFREAD, stems)
+    if result.get("status") == "incomplete":  # its revisions stay; the rest can be done by hand
+        _note(redo_steps.failed, proofreader.store, redo_steps.PROOFREAD, stems,
+              f"the proofreading stopped at its step limit ({result.get('steps', 0)} steps) before it finished")
+        log("[Agent] Proofread stopped at its step limit before it finished; its revisions stay, and the rest "
+            "can be done by hand: start the AI Agent on the chapter and choose to redo the steps that were not done")
+    else:
+        _note(redo_steps.done, proofreader.store, redo_steps.PROOFREAD, stems)
     totals = proofreader.totals
     log(f"[Agent] Proofread: {result.get('revised', 0)} revised, {result.get('flagged', 0)} flagged, "
         f"{totals['requests']} requests, {totals['prompt_tokens']} prompt tokens ({totals['cached_tokens']} cached)")
@@ -224,7 +230,7 @@ def _note_review(store: AgentStore, review: List[dict]) -> None:
             _note(redo_steps.done, store, redo_steps.INPAINT_REVIEW, [item["page"]])
         elif item.get("status") == "error":
             _note(redo_steps.failed, store, redo_steps.INPAINT_REVIEW, [item["page"]], str(item.get("error") or ""),
-                  str(item.get("resets") or ""))
+                  str(item.get("resets_at") or ""))
 
 
 def _save_work_terms(path: str, memory, pages: List[str], work_dir: str, events: EventLog, log,
@@ -589,12 +595,15 @@ def _left_out_context(path: str, status: str, error: str = ""):
             f"AI Agent: {why}; the page keeps its inpainted and output images and was not rendered again "
             f"(check it again to retry)")
         return ctx
-    if status in ("redo_failed", "redo_none"):
+    if status in ("redo_failed", "redo_none", "redo_yours"):
         ctx.skipped = True
         ctx.skip_reason = f"agent_{status}"
-        ctx.skip_message = ("AI Agent: the step to redo failed again; the page keeps its output and its step "
-                            "stays to redo" if status == "redo_failed" else
-                            "AI Agent: nothing was redone on this page; it keeps its output")
+        ctx.skip_message = {
+            "redo_failed": "AI Agent: the step to redo failed again; the page keeps its output and its step "
+                           "stays to redo",
+            "redo_none": "AI Agent: nothing was redone on this page; it keeps its output",
+            "redo_yours": "AI Agent: you changed this page after the run; its inpaint review is not done again "
+                          "and it keeps its output"}[status]
         return ctx
     if status in ("error", "no_json"):
         ctx.success = False
@@ -657,8 +666,9 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
     Returns (each page's outcome for the render, the pages whose render reuses their inpainted image:
     every page a step was done on, since a redo does not change the masks the image was made for, and
     the review saved its own). A page is rendered again when a step was done on it; one whose steps
-    failed again (``redo_failed``) keeps its output and stays on the list, and so does one with
-    nothing done (``redo_none``: its only step was the review of a page the user changed)."""
+    failed again (``redo_failed``) keeps its output and stays on the list; one whose only step was
+    the review of a page the user changed (its JSON, or only its inpainted image: their repairs) keeps
+    its output (``redo_yours``), and so does one with nothing done (``redo_none``)."""
     from .resume import previous_states
     from .revise import load_page
 
@@ -671,6 +681,8 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
                      for step in redo_steps.STEPS}), **run_info)
     worked: Dict[str, bool] = {}
     """Page -> a step was done on it (rendered again); False: its steps failed again."""
+    yours = set()
+    """Pages whose inpaint review is not done again: the user changed them."""
     requests = 0
     ended = ""
     try:
@@ -678,11 +690,14 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
         for path in pages:
             if stems[path] not in pending.get(redo_steps.INPAINT_REVIEW, {}):
                 continue
-            if getattr(states.get(_key(path)), "edited", False):
+            state = states.get(_key(path))
+            if getattr(state, "edited", False) or getattr(state, "inpaint_edited", False):
                 # its inpainted image may hold the user's repairs: the review would paint over them
-                log(f"[Agent] {stems[path]}: changed in the editor after the run; its inpainting is yours, the "
-                    f"inpaint review is not done again")
+                log(f"[Agent] {stems[path]}: " + ("changed in the editor" if getattr(state, "edited", False) else
+                                                  "its inpainted image changed") +
+                    " after the run; its inpainting is yours, the inpaint review is not done again")
                 _note(redo_steps.done, store, redo_steps.INPAINT_REVIEW, [stems[path]])
+                yours.add(_key(path))
                 continue
             to_review.append(path)
         if to_review:
@@ -726,7 +741,8 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
             side = store.load_sidecar(stems[path]) or {}
             status = str(side.get("status") or "done")
             if not worked.get(_key(path)):
-                status = "redo_failed" if _key(path) in worked else "redo_none"
+                status = "redo_failed" if _key(path) in worked else "redo_yours" if _key(path) in yours else \
+                    "redo_none"
             elif guard is not None:
                 guard.page_finished(path)
             flags = len(side.get("review_flags") or [])

@@ -351,7 +351,8 @@ class Proofreader:
             by_page[item["page"]] = by_page.get(item["page"], 0) + 1
         self.events.emit("proofread_done", agent="proofread", revised=len(session.revisions),
                          flagged=len(session.flags), pages=by_page, finished=session.finished, steps=steps,
-                         note=session.note, usage=dict(self.totals))
+                         note=session.note, usage=dict(self.totals),
+                         **({} if session.finished else {"redo": True}))  # the rest can be done by hand
         return {"status": "done" if session.finished else "incomplete", "revised": len(session.revisions),
                 "flagged": len(session.flags), "steps": steps}
 
