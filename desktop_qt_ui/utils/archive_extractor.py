@@ -152,8 +152,78 @@ def get_temp_extract_dir(archive_path: str) -> str:
     return os.path.join(base_temp, unique_name)
 
 
+PDF_PAGE_COVER = 0.95
+"""The share of the page an embedded image must cover to be taken as the page."""
+PDF_MIN_ZOOM, PDF_MAX_ZOOM = 2.0, 5.0
+"""How much a rendered page is enlarged: about its images' own resolution, within these."""
+
+
+def _pdf_visible_text(page) -> bool:
+    """The page shows text (an OCR layer of a scan is drawn invisible, and does not count)."""
+    try:
+        for span in page.get_texttrace():
+            if span.get("type") == 3 or float(span.get("opacity", 1.0) or 0) <= 0:
+                continue
+            if any(chr(char[0]).strip() for char in span.get("chars", ()) if char and char[0] > 0):
+                return True
+        return False
+    except Exception:
+        return bool(page.get_text("text").strip())
+
+
+def _pdf_page_image(doc, page) -> Optional[dict]:
+    """The page's embedded image when it is the whole page (``doc.extract_image``); None when the
+    page must be rendered: text or vector drawings on it, several images, or one that is turned,
+    masked or does not cover the page."""
+    import fitz
+
+    images = page.get_images(full=True)
+    if len(images) != 1 or images[0][1]:  # several images, or one with a soft mask
+        return None
+    xref = images[0][0]
+    try:
+        infos = [info for info in page.get_image_info(xrefs=True) if info.get("xref") == xref]
+    except Exception:
+        return None
+    if len(infos) != 1 or infos[0].get("has-mask"):
+        return None
+    a, b, c, d = (infos[0].get("transform") or (0, 0, 0, 0))[:4]
+    if abs(b) > 1e-6 or abs(c) > 1e-6 or a <= 0 or d <= 0:  # turned, slanted or mirrored
+        return None
+    shown = fitz.Rect(infos[0]["bbox"]) & page.rect
+    if shown.is_empty or shown.get_area() < PDF_PAGE_COVER * page.rect.get_area():
+        return None
+    if _pdf_visible_text(page):
+        return None
+    try:
+        if page.get_drawings():
+            return None
+    except Exception:
+        return None
+    try:
+        return doc.extract_image(xref)
+    except Exception:
+        return None
+
+
+def _pdf_zoom(page) -> float:
+    """About the resolution of the page's images (a scan keeps its pixels), within the limits."""
+    scales = []
+    try:
+        for info in page.get_image_info():
+            x0, y0, x1, y1 = (float(v) for v in info["bbox"])
+            shown = (x1 - x0) * (y1 - y0)
+            pixels = float(info.get("width") or 0) * float(info.get("height") or 0)
+            if shown > 0 and pixels > 0:  # by area: the same for a turned image
+                scales.append((pixels / shown) ** 0.5)
+    except Exception:
+        pass
+    return min(PDF_MAX_ZOOM, max([PDF_MIN_ZOOM] + scales))
+
+
 def extract_images_from_pdf(pdf_path: str, output_dir: str) -> List[str]:
-    """从 PDF 文件中提取图片（优先提取嵌入原图，无嵌入图时回退渲染）"""
+    """从 PDF 文件中提取每一页的图片：整页就是一张内嵌原图时直接取原图（不损失画质），
+    其他页（有可见文字、矢量图形、多张图、旋转或带遮罩的图）整页渲染，避免漏掉排成文字的对白。"""
     try:
         import fitz  # PyMuPDF
     except ImportError:
@@ -167,32 +237,24 @@ def extract_images_from_pdf(pdf_path: str, output_dir: str) -> List[str]:
     try:
         doc = fitz.open(pdf_path)
         for page in doc:
-            imgs = page.get_images(full=True)
-            if imgs:
-                # 提取页面内所有嵌入图片
-                for img in imgs:
-                    xref = img[0]
-                    try:
-                        base = doc.extract_image(xref)
-                        img_count += 1
-                        image_path = os.path.join(output_dir, f"page_{img_count:04d}.{base['ext']}")
-                        with open(image_path, 'wb') as f:
-                            f.write(base['image'])
-                        extracted_images.append(image_path)
-                    except Exception:
-                        pass
-            else:
-                # 无嵌入图（纯文字/矢量页），回退渲染为 PNG
-                try:
-                    mat = fitz.Matrix(2.0, 2.0)
-                    pix = page.get_pixmap(matrix=mat)
-                    img_count += 1
-                    image_path = os.path.join(output_dir, f"page_{img_count:04d}.png")
-                    pix.save(image_path)
-                    extracted_images.append(image_path)
-                    pix = None
-                except Exception:
-                    pass
+            base = _pdf_page_image(doc, page)
+            if base is not None:
+                img_count += 1
+                image_path = os.path.join(output_dir, f"page_{img_count:04d}.{base['ext']}")
+                with open(image_path, 'wb') as f:
+                    f.write(base['image'])
+                extracted_images.append(image_path)
+                continue
+            try:
+                zoom = _pdf_zoom(page)
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+                img_count += 1
+                image_path = os.path.join(output_dir, f"page_{img_count:04d}.png")
+                pix.save(image_path)
+                extracted_images.append(image_path)
+                pix = None
+            except Exception:
+                pass
     finally:
         if doc is not None:
             doc.close()
