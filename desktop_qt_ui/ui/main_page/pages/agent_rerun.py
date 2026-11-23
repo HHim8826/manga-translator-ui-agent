@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 
-from PyQt6.QtWidgets import QMessageBox, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 MAX_NAMES = 8
 REVISABLE = ("done", "incomplete", "edited")
@@ -31,7 +32,7 @@ def _names(stems: Sequence[str], separator: str) -> str:
 
 def _window(parent) -> Optional[QWidget]:
     """The widget the question shows over. The start button passes the main page's ``MainView``, a
-    QObject that is not a widget (a QMessageBox cannot take it as its parent, the run crashed with a
+    QObject that is not a widget (a dialog cannot take it as its parent, the run crashed with a
     TypeError): its ``_dialog_parent()`` is the main window. Anything else: no parent."""
     if isinstance(parent, QWidget):
         return parent
@@ -54,35 +55,126 @@ def rerun_question(t: Callable[..., str], states, lock: bool = True) -> Optional
     revisable = [s for s in seen if s.status in REVISABLE]
     redo = [s for s in revisable if getattr(s, "pending", ())]
     separator = t("Agent Result Separator")
-    parts = []
+    parts = []  # (text, shown): what happened is shown, the rules of the choices are folded
     if seen:
-        parts.append(t("Agent Rerun Text", seen=len(seen), pages=len(states), done=len(done)))
+        parts.append((t("Agent Rerun Text", seen=len(seen), pages=len(states), done=len(done)), True))
     if others:
-        parts.append(t("Agent Rerun Translated", count=len(others), pages=_names([s.stem for s in others], separator)))
+        parts.append((t("Agent Rerun Translated", count=len(others),
+                        pages=_names([s.stem for s in others], separator)), True))
     if edited:
-        parts.append(t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)))
+        parts.append((t("Agent Rerun Edited", count=len(edited), pages=_names([s.stem for s in edited], separator)),
+                      True))
+    steps = ""
     if redo:
         steps = separator.join(t(key) for step, key in STEP_KEYS if any(step in s.pending for s in redo))
-        parts.append(t("Agent Rerun Redo Note", count=len(redo), steps=steps,
-                       pages=_names([s.stem for s in redo], separator)))
+        parts.append((t("Agent Rerun Redo Note", count=len(redo), steps=steps,
+                        pages=_names([s.stem for s in redo], separator)), False))
         from manga_translator.agent.redo import latest_reset, reset_label
 
         resets = latest_reset(getattr(s, "resets", "") for s in redo)
         if resets:  # still to come (a time that has passed is not shown)
-            parts.append(t("Agent Rerun Redo Resets", time=reset_label(resets)))
+            parts.append((t("Agent Rerun Redo Resets", time=reset_label(resets)), True))
     keep = {id(s) for s in done + others}
     unfinished = [s for s in states if id(s) not in keep]
     if revisable:
-        parts.append(t("Agent Rerun Revise Note"))
-        parts.append(t("Agent Rerun Revise Locked") if lock else t("Agent Rerun Revise Unlocked Note"))
+        parts.append((t("Agent Rerun Revise Note"), False))
+        parts.append((t("Agent Rerun Revise Locked") if lock else t("Agent Rerun Revise Unlocked Note"), False))
         if unfinished:  # two choices that take different pages, maybe as many of them
-            parts.append(t("Agent Rerun Pages", revise=_names([s.stem for s in revisable], separator),
-                           unfinished=_names([s.stem for s in unfinished], separator)))
-    parts.append(t("Agent Rerun Stop Note"))
-    return {"text": "\n\n".join(parts), "unfinished": [s.path for s in unfinished],
+            parts.append((t("Agent Rerun Pages", revise=_names([s.stem for s in revisable], separator),
+                            unfinished=_names([s.stem for s in unfinished], separator)), False))
+    parts.append((t("Agent Rerun Stop Note"), False))
+    return {"text": "\n\n".join(text for text, _shown in parts),
+            "summary": "\n\n".join(text for text, shown in parts if shown),
+            "details": "\n\n".join(text for text, shown in parts if not shown),
+            "steps": steps, "unfinished": [s.path for s in unfinished],
             "all": [s.path for s in states], "revise": [s.path for s in revisable],
             "redo": [s.path for s in redo],
             "edited": len(edited), "translated": len(others), "lock": lock}
+
+
+def _exec(dialog) -> None:
+    """Shows a question and waits for the answer (the tests answer in its place)."""
+    dialog.exec()
+
+
+def _fit(dialog, width: int = 600) -> None:
+    """The dialog ``width`` wide and as tall as what it shows (it grows when the details open)."""
+    dialog.setMinimumSize(0, 0)
+    dialog.setMaximumSize(16777215, 16777215)
+    layout = dialog.layout()
+    height = -1
+    if layout is not None:
+        layout.activate()
+        if layout.hasHeightForWidth():
+            height = layout.totalHeightForWidth(width)
+    dialog.setFixedSize(width, max(height, layout.totalMinimumSize().height() if layout is not None else 0))
+
+
+def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: str = "",
+            choices: Sequence[Tuple[str, str, bool]] = ()):
+    """A question in the app's theme (a qfluentwidgets ``Dialog``, as the app's other dialogs; a
+    QMessageBox stayed white in the dark theme): the summary, a row per choice (its button, and
+    under it a line on what it does), the long rules folded under a details button, and Cancel.
+    ``choices``: (label, what it does, the default). After ``_exec``: ``dialog.chosen`` is the index
+    of the choice clicked, None for Cancel (or Esc). ``dialog.choice_buttons`` ends with Cancel."""
+    from qfluentwidgets import CaptionLabel, Dialog, PrimaryPushButton, PushButton, TransparentPushButton
+
+    dialog = Dialog(title, summary, parent)
+    dialog.setTitleBarVisible(False)
+    dialog.contentLabel.setText(summary)  # Dialog breaks long lines by a count of characters
+    dialog.contentLabel.setWordWrap(True)
+    dialog.setContentCopyable(True)
+    dialog.yesButton.hide()
+    dialog.cancelButton.setText(t("Cancel"))
+    dialog.chosen = None
+    dialog.choice_buttons = []
+    dialog.default_button = None
+
+    def choose(index: int) -> None:
+        dialog.chosen = index
+        dialog.accept()
+
+    for index, (label, description, default) in enumerate(choices):
+        row = QWidget(dialog)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(4)
+        button = (PrimaryPushButton if default else PushButton)(label, row)
+        button.clicked.connect(lambda _checked=False, i=index: choose(i))
+        layout.addWidget(button)
+        if description:
+            note = CaptionLabel(description, row)
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        dialog.textLayout.addWidget(row)
+        dialog.choice_buttons.append(button)
+        if default and dialog.default_button is None:
+            dialog.default_button = button
+            button.setDefault(True)
+            button.setFocus()
+    dialog.details_label = dialog.details_button = None
+    if details:
+        label = CaptionLabel(details, dialog)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setVisible(False)
+        toggle = TransparentPushButton(t("Agent Rerun Details"), dialog)
+
+        def flip() -> None:
+            label.setVisible(label.isHidden())
+            toggle.setText(t("Agent Rerun Details" if label.isHidden() else "Agent Rerun Hide Details"))
+            _fit(dialog)
+
+        toggle.clicked.connect(flip)
+        dialog.textLayout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        dialog.textLayout.addWidget(label)
+        dialog.details_label, dialog.details_button = label, toggle
+    dialog.choice_buttons.append(dialog.cancelButton)
+    if dialog.default_button is None:
+        dialog.default_button = dialog.cancelButton
+        dialog.cancelButton.setFocus()
+    _fit(dialog)
+    return dialog
 
 
 def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
@@ -98,44 +190,28 @@ def ask_rerun(parent, t: Callable[..., str], files: Sequence[str],
         states = previous_states(files)
     busy = [s for s in states if getattr(s, "busy", False)]
     if busy:  # another run works on the chapter: a second one would change the same pages
-        box = QMessageBox(parent)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(t("Agent Rerun Title"))
-        box.setText(t("Agent Rerun Busy", pages=_names([s.stem for s in busy], t("Agent Result Separator"))))
-        box.addButton(t("Cancel"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        _exec(_dialog(parent, t, t("Agent Rerun Title"),
+                      t("Agent Rerun Busy", pages=_names([s.stem for s in busy], t("Agent Result Separator")))))
         return None
     question = rerun_question(t, states, lock)
     if question is None:
         return list(files), False
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle(t("Agent Rerun Title"))
-    box.setText(question["text"])
-    again = None
+    choices = []  # (label, what it does, the default, the answer)
     if question["redo"]:
-        again = box.addButton(t("Agent Rerun Redo", count=len(question["redo"])), QMessageBox.ButtonRole.ActionRole)
-    revise = None
+        choices.append((t("Agent Rerun Redo", count=len(question["redo"])),
+                        t("Agent Rerun Redo Desc", steps=question["steps"]), True, (question["redo"], REDO)))
     if question["revise"]:
-        revise = box.addButton(t("Agent Rerun Revise" if lock else "Agent Rerun Revise Unlocked",
-                                 count=len(question["revise"])),
-                               QMessageBox.ButtonRole.ActionRole)
-    only = None
+        choices.append((t("Agent Rerun Revise" if lock else "Agent Rerun Revise Unlocked",
+                          count=len(question["revise"])),
+                        t("Agent Rerun Revise Desc"), False, (question["revise"], True)))
     if question["unfinished"]:
-        only = box.addButton(t("Agent Rerun Unfinished", count=len(question["unfinished"])),
-                             QMessageBox.ButtonRole.AcceptRole)
-    redo = box.addButton(t("Agent Rerun All", count=len(question["all"])), QMessageBox.ButtonRole.DestructiveRole)
-    cancel = box.addButton(t("Cancel"), QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(again or only or cancel)
-    box.setEscapeButton(cancel)
-    box.exec()
-    clicked = box.clickedButton()
-    if again is not None and clicked is again:
-        return question["redo"], REDO
-    if revise is not None and clicked is revise:
-        return question["revise"], True
-    if only is not None and clicked is only:
-        return question["unfinished"], False
-    if clicked is redo:
-        return question["all"], False
-    return None
+        choices.append((t("Agent Rerun Unfinished", count=len(question["unfinished"])),
+                        t("Agent Rerun Unfinished Desc"), not question["redo"], (question["unfinished"], False)))
+    choices.append((t("Agent Rerun All", count=len(question["all"])), t("Agent Rerun All Desc"), False,
+                    (question["all"], False)))
+    dialog = _dialog(parent, t, t("Agent Rerun Title"), question["summary"], question["details"],
+                     [choice[:3] for choice in choices])
+    _exec(dialog)
+    if dialog.chosen is None:
+        return None
+    return choices[dialog.chosen][3]

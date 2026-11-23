@@ -132,11 +132,11 @@ def test_the_question_names_the_edited_pages():
 
 
 def test_the_check_again_button_follows_the_lock_setting(tmp_path, monkeypatch, app):  # noqa: F811
-    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun
 
     seen = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append([b.text() for b in box.buttons()]) or 0)
+    monkeypatch.setattr(agent_rerun, "_exec", lambda box: seen.append([b.text() for b in box.choice_buttons]) or 0)
     states = _states(tmp_path)
     for lock in (True, False):
         ask_rerun(None, _t, [s.path for s in states], states, lock=lock)
@@ -150,17 +150,17 @@ def test_the_check_again_button_follows_the_lock_setting(tmp_path, monkeypatch, 
     ("Cancel", None),
 ])
 def test_the_user_picks_the_pages(tmp_path, monkeypatch, app, button, expected):  # noqa: F811
-    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun
 
     seen = []
 
     def click(box):
-        seen.append([b.text() for b in box.buttons()])
-        next(b for b in box.buttons() if b.text() == button).click()
+        seen.append([b.text() for b in box.choice_buttons])
+        next(b for b in box.choice_buttons if b.text() == button).click()
         return 0
 
-    monkeypatch.setattr(QMessageBox, "exec", click)
+    monkeypatch.setattr(agent_rerun, "_exec", click)
     states = _states(tmp_path)
     chosen = ask_rerun(None, _t, [s.path for s in states], states)
     assert (None if chosen is None else ([os.path.basename(p) for p in chosen[0]], chosen[1])) == expected
@@ -168,27 +168,56 @@ def test_the_user_picks_the_pages(tmp_path, monkeypatch, app, button, expected):
                             "Cancel"}
 
 
+def test_the_question_is_a_themed_dialog_with_the_rules_folded(tmp_path, monkeypatch, app):  # noqa: F811
+    """Review 2026-11-24 U1/X2: the question was a QMessageBox, white in the dark theme, with five
+    to seven paragraphs and up to five long buttons. It is a qfluentwidgets Dialog now: what happened
+    on top, a row per choice with a line on what it does, the rules folded under a details button."""
+    from qfluentwidgets import Dialog
+    from ui.main_page.pages import agent_rerun
+
+    dialogs = []
+    monkeypatch.setattr(agent_rerun, "_exec", dialogs.append)
+    states = _states(tmp_path)
+    assert agent_rerun.ask_rerun(None, _t, [s.path for s in states], states) is None  # closed: cancelled
+    dialog = dialogs[0]
+    assert isinstance(dialog, Dialog)
+    assert dialog.contentLabel.text() == "Agent Rerun Text done=2 pages=4 seen=3\n\nAgent Rerun Edited count=1 pages=002"
+    assert dialog.details_label.isHidden()
+    assert dialog.details_label.text().startswith("Agent Rerun Revise Note\n\nAgent Rerun Revise Locked")
+    dialog.details_button.click()
+    assert not dialog.details_label.isHidden() and dialog.details_button.text() == "Agent Rerun Hide Details"
+    dialog.details_button.click()
+    assert dialog.details_label.isHidden() and dialog.details_button.text() == "Agent Rerun Details"
+    assert [b.text() for b in dialog.choice_buttons] == [
+        "Agent Rerun Revise count=2", "Agent Rerun Unfinished count=2", "Agent Rerun All count=4", "Cancel"]
+    assert dialog.default_button.text() == "Agent Rerun Unfinished count=2"
+    notes = [label.text() for label in dialog.findChildren(type(dialog.details_label))
+             if label is not dialog.details_label]
+    assert notes == ["Agent Rerun Revise Desc", "Agent Rerun Unfinished Desc", "Agent Rerun All Desc"]
+
+
 def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app):  # noqa: F811
-    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun
 
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: pytest.fail("asked"))
+    monkeypatch.setattr(agent_rerun, "_exec", lambda box: pytest.fail("asked"))
     folder = tmp_path / "chapter"
     folder.mkdir()
     files = [str(folder / "001.png")]
     assert ask_rerun(None, _t, files) == (files, False)
     # every page done: no "only the pages not done" button
     states = [PageState(files[0], "done")]
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: [b for b in box.buttons() if "All" in b.text()][0].click())
+    monkeypatch.setattr(agent_rerun, "_exec", lambda box: [b for b in box.choice_buttons if "All" in b.text()][0].click())
     assert ask_rerun(None, _t, files, states) == (files, False)
 
 
 def test_the_question_shows_over_the_main_window_when_the_main_page_asks(tmp_path, monkeypatch, app):  # noqa: F811
     """The start button passes the main page's MainView, a QObject that is not a widget. Taken as
-    the box's parent, QMessageBox raised a TypeError and the app crashed whenever a chapter had
+    the box's parent, the QMessageBox of then raised a TypeError and the app crashed whenever a chapter had
     earlier results. The box now shows over the main window, or on its own without one."""
     from PyQt6.QtCore import QObject
-    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from PyQt6.QtWidgets import QWidget
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun
 
     class View(QObject):  # as MainView: not a widget, _dialog_parent() is the main window
@@ -200,10 +229,10 @@ def test_the_question_shows_over_the_main_window_when_the_main_page_asks(tmp_pat
 
     def cancel(box):
         parents.append(box.parent())
-        next(b for b in box.buttons() if b.text() == "Cancel").click()
+        next(b for b in box.choice_buttons if b.text() == "Cancel").click()
         return 0
 
-    monkeypatch.setattr(QMessageBox, "exec", cancel)
+    monkeypatch.setattr(agent_rerun, "_exec", cancel)
     window = QWidget()
     states = _states(tmp_path)
     paths = [s.path for s in states]
@@ -336,7 +365,7 @@ def test_reading_the_state_of_a_chapter_another_run_works_on_changes_nothing(tmp
     """Review item 03: a second caller reads the state while a run works on the chapter. Nothing is
     put back, the run's journal stays, the dialog says the chapter is busy, and a second run does
     not start."""
-    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun
 
     folder = tmp_path / "chapter"
@@ -352,7 +381,7 @@ def test_reading_the_state_of_a_chapter_another_run_works_on_changes_nothing(tmp
     assert {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")} == written
     assert (_agent_dir(folder) / "run_journal.json").exists()
     shown = []
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: shown.append(box.text()) or 0)
+    monkeypatch.setattr(agent_rerun, "_exec", lambda box: shown.append(box.contentLabel.text()) or 0)
     assert ask_rerun(None, _t, paths) is None
     assert shown and shown[0].startswith("Agent Rerun Busy")
     with pytest.raises(resume.ChapterBusy):

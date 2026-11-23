@@ -200,7 +200,7 @@ def test_a_proofreading_that_hit_the_usage_limit_is_written_down(tmp_path):
 
 
 def test_the_rerun_question_offers_to_redo_the_steps(tmp_path, monkeypatch, app):  # noqa: F811
-    from PyQt6.QtWidgets import QMessageBox
+    from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import REDO, ask_rerun, rerun_question
 
     soon = dt.datetime.now().astimezone() + dt.timedelta(minutes=30)
@@ -224,11 +224,11 @@ def test_the_rerun_question_offers_to_redo_the_steps(tmp_path, monkeypatch, app)
     seen = []
 
     def click(box):
-        seen.append(([b.text() for b in box.buttons()], box.defaultButton().text()))
-        next(b for b in box.buttons() if b.text() == "Agent Rerun Redo count=2").click()
+        seen.append(([b.text() for b in box.choice_buttons], box.default_button.text()))
+        next(b for b in box.choice_buttons if b.text() == "Agent Rerun Redo count=2").click()
         return 0
 
-    monkeypatch.setattr(QMessageBox, "exec", click)
+    monkeypatch.setattr(agent_rerun, "_exec", click)
     chosen = ask_rerun(None, _t, [s.path for s in states], states)
     assert ([os.path.basename(p) for p in chosen[0]], chosen[1]) == (["001.png", "002.png"], REDO)
     assert seen[0][1] == "Agent Rerun Redo count=2"  # the first choice when there are steps to redo

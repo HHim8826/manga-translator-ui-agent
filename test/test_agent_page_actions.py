@@ -235,21 +235,29 @@ def test_another_page_resets_the_zoom_a_stage_keeps_it(app, tmp_path):  # noqa: 
 
 
 def test_an_agent_run_shows_its_page(app):  # noqa: F811
+    """Review 2026-11-24 X1: the page was shown when the start button was pressed, before the
+    question whether to redo pages (a cancelled start was left on the AI Agent page, showing the last
+    run). It is shown when the run starts: its ``workflow_stage`` ``start`` event."""
     from ui.main_window import MainWindow
 
     switched = []
 
-    def window(agent_workflow, show):
-        config = types.SimpleNamespace(cli=types.SimpleNamespace(agent_workflow=agent_workflow),
-                                       agent=types.SimpleNamespace(show_page_on_start=show))
+    def window(show):
+        config = types.SimpleNamespace(agent=types.SimpleNamespace(show_page_on_start=show))
         return types.SimpleNamespace(config_service=types.SimpleNamespace(get_config=lambda: config),
                                      _switch_main_page=switched.append, logger=None)
 
-    MainWindow._show_agents_page_on_start(window(True, True), True)
-    MainWindow._show_agents_page_on_start(window(True, True), False)  # the task ended
-    MainWindow._show_agents_page_on_start(window(False, True), True)  # not an AI Agent run
-    MainWindow._show_agents_page_on_start(window(True, False), True)  # the option is off
+    MainWindow._show_agents_page_on_start(window(True))
+    MainWindow._show_agents_page_on_start(window(False))  # the option is off
     assert switched == ["agents"]
+
+    page = _page()
+    started = []
+    page.run_started.connect(lambda: started.append(True))
+    page._handle_live({"type": "workflow_stage", "stage": "api_check", "model": "m"})
+    assert started == []
+    page._handle_live({"type": "workflow_stage", "stage": "start", "pages": 3})
+    assert started == [True]
 
 
 def test_flag_rows_number_regions_the_way_each_agent_does(app):  # noqa: F811

@@ -135,6 +135,8 @@ class AgentsPage(QWidget):
     stop_requested = pyqtSignal()
     """The stop button: the main window stops the running task."""
     open_in_editor_requested = pyqtSignal(str)
+    run_started = pyqtSignal()
+    """An AI Agent run started (its ``workflow_stage`` ``start``: after the user chose what to redo)."""
     """An image path to open in the editor."""
 
     def __init__(self, translate: Callable[..., str], parent: Optional[QWidget] = None):
@@ -433,6 +435,8 @@ class AgentsPage(QWidget):
         if event.get("type") == "workflow_stage":
             self._on_stage(event)
             self._update_actions()
+            if event.get("stage") == "start":
+                self.run_started.emit()
             return
         if event.get("type") == "run_start":
             self._agent_task = True
