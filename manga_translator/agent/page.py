@@ -39,6 +39,12 @@ BREAK = "[BR]"
 _BREAK_MARKS = re.compile(r"\s*(?:\[BR\]|【BR】|<br\s*/?>|\r?\n)\s*", re.IGNORECASE)
 MIN_BREAK_CHARS = 4
 """Translations shorter than this (letters and digits) need no line break even for a multi-line source."""
+KEEP_DRAWN = ("sign", "sfx", "credit", "other")
+"""Skip categories whose text stays drawn on purpose (signs, sound effects, credits, invented script
+and its readings, logos): no mask, inpaint attempt or mask edit may erase it. ``duplicate`` (text
+that belongs to another region, erased with it) and ``not_text`` are not kept."""
+KEEP_PAD = 3
+"""Pixels around the lines of kept text that no erasing may touch either (antialiased edges)."""
 
 
 def with_breaks(text: str) -> str:
@@ -474,11 +480,14 @@ class PageDoc:
                 f"line {i + 1} [{int(p[:, 0].min())}, {int(p[:, 1].min())}, {int(p[:, 0].max())}, {int(p[:, 1].max())}]"
                 for i, p in enumerate(polys))
             if len(polys) < 2:
-                raise RegionError(f"#{region.id} is one detected line, and split_region moves whole lines: translate "
-                                  "it as one region, and flag_for_review if its two texts need to be apart")
+                raise RegionError(f"#{region.id} is one detected line at {listed[len('line 1 '):]}, and the box takes "
+                                  f"none of its strokes or all of them. To cut a part out of the line (a gloss, a "
+                                  f"name), zoom on #{region.id} and give a box around only the strokes of that part; "
+                                  f"a stroke goes with the box that holds its middle.")
             raise RegionError(f"the box holds {'none' if not inside else 'all'} of the lines of #{region.id}; "
                               f"whole lines move and both parts keep at least one. #{region.id} has {len(polys)} "
-                              f"lines: {listed}. Give a box around the middle of the lines for the new region.")
+                              f"lines: {listed}. Give a box around the middle of the lines for the new region, or "
+                              f"around only the strokes of a part inside a line to cut it out.")
         self._checkpoint(f"split #{region.id}")
         self._agents(region)
         vertical = region.direction.startswith("v")
@@ -603,8 +612,18 @@ class PageDoc:
                               "the text stays as they left it, so do not box it again")
         anchor = self.get(after).id if after not in (None, "", 0, "0") else None
         self._checkpoint(f"add_region ({origin})")
-        rid = max(self.regions, default=0) + 1
         template = next(iter(self.regions.values())).data if self.regions else {}
+        region = self._snapped(snap, direction, origin, reason, template, hint=hint, kind=kind)
+        if anchor is None:
+            self.order.append(region.id)
+        else:
+            self.order.insert(self.order.index(anchor) + 1, region.id)
+        return region
+
+    def _snapped(self, snap: SnapResult, direction: str, origin: str, reason: str, template: dict,
+                 hint: str = "", kind: str = "") -> Region:
+        """A new region (not yet in the reading order) from snapped strokes, styled like ``template``."""
+        rid = max(self.regions, default=0) + 1
         data = {k: copy.deepcopy(template[k]) for k in STYLE_KEYS if k in template}
         x1, y1, x2, y2 = snap.bbox
         data.update({"lines": snap.lines, "texts": [hint] if hint else [], "text": hint, "translation": "",
@@ -616,10 +635,136 @@ class PageDoc:
         if reason:
             region.reasons.append(reason)
         self.regions[rid] = region
-        if anchor is None:
-            self.order.append(rid)
-        else:
-            self.order.insert(self.order.index(anchor) + 1, rid)
+        return region
+
+    def lines_in(self, rid, box) -> List[int]:
+        """Indices of the lines of ``rid`` whose middle lies inside ``box`` (page pixels)."""
+        x1, y1, x2, y2 = box
+        return [i for i, p in enumerate(self.get(rid).polygons)
+                if x1 <= p[:, 0].mean() <= x2 and y1 <= p[:, 1].mean() <= y2]
+
+    def cut(self, rid, snap: SnapResult, direction: str, reason: str, gray: Optional[np.ndarray] = None) -> Region:
+        """Move the strokes ``snap`` found inside one or more lines of ``rid`` to a new region, for two
+        texts the detector read as one line (a meaning gloss under invented glyphs, a name written on
+        the same line as them). The old lines give up the part the strokes take when the rest of their
+        ink lies beside it; otherwise they stay as they are and each stroke goes with the smaller
+        region (``keep_mask``). Both parts then need set_text or skip_region; the new region comes
+        right after the old one in reading order."""
+        region = self._unlocked(self.get(rid))
+        if not reason:
+            raise RegionError("reason is required")
+        direction = (direction or "").lower()[:1]
+        if direction not in ("v", "h"):
+            raise RegionError("direction must be v (vertical) or h (horizontal)")
+        rx1, ry1, rx2, ry2 = region.bbox
+        sx1, sy1, sx2, sy2 = snap.bbox
+        if (sx2 - sx1) * (sy2 - sy1) >= 0.85 * max(1, (rx2 - rx1) * (ry2 - ry1)):
+            raise RegionError(f"the strokes in the box are all of #{region.id}'s text: translate or skip "
+                              f"#{region.id} as it is, or give a box around only the part that is a separate text")
+        if gray is None:
+            gray = self._page_gray()
+        lines = self._lines_without(region, snap, gray)
+        if not lines:
+            raise RegionError(f"the strokes in the box are all of #{region.id}'s text: translate or skip "
+                              f"#{region.id} as it is")
+        self._checkpoint(f"split #{region.id}")
+        self._agents(region)
+        new = self._snapped(snap, direction, "cut", reason, region.data)
+        self.order.insert(self.order.index(region.id) + 1, new.id)
+        region.data["lines"] = lines
+        region.data.pop("render_box_rect_local", None)
+        region.data["center"] = region.center
+        region.source_text = region.translation = None
+        region.skipped = False
+        region.skip_category = ""
+        region.reasons.append(reason)
+        return new
+
+    def _lines_without(self, region: Region, snap: SnapResult, gray: Optional[np.ndarray]) -> List[list]:
+        """The lines of ``region`` with the strokes of ``snap`` taken out: a line all of whose ink the
+        strokes take is dropped; a line whose other ink lies beside them (along the line, or across it)
+        is trimmed to that ink and may become two lines; any other line stays as it is."""
+        sx1, sy1, sx2, sy2 = snap.bbox
+        ex, ey = snap.erase_origin
+        patch = snap.erase > 0
+        vertical = region.direction.startswith("v")
+        out = []
+        for quad in region.data.get("lines", []):
+            pts = np.asarray(quad, dtype=np.float64).reshape(-1, 2)
+            qx1, qy1 = int(np.floor(pts[:, 0].min())), int(np.floor(pts[:, 1].min()))
+            qx2, qy2 = int(np.ceil(pts[:, 0].max())), int(np.ceil(pts[:, 1].max()))
+            if gray is not None:
+                qx1, qy1 = max(0, qx1), max(0, qy1)
+                qx2, qy2 = min(gray.shape[1], qx2), min(gray.shape[0], qy2)
+            if qx2 <= sx1 or qx1 >= sx2 or qy2 <= sy1 or qy1 >= sy2 or qx2 - qx1 < 2 or qy2 - qy1 < 2:
+                out.append(quad)  # the strokes are not in this line
+                continue
+            if gray is None:  # no page image: a line inside the strokes' box goes, the others stay
+                if not (sx1 <= qx1 and sy1 <= qy1 and qx2 <= sx2 and qy2 <= sy2):
+                    out.append(quad)
+                continue
+            ink = gray[qy1:qy2, qx1:qx2] < 140
+            taken = np.zeros_like(ink)
+            px1, py1 = max(qx1, ex), max(qy1, ey)
+            px2, py2 = min(qx2, ex + patch.shape[1]), min(qy2, ey + patch.shape[0])
+            if px2 > px1 and py2 > py1:
+                taken[py1 - qy1:py2 - qy1, px1 - qx1:px2 - qx1] = patch[py1 - ey:py2 - ey, px1 - ex:px2 - ex]
+            rest = ink & ~taken
+            total = int(rest.sum())
+            if not ink.any():
+                out.append(quad)  # light text on a dark ground: no ink to go by
+                continue
+            if total < max(4, 0.02 * int(ink.sum())):
+                continue  # the whole line moves
+            h, w = rest.shape
+            bx1, by1 = min(w, max(0, sx1 - qx1)), min(h, max(0, sy1 - qy1))
+            bx2, by2 = min(w, max(0, sx2 - qx1)), min(h, max(0, sy2 - qy1))
+            sides_x = [(0, 0, bx1, h), (bx2, 0, w, h)]
+            sides_y = [(0, 0, w, by1), (0, by2, w, h)]
+            best = None
+            for rects, along_x in ((sides_y, False), (sides_x, True)) if vertical else \
+                    ((sides_x, True), (sides_y, False)):
+                parts, held = [], 0
+                for a1, b1, a2, b2 in rects:
+                    if a2 - a1 < 2 or b2 - b1 < 2:
+                        continue
+                    sub = rest[b1:b2, a1:a2]
+                    n = int(sub.sum())
+                    if n < max(4, 0.03 * total):
+                        continue
+                    if along_x:  # trimmed to its ink across the cut, full height
+                        xs = np.flatnonzero(sub.any(axis=0))
+                        parts.append((a1 + int(xs[0]), 0, a1 + int(xs[-1]) + 1, h))
+                    else:
+                        ys = np.flatnonzero(sub.any(axis=1))
+                        parts.append((0, b1 + int(ys[0]), w, b1 + int(ys[-1]) + 1))
+                    held += n
+                if parts and (best is None or held > best[0]):
+                    best = (held, parts)
+            if best is None or best[0] < 0.85 * total:
+                out.append(quad)  # the strokes sit inside the line: each stroke goes by its owner
+                continue
+            for a1, b1, a2, b2 in best[1]:
+                x1, y1, x2, y2 = float(qx1 + a1), float(qy1 + b1), float(qx1 + a2), float(qy1 + b2)
+                out.append([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+        return out
+
+    def fit(self, rid, snap: SnapResult, reason: str, direction: str = "") -> Region:
+        """Put a region's lines and font size on the strokes ``snap`` found: for a detected box that
+        took in some of the art (so the font size was read too large) or read two lines as one."""
+        region = self._unlocked(self.get(rid))
+        if not reason:
+            raise RegionError("reason is required")
+        self._checkpoint(f"fit #{region.id}")
+        self._agents(region)
+        if direction[:1] in ("v", "h"):
+            region.data["direction"] = direction[:1]
+        region.data["lines"] = snap.lines
+        region.data["font_size"] = snap.font_size
+        region.data.pop("render_box_rect_local", None)
+        region.data["center"] = region.center
+        region.erase = (snap.erase_origin[0], snap.erase_origin[1], snap.erase)
+        region.reasons.append(reason)
         return region
 
     # --- output -------------------------------------------------------------
@@ -661,28 +806,125 @@ class PageDoc:
             out.append(data)
         return out
 
+    def _left(self, region: Region) -> bool:
+        """Its text is taken out of the mask now. On a page checked again, text the earlier run
+        skipped is out of the saved mask already, and the mask stays as the user left it there. On
+        an incomplete page the regions the agent did not translate are left too."""
+        if region.skipped:
+            return not (self.revise and region.was_skipped)
+        return self.status == "incomplete" and not region.translation and not region.unchanged
+
+    def _erased(self, region: Region) -> bool:
+        return not region.skipped and not self._left(region)
+
+    def kept_drawn(self) -> List[Region]:
+        """Skipped regions whose text stays drawn on purpose (``KEEP_DRAWN``)."""
+        return [r for r in self.active_regions()
+                if r.skipped and r.skip_category in KEEP_DRAWN and self._left(r)]
+
+    def keep_mask(self, shape=None, pad: int = KEEP_PAD, gray: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
+        """Pixels no erasing may touch (bool array of ``shape``, page size by default): the lines of
+        the text kept as drawn (``kept_drawn``) with ``pad`` px around them, less the strokes that
+        belong to a region that is erased.
+
+        A stroke (a dark connected component of the page, ``gray`` or the page image) belongs to
+        the smallest region whose lines hold its middle. So a meaning gloss split out of a line of
+        invented glyphs is erased while the glyphs around it stay, a subtitle kept inside a
+        translated logo stays while the logo around it is erased, and where two boxes overlap each
+        keeps its own strokes. Without the page image the regions decide by their lines alone
+        (smaller wins). None when the page keeps no text."""
+        kept = self.kept_drawn()
+        if not kept:
+            return None
+        page_w = int(self.page_data.get("original_width") or 0)
+        page_h = int(self.page_data.get("original_height") or 0)
+        if shape is None:
+            if not (page_w and page_h):
+                return None
+            shape = (page_h, page_w)
+        height, width = int(shape[0]), int(shape[1])
+        if not (page_w and page_h):
+            page_w, page_h = width, height
+
+        def fill(regions: List[Region], grow: int = 0) -> np.ndarray:
+            canvas = np.zeros((page_h, page_w), np.uint8)
+            polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in regions for p in r.polygons]
+            if polys:
+                cv2.fillPoly(canvas, polys, 1)
+            if grow:
+                canvas = cv2.dilate(canvas, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2))
+            return canvas
+
+        def area(region: Region) -> int:
+            x1, y1, x2, y2 = region.bbox
+            return max(1, (x2 - x1) * (y2 - y1))
+
+        erased = [r for r in self.active_regions() if self._erased(r)]
+        zone = fill(kept, pad) > 0
+        if gray is None:
+            gray = self._page_gray()
+        if gray is not None and gray.shape[:2] != (page_h, page_w):
+            gray = cv2.resize(gray, (page_w, page_h), interpolation=cv2.INTER_AREA)
+        claim = np.zeros((page_h, page_w), bool)
+        ys, xs = np.nonzero(zone)
+        if gray is not None and len(ys):
+            # strokes inside the kept zone that belong to an erased region
+            x1, y1 = max(0, int(xs.min()) - 2), max(0, int(ys.min()) - 2)
+            x2, y2 = min(page_w, int(xs.max()) + 3), min(page_h, int(ys.max()) + 3)
+            dark = (gray[y1:y2, x1:x2] < 140).astype(np.uint8)
+            count, labels, _stats, centroids = cv2.connectedComponentsWithStats(dark, connectivity=8)
+            if count > 1:
+                cx = np.clip(np.round(centroids[:, 0]).astype(int), 0, x2 - x1 - 1)
+                cy = np.clip(np.round(centroids[:, 1]).astype(int), 0, y2 - y1 - 1)
+                smallest_kept = np.full(count, np.inf)
+                smallest_erased = np.full(count, np.inf)
+                grow = np.ones((5, 5), np.uint8)
+                for regions, smallest in ((kept, smallest_kept), (erased, smallest_erased)):
+                    for region in regions:
+                        rx1, ry1, rx2, ry2 = region.bbox
+                        if rx2 < x1 or rx1 > x2 or ry2 < y1 or ry1 > y2:
+                            continue
+                        local = np.zeros((y2 - y1, x2 - x1), np.uint8)
+                        polys = [np.round(p - (x1, y1)).astype(np.int32).reshape(-1, 1, 2) for p in region.polygons]
+                        cv2.fillPoly(local, polys, 1)
+                        held = cv2.dilate(local, grow)[cy, cx] > 0
+                        smallest[held] = np.minimum(smallest[held], area(region))
+                theirs = np.flatnonzero(smallest_erased < smallest_kept)
+                theirs = theirs[theirs > 0]
+                if len(theirs):
+                    sub = np.isin(labels, theirs).astype(np.uint8)
+                    claim[y1:y2, x1:x2] = cv2.dilate(sub, np.ones((5, 5), np.uint8)) > 0
+        else:
+            for region in kept:  # no page image: a smaller erased region keeps its lines erasable
+                inner = [r for r in erased if area(r) < area(region)]
+                if inner:
+                    claim |= (fill(inner, 2) > 0) & (fill([region], pad) > 0)
+        out = zone & ~claim
+        if out.shape != (height, width):
+            out = cv2.resize(out.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) > 0
+        return out
+
+    def _page_gray(self) -> Optional[np.ndarray]:
+        try:
+            from PIL import Image
+            with Image.open(self.image_path) as image:
+                return np.asarray(image.convert("L"))
+        except Exception:
+            return None
+
     def output_mask(self, keep_margin: int = 15, reach: int = 60) -> Optional[str]:
         """Saved mask (base64 PNG) with added regions' strokes put in and
         skipped regions' text taken out. Returns None when nothing changes.
 
         Mask components that only touch skipped text are cleared. Components
         shared with kept text are cleared only near the skipped text and away
-        from the kept text. On an incomplete page the regions the agent did not
-        translate are left the same way, so the typeset page keeps their
-        original text (they stay in the JSON with an empty translation).
+        from the kept text. Text kept as drawn (``keep_mask``) is then cleared
+        wherever it is, also inside an erased region. On an incomplete page the
+        regions the agent did not translate are left the same way, so the
+        typeset page keeps their original text (they stay in the JSON with an
+        empty translation).
         """
-        unfinished = self.status == "incomplete"
-
-        def left(region: Region) -> bool:
-            """Its text is taken out of the mask now. On a page checked again, text the earlier run
-            skipped is out of the saved mask already, and the mask stays as the user left it there."""
-            if region.skipped:
-                return not (self.revise and region.was_skipped)
-            return unfinished and not region.translation and not region.unchanged
-
-        def kept(region: Region) -> bool:
-            return not region.skipped and not left(region)
-
+        left, kept = self._left, self._erased
         skipped = [r for r in self.active_regions() if left(r)]
         # An added region merged into another one keeps its strokes in the
         # mask as long as the region it went into is kept.
@@ -732,6 +974,9 @@ class PageDoc:
                 out[np.isin(labels, alone)] = 0
             if shared:
                 out[np.isin(labels, shared) & (skip_near > 0) & (keep_zone == 0)] = 0
+            keep = self.keep_mask(shape)
+            if keep is not None:
+                out[keep] = 0
         if np.array_equal(out, mask):
             return None
         ok, png = cv2.imencode(".png", out)

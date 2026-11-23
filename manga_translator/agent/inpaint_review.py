@@ -14,6 +14,7 @@ candidate, and the inpaint score lowers the page confidence.
 """
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import logging
@@ -27,7 +28,7 @@ from . import images
 from .events import EventLog
 from .inpaint import FILL, Attempt, InpaintBackend, InpaintError, InpaintPage, Unit, decode_mask, encode_mask
 from . import json_guard
-from .page import PageDoc
+from .page import PageDoc, Region
 from .settings import AgentSettings
 from .store import AgentStore, write_json_atomic
 from .store import page_stem
@@ -37,15 +38,19 @@ logger = logging.getLogger("manga_translator.agent")
 
 MASK_TINT = (255, 40, 40)
 OTHER_TINT = (120, 120, 120)
+KEEP_TINT = (0, 170, 90)
+"""Text kept as drawn on purpose (``InpaintPage.keep``)."""
 RESIDUAL_COLOR = (230, 0, 0)
 BROKEN_COLOR = (255, 140, 0)
 STROKE_COLOR = (0, 110, 255)
 
-REVIEW_PROMPT = """You review the text removal (inpainting) of one manga page inside a manga translation app. Translated text will be typeset over these areas later, so every area must look as if no text had ever been there, and the art around it must stay intact.
+REVIEW_PROMPT = """You review the text removal (inpainting) of one manga page inside a manga translation app. Translated text will be typeset over these areas later, so every area must look as if the erased text had never been there, and the art around it must stay intact.
 
 You are not a coding assistant: you act only by calling the tools provided.
 
 The first message shows the page with numbered areas, then a sheet with one pair per area: left = the original with this area's mask (the pixels that get replaced) tinted red and other areas' masks gray, right = the result. The program checked every result: red boxes = text the detector still finds there (residual text, reliable), orange boxes = art lines that run into the mask and may not continue (only a hint: check by eye).
+
+Text kept as drawn: the translator left some text on the page on purpose (sound effects, invented script and its kana readings, logos and their subtitles, credits, signs). It is boxed "keep" on the overview and tinted green on the sheets and views. It is not residual text: never try to add it to a mask (the tools leave it out anyway), and do not flag it as text left over.
 
 Look at every area. Problems and their fixes, cheapest first:
 - Residual text (ghost strokes, outlines, a missed small character, furigana): adjust_mask dilate 2-4 px with scope residual; or view_region show=components and mask_select the stroke numbers to add. Then inpaint_region.
@@ -54,8 +59,8 @@ Look at every area. Problems and their fixes, cheapest first:
 - A flat fill where the background is not really flat (a gradient, screentone, art): pick_candidate 1 (the model's result) or inpaint_region with a model.
 Areas on a flat background were already filled with its color in the first pass, keeping lines that cross the mask as drawn; the model's result for them is attempt 1.
 Every inpaint_region starts again from the original, with the current mask. After {retries} new attempts on one area, pick_candidate the best attempt and flag_for_review it.
-Always flag_for_review (keeping the best attempt) when text was erased on a face, across a panel border, or over a large area of screentone or detailed art, even when the result looks acceptable.
-Leave good areas alone. When every area is fine or flagged, call finish_review.
+flag_for_review is for problems you could not fix (residual text, damaged art, a visible smear or a broken line): the human has to repair those. When an area is fine but worth a glance (text erased on a face, across a panel border, or over a large area of screentone or detailed art), write that with note_area instead: a note stays with the page and does not go on the review list.
+Leave good areas alone. When every area is fine, noted or flagged, call finish_review.
 
 Write every reason and flag in {reason_lang}; a human reads them."""
 
@@ -71,6 +76,23 @@ HUMAN = {
 
 def _human(lang: str, key: str, **fields) -> str:
     return (HUMAN.get(lang) or HUMAN["ENG"])[key].format(**fields)
+
+
+def with_kept(doc: PageDoc, side: Optional[dict]) -> List[Region]:
+    """Put the text the translator kept as drawn back into ``doc`` from the sidecar (a page loaded
+    from its JSON has no skipped regions: they are left out of it), so ``doc.keep_mask`` sees it.
+    Returns those regions."""
+    next_id = max(doc.regions, default=0) + 1
+    for entry in (side or {}).get("regions", []):
+        data = entry.get("json")
+        if not entry.get("skipped") or entry.get("merged_into") is not None or not isinstance(data, dict) \
+                or not data.get("lines"):
+            continue
+        doc.regions[next_id] = Region(id=next_id, data=copy.deepcopy(data), skipped=True,
+                                      skip_category=str(entry.get("skip_category") or "other"))
+        doc.order.append(next_id)
+        next_id += 1
+    return doc.kept_drawn()
 
 
 # --- images --------------------------------------------------------------------------
@@ -118,7 +140,8 @@ def pair_image(page: InpaintPage, unit: Unit, composite: np.ndarray, side: int =
     scale = _scale_for(unit, side)
     shown_mask = attempt.mask if mask is None else mask
     others = page.others_mask(unit) & ~shown_mask  # other areas' masks in gray: not this area's business
-    left = _resize(_tint(_tint(page.crop(unit), others, OTHER_TINT, alpha=0.35), shown_mask), scale)
+    left = _tint(_tint(page.crop(unit), others, OTHER_TINT, alpha=0.35), shown_mask)
+    left = _resize(_tint(left, page.kept(unit), KEEP_TINT, alpha=0.3), scale)
     result_crop = page.crop(unit, composite).copy()
     if attempt is not unit.current:  # show the attempt itself, not the chosen one
         result_crop[attempt.mask] = attempt.result[attempt.mask]
@@ -148,13 +171,13 @@ def pair_image(page: InpaintPage, unit: Unit, composite: np.ndarray, side: int =
 def mask_preview(page: InpaintPage, unit: Unit, side: int = 520) -> Image.Image:
     """The working mask after an edit, tinted on the original."""
     scale = _scale_for(unit, side)
-    return _resize(_tint(page.crop(unit), unit.work), scale)
+    return _resize(_tint(_tint(page.crop(unit), unit.work), page.kept(unit), KEEP_TINT, alpha=0.3), scale)
 
 
 def components_image(page: InpaintPage, unit: Unit, mask_comps: List[Dict], strokes: List[Dict],
                      side: int = 640) -> Image.Image:
     scale = _scale_for(unit, side, max_scale=6.0)
-    crop = _tint(page.crop(unit), unit.work, alpha=0.3)
+    crop = _tint(_tint(page.crop(unit), unit.work, alpha=0.3), page.kept(unit), KEEP_TINT, alpha=0.3)
     for comp in strokes:
         crop = _tint(crop, comp["pixels"], STROKE_COLOR, alpha=0.6)
     out = _resize(crop, scale)
@@ -282,6 +305,9 @@ def view_region(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
 
 def _edited(s: ReviewSession, unit: Unit, label: str, before: int, after: int, extra: str = "") -> ToolResult:
     image = mask_preview(s.page, unit)
+    if s.page.kept_out:
+        extra += (f"; {s.page.kept_out} px of it were text kept as drawn (green), which stays out of the mask: "
+                  "leave that text alone")
     return ToolResult(text=(f"#{unit.id}: {label}; mask {before} → {after} px{extra}. Not applied yet: call "
                             "inpaint_region to inpaint with this mask, or undo."),
                       images=[_url(image)], summary=f"#{unit.id} {label}")
@@ -362,6 +388,15 @@ def flag_for_review(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
                       summary=(f"#{unit.id} " if unit else "") + "inpaint")
 
 
+def note_area(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
+    unit = s.page.unit(a.get("id"))
+    note = str(a.get("note") or "").strip()
+    if not note:
+        raise InpaintError("note is required")
+    unit.note = note
+    return ToolResult(text="Noted with the page (not on the review list). Keep going.", summary=f"#{unit.id} note")
+
+
 def finish_review(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
     left = [u for u in s.page.units if u.current.residual and not u.flagged]
     if left and not s.finish_warned:
@@ -416,9 +451,13 @@ def review_tools(methods: List[str]) -> List[Tool]:
              writes=True),
         Tool("undo", "Undo the last mask edit of an area that was not inpainted yet.", _obj({"id": uid}, ["id"]),
              undo, writes=True),
-        Tool("flag_for_review", "Put an area (or the whole page, without id) on the human review list; its chosen "
-             "attempt is kept, and the human can switch to another attempt in the editor.",
+        Tool("flag_for_review", "Put an area (or the whole page, without id) on the human review list for a "
+             "problem you could not fix; its chosen attempt is kept, and the human can switch to another attempt "
+             "in the editor.",
              _obj({"id": uid, "reason": REASON}, ["reason"]), flag_for_review, writes=True),
+        Tool("note_area", "A note on an area that is fine but worth a glance (erased on a face, across a panel "
+             "border, over large screentone): kept with the page, not put on the review list.",
+             _obj({"id": uid, "note": {"type": "string"}}, ["id", "note"]), note_area, writes=True),
         Tool("finish_review", "Finish the review of this page.",
              _obj({"note": {"type": "string", "description": "Anything the human should know"}}, []),
              finish_review, writes=True),
@@ -462,7 +501,8 @@ class InpaintReviewer:
     def _first_message(self, session: ReviewSession) -> dict:
         page = session.page
         composite = page.composite()
-        marks = [(u.id, list(u.box), "pending" if u.current.issues else "done") for u in page.units]
+        marks = [("keep", list(box), "skipped") for box in page.kept_boxes]
+        marks += [(u.id, list(u.box), "pending" if u.current.issues else "done") for u in page.units]
         overview = images.draw_marks(Image.fromarray(composite), marks)
         lines = []
         for unit in page.units:
@@ -482,8 +522,10 @@ class InpaintReviewer:
         first = f"method {method}" + (
             f"; {filled} area(s) on a flat background were filled with its color instead (attempt 2, the "
             f"{method} result is attempt 1)" if filled else "")
+        kept = (f"\n{len(page.kept_boxes)} box(es) of text kept as drawn (gray \"keep\" on the overview, green "
+                f"on the sheets): leave that text as it is." if page.kept_boxes else "")
         text = (f"Page {session.stem}: {len(page.units)} inpainted area(s), {first}. "
-                f"Methods for inpaint_region: {', '.join(session.methods)}.\n" + "\n".join(lines)
+                f"Methods for inpaint_region: {', '.join(session.methods)}.\n" + "\n".join(lines) + kept
                 + "\nThe overview (green = no findings, red = findings) comes first, then the sheet(s).")
         content: List[dict] = [{"type": "text", "text": text},
                                {"type": "image_url", "image_url": {"url": images.data_url(overview, max_side=1280),
@@ -506,7 +548,10 @@ class InpaintReviewer:
             return {"page": stem, "status": "skipped", "reason": "no mask" if mask is None else "no inpainter"}
         regions = [(r.id, r.polygons, tuple(r.bbox)) for r in doc.active_regions() if not r.skipped]
         page_image = images.open_page(image_path)
-        page = InpaintPage(np.asarray(page_image), mask, regions, self.backend, stem)
+        kept = with_kept(doc, self.store.load_sidecar(stem))
+        array = np.asarray(page_image)
+        page = InpaintPage(array, mask, regions, self.backend, stem, keep=doc.keep_mask(array.shape),
+                           kept_boxes=[tuple(r.bbox) for r in kept])
         if not page.units:
             return {"page": stem, "status": "skipped", "reason": "empty mask"}
         if FILL not in methods:

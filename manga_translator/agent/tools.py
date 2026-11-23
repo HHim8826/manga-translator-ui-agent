@@ -1,7 +1,7 @@
 """Tools the agent calls, M2 subset.
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
-Structure: add_region, merge_regions, split_region, skip_region, set_reading_order, link_regions
+Structure: add_region, merge_regions, split_region, fit_region, skip_region, set_reading_order, link_regions
 Text: set_text, set_line_breaks, set_font_style
 Memory: glossary_search, glossary_upsert, character_get, character_upsert,
         story_summary_get, story_summary_update, search_past_translations
@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+import cv2
 import numpy as np
 
 from . import checks, images
@@ -130,6 +131,8 @@ class AgentSession:
                 source = f"added by the recall check ({region.origin_kind or 'text'}), its reading (hint): 「{local}」"
             elif region.origin == "agent":
                 source = "added by you with add_region"
+            elif region.origin == "cut":
+                source = "cut out of a detected line with split_region"
             else:
                 source = f"local OCR (weak hint): 「{local}」"
             count = ""
@@ -317,8 +320,14 @@ def add_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     direction = str(a.get("direction") or "")
     snap = snap_text(s.page_array, box, direction or "v", exclude=s.doc.occupied(s.page_array.shape))
     if snap is None:
-        raise RegionError("no text strokes found there (strokes inside other regions do not count). "
-                          "Zoom on the area and give a tighter box, or grid cells.")
+        x1, y1, x2, y2 = box
+        inside = [r.id for r in s.doc.active_regions()
+                  if min(x2, r.bbox[2]) - max(x1, r.bbox[0]) > 0 and min(y2, r.bbox[3]) - max(y1, r.bbox[1]) > 0]
+        hint = (f" The strokes there belong to #{inside[0]}: to make a separate region of part of its text (a "
+                f"gloss or a name on the same detected line), split_region #{inside[0]} with this box."
+                if len(inside) == 1 else "")
+        raise RegionError("no text strokes found there (strokes inside other regions do not count)." + hint +
+                          " Otherwise zoom on the area and give a tighter box, or grid cells.")
     region = s.doc.add_region(snap, direction, origin="agent", reason=a.get("reason", ""), after=a.get("after"))
     others = [poly.tolist() for r in s.doc.active_regions() if r.id != region.id for poly in r.polygons]
     preview = images.snap_preview(s.page_image, snap.bbox, snap.lines, snap.erase, snap.erase_origin, others)
@@ -338,20 +347,107 @@ def merge_regions(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
                       summary="+".join(f"#{i}" for i in a["ids"]) + f" → #{kept.id}")
 
 
-def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+def _box_arg(s: AgentSession, a: Dict[str, Any]) -> Optional[List[float]]:
     if a.get("cells"):
-        box = _cells_box(s, a["cells"])
-    elif a.get("box") is not None:
-        box = _page_box(s, a["box"])
-    else:
+        return _cells_box(s, a["cells"])
+    if a.get("box") is not None:
+        return _page_box(s, a["box"])
+    return None
+
+
+def _direction(a: Dict[str, Any], region: Region, box) -> str:
+    """The direction asked for, else the region's, else the box's shape."""
+    given = str(a.get("direction") or "").lower()[:1]
+    if given in ("v", "h"):
+        return given
+    if region.direction[:1] in ("v", "h"):
+        return region.direction[:1]
+    return "h" if box[2] - box[0] >= box[3] - box[1] else "v"
+
+
+def _own_strokes(s: AgentSession, region: Region, box, direction: str):
+    """``snap_text`` of the strokes of ``region`` whose middle lies in ``box``: its lines (with a
+    little room around them) and nothing that belongs to another region."""
+    shape = s.page_array.shape
+    own = np.zeros(shape[:2], np.uint8)
+    polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for p in region.polygons]
+    if polys:
+        cv2.fillPoly(own, polys, 1)
+    pad = max(3, int(round(0.25 * (region.font_size or 16))))
+    own = cv2.dilate(own, np.ones((2 * pad + 1,) * 2, np.uint8))
+    exclude = ((own == 0) | (s.doc.occupied(shape, but=region.id) > 0)).astype(np.uint8)
+    return snap_text(s.page_array, box, direction, exclude=exclude, grow=False)
+
+
+def _gray(s: AgentSession) -> np.ndarray:
+    page = s.page_array
+    return cv2.cvtColor(np.ascontiguousarray(page[:, :, :3]), cv2.COLOR_RGB2GRAY) if page.ndim == 3 else page
+
+
+def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    box = _box_arg(s, a)
+    if box is None:
         raise RegionError("give box ([x1, y1, x2, y2] page pixels) or cells (grid of your last zoom) around the "
-                          "lines of the new region")
-    new = s.doc.split(a["id"], box, a.get("reason", ""))
-    old = s.doc.get(a["id"])
+                          "lines of the new region, or around the strokes of a part inside a line")
+    region = s.doc.get(a["id"])
+    inside = s.doc.lines_in(region.id, box)
+    if 0 < len(inside) < region.line_count:  # whole lines move
+        new = s.doc.split(region.id, box, a.get("reason", ""))
+        old = s.doc.get(region.id)
+        return ToolResult(
+            text=(f"#{old.id} keeps {old.line_count} line(s) at {old.bbox}; its other {new.line_count} line(s) are "
+                  f"now #{new.id} at {new.bbox}. Both need set_text or skip_region (any text #{old.id} had was "
+                  f"cleared)."),
+            summary=f"#{old.id} → #{old.id} + #{new.id}")
+    # a part inside a line: the strokes in the box are cut out of it
+    direction = _direction(a, region, box)
+    snap = _own_strokes(s, region, box, direction)
+    try:
+        if snap is None:
+            raise RegionError("no strokes")
+        new = s.doc.cut(region.id, snap, direction, a.get("reason", ""), gray=_gray(s))
+    except RegionError as error:
+        if snap is None or region.line_count >= 2:
+            s.doc.split(region.id, box, a.get("reason", ""))  # raises: says which lines a box can take
+        raise error
+    old = s.doc.get(region.id)
+    others = [poly.tolist() for r in s.doc.active_regions() if r.id != new.id for poly in r.polygons]
+    preview = images.snap_preview(s.page_image, snap.bbox, snap.lines, snap.erase, snap.erase_origin, others)
+    x1, y1, x2, y2 = snap.bbox
+    warning = f" Warning: {snap.warning}." if snap.warning else ""
     return ToolResult(
-        text=(f"#{old.id} keeps {old.line_count} line(s) at {old.bbox}; its other {new.line_count} line(s) are now "
-              f"#{new.id} at {new.bbox}. Both need set_text or skip_region (any text #{old.id} had was cleared)."),
-        summary=f"#{old.id} → #{old.id} + #{new.id}")
+        text=(f"Cut out of #{old.id}: the {snap.strokes} stroke(s) inside the box are now #{new.id}, {direction}, "
+              f"{len(snap.lines)} line(s) at [{x1}, {y1}, {x2}, {y2}], font≈{snap.font_size}px (red in the image); "
+              f"#{old.id} keeps the rest at {old.bbox} (gray).{warning} If the wrong strokes moved, undo and give a "
+              f"tighter box (zoom first). Both need set_text or skip_region (any text #{old.id} had was cleared): "
+              f"the strokes of a skipped part stay drawn, those of a translated part are erased."),
+        images=[images.data_url(preview)], summary=f"#{old.id} → #{old.id} + #{new.id} (cut)")
+
+
+def fit_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    region = s.doc.get(a["id"])
+    box = _box_arg(s, a) or region.bbox
+    direction = _direction(a, region, box)
+    exclude = s.doc.occupied(s.page_array.shape, but=region.id)
+    snap = snap_text(s.page_array, box, direction, exclude=exclude, grow=False)
+    if snap is None:
+        raise RegionError(f"no text strokes found in the box (strokes of other regions do not count). Zoom on "
+                          f"#{region.id} and give a box around its text.")
+    before = f"{region.line_count} line(s) at {region.bbox}, font≈{region.font_size}px"
+    s.doc.fit(region.id, snap, a.get("reason", ""), direction=direction)
+    others = [poly.tolist() for r in s.doc.active_regions() if r.id != region.id for poly in r.polygons]
+    preview = images.snap_preview(s.page_image, snap.bbox, snap.lines, snap.erase, snap.erase_origin, others)
+    x1, y1, x2, y2 = snap.bbox
+    warning = f" Warning: {snap.warning}." if snap.warning else ""
+    breaks = ""
+    if region.translation and s.line_breaks:
+        breaks = f" Check the line breaks of its translation against {len(snap.lines)} source line(s)."
+    return ToolResult(
+        text=(f"#{region.id} now has {len(snap.lines)} line(s) at [{x1}, {y1}, {x2}, {y2}], {direction}, "
+              f"font≈{snap.font_size}px (was {before}). Red pixels will be erased, the green box is where the "
+              f"translation goes.{warning} If it caught the wrong strokes, undo and give a tighter or larger box. "
+              f"Its text stays.{breaks}"),
+        images=[images.data_url(preview)], summary=f"#{region.id} {x2 - x1}x{y2 - y1} font {snap.font_size}")
 
 
 def skip_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -622,12 +718,26 @@ TOOLS: List[Tool] = [
     Tool("merge_regions", "Merge regions that are one text block (for example one bubble split in two).",
          _obj({"ids": IDS, "reason": REASON}, ["ids", "reason"]), merge_regions, writes=True),
     Tool("split_region", "Split a region whose box holds two separate texts: a small aside or inner thought "
-         "written beside the main text, a caption beside a title, a subtitle printed in a logo. Give a box in page "
-         "pixels, or grid cells of your last zoom, around the lines that go to the new region: whole lines move, "
-         "the rest stays. Then set_text or skip_region both parts.",
+         "written beside the main text, a caption beside a title, a subtitle printed in a logo, a meaning gloss or a "
+         "name written on the same detected line as invented glyphs. Give a box in page pixels, or grid cells of your "
+         "last zoom: when it holds the middle of some of the region's lines, those whole lines move; otherwise the "
+         "strokes inside it are cut out of the line (zoom first and box only the strokes of that part). Then "
+         "set_text or skip_region both parts.",
          _obj({"id": ID, "box": BOX,
                "cells": {"type": "string", "description": "Grid cells of the last zoom, like C4 or B3:D5"},
+               "direction": {"type": "string", "enum": ["v", "h"],
+                             "description": "Optional: direction of the part that is cut out of a line, when it "
+                                            "differs from the region's"},
                "reason": REASON}, ["id", "reason"]), split_region, writes=True),
+    Tool("fit_region", "Put a region's box on its text strokes again: for a detected box that took in some of the "
+         "art (its font size then reads too large), cut off part of the text, or read lines written apart as one. "
+         "Give a box around the region's text in page pixels, or grid cells of your last zoom (default: its current "
+         "box); strokes of other regions are left out. Its lines and font size follow the strokes, its text stays.",
+         _obj({"id": ID, "box": BOX,
+               "cells": {"type": "string", "description": "Grid cells of the last zoom, like C4 or B3:D5"},
+               "direction": {"type": "string", "enum": ["v", "h"], "description": "Optional: v = vertical text, "
+                             "h = horizontal, when the region's is wrong"},
+               "reason": REASON}, ["id", "reason"]), fit_region, writes=True),
     Tool("skip_region", "Leave a region as it is in the original: not erased, not translated. Categories: "
          + ", ".join(SKIP_CATEGORIES) + ". Use not_text for detections that contain no text.",
          _obj({"id": ID, "category": {"type": "string", "enum": list(SKIP_CATEGORIES)}, "reason": REASON},

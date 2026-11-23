@@ -105,6 +105,9 @@ class Unit:
     """The first pass used the flat fill (attempt 2) for this unit."""
     view: Optional[Dict] = None
     """Grid of the last view of this unit, for mask_paint."""
+    note: str = ""
+    """What a human may want to look at in an area the reviewer found acceptable (note_area): kept
+    with the page, not put on the review list."""
 
     @property
     def current(self) -> Attempt:
@@ -288,11 +291,23 @@ class InpaintPage:
     """One page: original, units, attempts, and the precise mask operations."""
 
     def __init__(self, image: np.ndarray, mask: np.ndarray, regions: Sequence[Tuple[int, List[np.ndarray], Box]],
-                 backend: InpaintBackend, stem: str = ""):
+                 backend: InpaintBackend, stem: str = "", keep: Optional[np.ndarray] = None,
+                 kept_boxes: Sequence[Box] = ()):
         if mask.shape[:2] != image.shape[:2]:
             mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
         self.original = np.ascontiguousarray(image[:, :, :3])
-        self.mask = mask > 0
+        self.keep = np.zeros(image.shape[:2], bool)
+        """Text kept as drawn on purpose (``PageDoc.keep_mask``): no mask or mask edit takes it."""
+        if keep is not None:
+            if keep.shape[:2] != image.shape[:2]:
+                keep = cv2.resize(keep.astype(np.uint8), (image.shape[1], image.shape[0]),
+                                  interpolation=cv2.INTER_NEAREST)
+            self.keep = keep > 0
+        self.kept_boxes = [tuple(int(v) for v in box) for box in kept_boxes]
+        """Boxes of that text, drawn on the overview and the sheets."""
+        self.kept_out = 0
+        """Pixels of kept text the last mask edit reached and left out."""
+        self.mask = (mask > 0) & ~self.keep
         self.backend = backend
         self.stem = stem
         self.first_method = ""
@@ -368,6 +383,11 @@ class InpaintPage:
     def crop(self, unit: Unit, image: Optional[np.ndarray] = None) -> np.ndarray:
         x1, y1, x2, y2 = unit.box
         return (self.original if image is None else image)[y1:y2, x1:x2]
+
+    def kept(self, unit: Unit) -> np.ndarray:
+        """The text kept as drawn inside this unit's box (bool)."""
+        x1, y1, x2, y2 = unit.box
+        return self.keep[y1:y2, x1:x2]
 
     def others_mask(self, unit: Unit) -> np.ndarray:
         """Other units' current masks inside this unit's box (bool)."""
@@ -490,6 +510,11 @@ class InpaintPage:
 
     # --- precise mask operations ---------------------------------------------------
     def _edit(self, unit: Unit, new: np.ndarray, label: str) -> Tuple[int, int]:
+        """Text kept as drawn never goes into the mask (``kept_out``: pixels of it this edit reached)."""
+        kept = self.kept(unit)
+        self.kept_out = int((new & kept & ~unit.work).sum())
+        if self.kept_out:
+            new = new & ~kept
         before = int(unit.work.sum())
         unit.history.append((unit.work.copy(), list(unit.work_ops)))
         unit.work = new
@@ -510,8 +535,9 @@ class InpaintPage:
         for number, comp in enumerate(mask_comps, 1):
             comp["name"] = f"M{number}"
             comp["pixels"] = mask_labels == comp["label"]
-        # text of other areas is theirs to erase, not a candidate here
-        strokes = ink(crop, unit.work) & ~(cv2.dilate(self.others_mask(unit).astype(np.uint8), _kernel(2)) > 0)
+        # text of other areas is theirs to erase, and text kept as drawn stays: neither is a candidate
+        taken = self.others_mask(unit) | self.kept(unit)
+        strokes = ink(crop, unit.work) & ~(cv2.dilate(taken.astype(np.uint8), _kernel(2)) > 0)
         near = cv2.dilate(unit.work.astype(np.uint8), _kernel(max(6, min(16, self._char_size(unit) // 3)))) > 0
         stroke_labels, stroke_comps = _components(strokes)
         candidates = []
@@ -676,5 +702,5 @@ class InpaintPage:
                                  "note": attempt.note, "file": name + ".png", "mask": name + "_mask.png"})
             out[str(unit.id)] = {"box": list(unit.box), "regions": unit.regions, "extra": unit.extra,
                                  "attempts": attempts, "chosen": unit.chosen + 1, "flagged": unit.flagged,
-                                 "auto_fill": unit.auto_fill}
+                                 "auto_fill": unit.auto_fill, **({"note": unit.note} if unit.note else {})}
         return out

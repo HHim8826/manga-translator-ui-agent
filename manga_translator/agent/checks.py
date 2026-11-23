@@ -321,7 +321,7 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
             why.append("handwritten")
         if region.font_size and region.font_size < SMALL_FONT_PX:
             why.append("small")
-        if region.origin in ("recall", "agent"):
+        if region.origin in ("recall", "agent", "cut"):
             why.append("added")
         if region.confidence is not None and region.confidence < 0.8 and "unsure" not in why:
             why.append("unsure")

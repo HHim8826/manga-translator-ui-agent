@@ -154,6 +154,9 @@ def test_the_prompts_teach_split_and_the_invented_script_rule(tmp_path):
     prompt = runner.system_prompt()
     assert "split_region them apart before saving" in prompt and INVENTED_SCRIPT in prompt
     assert "the two parts of one joined bubble" in prompt and "Never drop a part" in prompt
+    # the series logo, its subtitle and the author's name stay as drawn on every chapter's first page
+    assert "title logo (usually on the first page of a chapter) stays as drawn, all of it" in prompt
+    assert "credit for the author's name" in prompt and "even when the glossary has a translation" in prompt
     assert "split_region" in [t["function"]["name"] for t in runner.registry.schemas()]
     proof = Proofreader.system_prompt(SimpleNamespace(target_lang="CHT", line_breaks=""))
     assert INVENTED_SCRIPT in proof and "do not add the readings back" in proof

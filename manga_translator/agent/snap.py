@@ -71,11 +71,15 @@ def _gap(a: Sequence[int], b: Sequence[int]) -> int:
 
 
 def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
-              exclude: Optional[np.ndarray] = None, margin: Optional[int] = None) -> Optional[SnapResult]:
+              exclude: Optional[np.ndarray] = None, margin: Optional[int] = None,
+              grow: bool = True) -> Optional[SnapResult]:
     """Snap ``box`` (x1, y1, x2, y2, page pixels, loose) to the text in ``image`` (RGB).
 
     ``exclude`` is a page-sized 0/1 array of pixels that belong to other
-    regions. Returns None when the box holds no text-like strokes.
+    regions. With ``grow`` off only the strokes whose middle lies inside the
+    box are taken (cutting part of a detected line: the strokes next to it
+    belong to the text it is cut from). Returns None when the box holds no
+    text-like strokes.
     """
     height, width = image.shape[:2]
     x1, x2 = sorted((int(round(box[0])), int(round(box[2]))))
@@ -152,7 +156,7 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     union = [min(c["box"][0] for c in seeds), min(c["box"][1] for c in seeds),
              max(c["box"][2] for c in seeds), max(c["box"][3] for c in seeds)]
     reach = max(3.0, 0.6 * char)
-    for _ in range(12):
+    for _ in range(12 if grow else 0):
         grew = False
         for c in comps:
             if (c["label"] in kept or c["touches"] or not c["textlike"] or c["size"] > 2 * char
