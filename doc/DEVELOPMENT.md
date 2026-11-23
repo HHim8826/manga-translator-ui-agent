@@ -181,7 +181,7 @@ python -m manga_translator local -i path/to/image.png -o path/to/output
 
 ### 开发环境常用的已跟踪资源
 
-- 默认配置模板：`config/config-example.json`
+- 默认配置模板：`config/config-example.json`。从源码运行时，设置只写进 `config/config.json`；要更新这个模板，先设环境变量 `MANGA_TRANSLATOR_SAVE_EXAMPLE_CONFIG=1` 再改设置（以前每次改设置都会一起写进模板，个人设置容易被一起提交）
 - 翻译器注册表：`config/config/translators.json`
 - 资源目录：`fonts/`、`dict/`、`doc/`、`desktop_qt_ui/locales/`
 
@@ -322,6 +322,18 @@ ruff check desktop_qt_ui manga_translator --config desktop_qt_ui/ruff.toml
 - 所以上面的命令更适合作为本地自检入口，不表示仓库 CI 当前已经把它当成必过步骤。
 
 这份 `ruff.toml` 当前规则以 `E`、`F`、`I` 为主，忽略 `E501`、`E701`、`E402`。
+
+### 运行测试
+
+内附的 Python（`packaging/python`）没有 pytest。可以把 pytest 装到仓库外的临时目录，再用内附的 Python 运行，不会改动内附环境：
+
+```powershell
+packaging\python\python.exe -m pip install --target "$env:TEMP\mt-pylib" pytest
+$env:PYTHONPATH = "$env:TEMP\mt-pylib"
+packaging\python\python.exe -X utf8 -m pytest test -q -p no:cacheprovider
+```
+
+测试文件第一行的 `import _bootstrap` 会设好 `sys.path`、`QT_QPA_PLATFORM=offscreen`，并先加载 torch 再加载 PyQt6。完整跑一遍约需 1～2 分钟。
 
 ### 调试文档
 

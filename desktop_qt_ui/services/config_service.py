@@ -139,6 +139,17 @@ class TranslatorConfig:
 
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 
+SAVE_EXAMPLE_CONFIG_ENV = "MANGA_TRANSLATOR_SAVE_EXAMPLE_CONFIG"
+"""Set to 1 to also save the settings to ``config/config-example.json`` when running from source."""
+
+
+def save_example_config() -> bool:
+    """Running from source, every settings change was also written to ``config/config-example.json``,
+    the repository's template (personal fields reset, but not the others: the model, the workflow
+    switches...), so ``git commit -a`` took the user's settings into it. Only with
+    ``MANGA_TRANSLATOR_SAVE_EXAMPLE_CONFIG=1`` now, for a maintainer updating the template."""
+    return os.environ.get(SAVE_EXAMPLE_CONFIG_ENV, "").strip() == "1"
+
 
 class ConfigService(QObject):
     """配置管理服务"""
@@ -703,9 +714,9 @@ class ConfigService(QObject):
         try:
             if config_path:
                 save_paths = [config_path]
-            elif getattr(sys, "frozen", False):
+            elif getattr(sys, "frozen", False) or not save_example_config():
                 save_paths = [self.user_config_path]
-            else:
+            else:  # a maintainer updating the template (see save_example_config)
                 save_paths = [self.user_config_path, self.default_config_path]
 
             payloads = {
