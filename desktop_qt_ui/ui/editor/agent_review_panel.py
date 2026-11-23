@@ -11,14 +11,12 @@ from __future__ import annotations
 from typing import Callable, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import QHBoxLayout, QTreeWidgetItem, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, PushButton, TreeWidget
 
 from manga_translator.agent import review as agent_review
+from ui.status_colors import MUTED, WARN, follow_theme, paint
 
-WARN = QColor(214, 140, 0)
-MUTED = QColor(130, 130, 130)
 ROLE = Qt.ItemDataRole.UserRole
 DETAIL = Qt.ItemDataRole.UserRole + 1
 CHOSEN_MARK = "✓ "
@@ -52,6 +50,7 @@ class AgentReviewPanel(QWidget):
         self.summary_label = CaptionLabel(self)
         self.summary_label.setWordWrap(True)
         self.tree = TreeWidget(self)
+        follow_theme(self, self.tree)
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
         self.tree.setIndentation(14)
@@ -134,14 +133,14 @@ class AgentReviewPanel(QWidget):
         return item
 
     @staticmethod
-    def _row(parent: QTreeWidgetItem, text: str, key, detail: str = "", color: Optional[QColor] = None):
+    def _row(parent: QTreeWidgetItem, text: str, key, detail: str = "", color: Optional[str] = None):
         item = QTreeWidgetItem([text])
         item.setData(0, ROLE, key)
         full = "\n".join(p for p in (text, detail) if p)
         item.setData(0, DETAIL, full)
         item.setToolTip(0, full)
-        if color is not None:
-            item.setForeground(0, QBrush(color))
+        if color is not None:  # a status of ui.status_colors, in the theme's color
+            paint(item, color, 1)
         parent.addChild(item)
         return item
 

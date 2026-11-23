@@ -21,7 +21,7 @@ import os
 from typing import Callable, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDesktopServices
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QListWidgetItem, QSplitter, QTreeWidgetItem, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -37,6 +37,9 @@ from qfluentwidgets import (
 )
 
 from manga_translator.agent import events as agent_events
+
+from ui.status_colors import ERROR, MUTED, WARN, follow_theme
+from ui.status_colors import paint as paint_status
 
 from .agent_preview import PagePreview
 from .agent_results import flag_text, result_text
@@ -102,9 +105,6 @@ their output image could not be backed up."""
 REDO_STATES = ("redo_failed", "redo_none", "redo_yours")
 """Pages a redo (``manga_translator.agent.redo``) did not render again: their step failed again, or
 nothing was left to do on them. They keep their output, like the held pages."""
-WARN = QColor(214, 140, 0)
-ERROR = QColor(210, 50, 50)
-MUTED = QColor(130, 130, 130)
 ALL_PAGES = "__all__"
 
 
@@ -185,6 +185,7 @@ class AgentsPage(QWidget):
         self._last_output = ""
         self._last_log_dir = ""
         self._build()
+        follow_theme(self, self.timeline, self.page_list)  # the status colors of both themes
         self.preview.label_for = self._label
         self.event_received.connect(self._handle_live, Qt.ConnectionType.QueuedConnection)
         agent_events.add_listener(self._on_agent_event)
@@ -304,6 +305,9 @@ class AgentsPage(QWidget):
         """Wide: page list, timeline and preview side by side. Narrow: the preview under the
         timeline and a slimmer page list, so a row's action and result fit without scrolling."""
         mode = "stacked" if width < self.STACKED else "narrow" if width < self.NARROW else "wide"
+        if mode == self._mode:  # the column widths the user dragged stay (they were reset at every resize)
+            return
+        self._mode = mode
         narrow = mode != "wide"
         self.context_bar.setFixedWidth(110 if narrow else 180)
         clock = self.timeline.fontMetrics().horizontalAdvance("00:00:00") + 18
@@ -311,9 +315,6 @@ class AgentsPage(QWidget):
         for column, size in enumerate((clock, page, 130 if narrow else 150, 240 if narrow else 280)):
             self.timeline.setColumnWidth(column, size)
         self.timeline.setColumnHidden(0, narrow)  # the time: in the page's tooltip and the picked row's text
-        if mode == self._mode:
-            return
-        self._mode = mode
         unlimited = 16777215
         self.page_list.setMaximumWidth(unlimited if mode == "wide" else 150)
         # a manga page is tall: a slim preview beside the timeline still shows it whole
@@ -959,9 +960,9 @@ class AgentsPage(QWidget):
         return bar.value() >= bar.maximum() - slack
 
     @staticmethod
-    def _paint(row: QTreeWidgetItem, color: QColor) -> None:
-        for column in range(row.columnCount()):
-            row.setForeground(column, QBrush(color))
+    def _paint(row: QTreeWidgetItem, status: str) -> None:
+        """Color the row by its status (``ui.status_colors``: WARN, ERROR, MUTED) in the theme's color."""
+        paint_status(row, status)
 
     def _apply_filter_to(self, row: QTreeWidgetItem) -> None:
         page_ok = self._page_filter == ALL_PAGES or row.data(0, Qt.ItemDataRole.UserRole) == self._page_filter
@@ -1012,9 +1013,9 @@ class AgentsPage(QWidget):
         item.setText(self._page_text(key))
         state = self._pages.get(key, {}).get("state")
         if state in ("error", "incomplete", "stopped", "redo_failed", *HELD_STATES):
-            item.setForeground(QBrush(ERROR if state in ("error", "inpaint_failed") else WARN))
+            paint_status(item, ERROR if state in ("error", "inpaint_failed") else WARN)
         else:
-            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+            paint_status(item, None)
 
     def _groups(self) -> List[tuple]:
         """(chapter name or None, page keys): one group per chapter when the run has several."""
@@ -1042,7 +1043,7 @@ class AgentsPage(QWidget):
                     font = heading.font()
                     font.setBold(True)
                     heading.setFont(font)
-                    heading.setForeground(QBrush(MUTED))
+                    paint_status(heading, MUTED)
                     self.page_list.addItem(heading)
                 for key in keys:
                     item = QListWidgetItem()

@@ -68,3 +68,55 @@ def test_the_picked_row_is_shown_in_full(app):  # noqa: F811
     page._reset()
     assert page.row_detail.isHidden()
     page.close()
+
+
+def test_the_column_widths_the_user_set_stay_until_the_layout_changes(app):  # noqa: F811
+    """Review 2026-11-24 U4: every resize set the timeline's column widths again, so a column the
+    user widened went back at the next pixel the window moved."""
+    page = _page_at(1300, 800)
+    page._fit_width(1300)
+    page.timeline.setColumnWidth(3, 520)  # the user widens the result column
+    page._fit_width(1301)
+    page._fit_width(1250)
+    assert page.timeline.columnWidth(3) == 520
+    page._fit_width(900)  # another layout: its own widths
+    assert page.timeline.columnWidth(3) == 240
+    page.close()
+
+
+def _contrast(rgb, background):
+    def luminance(color):
+        parts = [v / 255 for v in color]
+        parts = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in parts]
+        return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+    high, low = sorted((luminance(rgb), luminance(background)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_the_status_colors_can_be_read_in_both_themes(app, monkeypatch):  # noqa: F811
+    """Review 2026-11-24 U3: one color per status, 2.7:1 for "to check" on the light list and 2.9:1
+    for an error on the dark one. Each theme has its own now (4.5:1 at least), and painted rows
+    follow a theme change."""
+    from PyQt6.QtWidgets import QListWidgetItem
+    from qfluentwidgets import Theme, qconfig
+    from ui import status_colors
+
+    for light, dark in status_colors.COLORS.values():
+        assert _contrast(light, (251, 251, 251)) >= 4.5 and _contrast(dark, (43, 43, 43)) >= 4.5
+
+    page = _page_at(1300, 800)
+    row = _row(page)
+    page._paint(row, status_colors.ERROR)
+    heading = QListWidgetItem("ch01")
+    page.page_list.addItem(heading)
+    status_colors.paint(heading, status_colors.MUTED)
+    light_error = status_colors.status_color(status_colors.ERROR, dark=False)
+    assert row.foreground(3).color() == light_error
+    monkeypatch.setattr(status_colors, "dark_theme", lambda: True)
+    qconfig.themeChanged.emit(Theme.DARK)  # the page repaints what it painted
+    assert all(row.foreground(c).color() == status_colors.status_color(status_colors.ERROR, dark=True)
+               for c in range(row.columnCount()))
+    assert heading.foreground().color() == status_colors.status_color(status_colors.MUTED, dark=True)
+    status_colors.paint(heading, None)  # back to the theme's text color
+    assert heading.data(status_colors.STATUS_ROLE) is None
+    page.close()
