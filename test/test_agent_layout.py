@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from manga_translator.agent import checks
-from manga_translator.agent.page import PageDoc, layout_alignment
+from manga_translator.agent.page import PageDoc, Region, layout_alignment
 from manga_translator.agent.settings import AgentSettings
 from manga_translator.agent.snap import snap_text
 from manga_translator.agent.store import AgentMemory
@@ -320,3 +320,38 @@ def test_one_line_of_big_glyphs_is_not_cut(tmp_path):
     session, _tools, _ = _page(tmp_path, CORNER_INK + glyphs, [CORNER])
     snap = snap_text(session.page_array, [56, 86, 204, 154], "h")
     assert len(snap.lines) == 1, snap.lines
+
+
+def test_full_width_punctuation_takes_a_whole_character():
+    """ch42 p1: 「（物資[BR]存放處？）」 in the box of the two narrow handwritten lines 「（資材 / 置き場？）」 was
+    drawn at 12 px for 19 px of source: its brackets and question mark are as wide as the characters."""
+    box = Region(id=26, data={"lines": [[[487, 1493], [558, 1493], [558, 1513], [487, 1513]],
+                                        [[487, 1513], [558, 1513], [558, 1537], [487, 1537]]],
+                              "direction": "horizontal", "font_size": 22})
+    assert checks.line_overflow(box, "（物資[BR]存放處？）")
+    assert checks.line_overflow(box, "物資[BR]存放處？") is None
+
+
+def test_a_stroke_belongs_to_the_region_that_holds_most_of_it():
+    """ch43 p1: the lower stroke of 「こ」 in the gloss 「これ」 dips into the loose box of the line
+    「でぃめーとりあ」 under it. Cut out of the glyph line, the gloss keeps that stroke whole (it was
+    clipped and stayed drawn under the translation), and a stroke of the line under it that pokes
+    up into the box given for the gloss is not taken (its tip was erased with the gloss)."""
+    image = np.full((200, 240, 3), 255, np.uint8)
+    gloss = [(40, 96, 44, 114), (52, 98, 66, 102), (52, 116, 66, 121), (76, 96, 80, 118), (84, 100, 96, 104)]
+    for x1, y1, x2, y2 in gloss + [(112, 112, 118, 135)]:  # the last one: a stroke of the line under it
+        image[y1:y2, x1:x2] = 0
+    for x in range(30, 200, 30):  # the line under it, drawn from y 135
+        image[135:165, x:x + 22] = 0
+    image = cv2.GaussianBlur(image, (3, 3), 0)  # soft edges, as scanned lettering has
+    under = np.zeros((200, 240), np.uint8)
+    under[120:170, 25:205] = 1  # its detected box starts well above its ink
+    exclude = cv2.dilate(under, np.ones((5, 5), np.uint8))  # as PageDoc.occupied grows it
+    snap = snap_text(image, (36, 92, 122, 126), "h", exclude=exclude, grow=False)
+    assert snap is not None
+    assert snap.bbox[3] >= 120 and snap.bbox[2] <= 100  # the whole foot of 「こ」, not the stroke under it
+    erase = np.zeros((200, 240), bool)
+    ex, ey = snap.erase_origin
+    erase[ey:ey + snap.erase.shape[0], ex:ex + snap.erase.shape[1]] = snap.erase > 0
+    assert erase[116:121, 52:66].all()
+    assert not erase[112:135, 112:118].any()

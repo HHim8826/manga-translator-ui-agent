@@ -283,7 +283,19 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     ink = ~dark if dark[iy1:iy2, ix1:ix2].mean() > 0.5 else dark
     ink = ink.astype(np.uint8)
     if exclude is not None:
-        ink[exclude[cy1:cy2, cx1:cx2] > 0] = 0
+        # A stroke belongs to the region that holds most of it, the mask without the couple of pixels
+        # it was grown by: the foot of a handwritten gloss that dips into the (loose) box of the line
+        # under it stays with the gloss (ch43 p1, 「これ」 above 「でぃめーとりあ」), a stroke of the
+        # other region that sticks out of its box, or lies in the grown rim, is left out whole.
+        taken = (exclude[cy1:cy2, cx1:cx2] > 0).astype(np.uint8)
+        core = cv2.erode(taken, np.ones((5, 5), np.uint8))
+        count, labels = cv2.connectedComponents(ink, connectivity=8)
+        total = np.maximum(1, np.bincount(labels.ravel(), minlength=count))
+        in_core = np.bincount(labels[core > 0], minlength=count) / total
+        in_rim = np.bincount(labels[taken > 0], minlength=count) / total
+        theirs = (in_core > 0.5) | (in_rim > 0.9)
+        theirs[0] = False
+        ink[theirs[labels]] = 0
 
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     # Stroke thickness per component: text strokes are short for their

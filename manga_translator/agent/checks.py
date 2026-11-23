@@ -275,9 +275,11 @@ def room_counts(region: "Region") -> Tuple[int, int]:
 
 
 def _cells(line: str) -> float:
-    """Length of a line in font sizes: a CJK character is one, punctuation and Latin letters or digits
-    about half (they are narrow, or the renderer squeezes them)."""
-    return sum(1.0 if ch.isalnum() and not ch.isascii() else 0.5 for ch in re.sub(r"\s", "", line))
+    """Length of a line in font sizes: a CJK character or full-width punctuation (？！、。…「」（）～ー) is
+    one, a Latin letter, digit or ASCII mark about half. Measured with the user's render settings
+    (balloon_fill, Shin Go): 「存放處？」 is drawn as small as 「存放處處」 in the same box, horizontal and
+    vertical; only 「、」 and 「「」 are a little narrower in a column."""
+    return sum(0.5 if ch.isascii() else 1.0 for ch in re.sub(r"\s", "", line))
 
 
 def line_overflow(region: "Region", translation: str) -> Optional[Dict[str, int]]:

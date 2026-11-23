@@ -175,3 +175,39 @@ def test_the_proofreader_revises_a_page_whose_name_has_a_dot(tmp_path):
     assert [r["translation"] for r in saved[:2]] == ["改一", "改二"]
     calls = [e for e in read_events(events.path) if e["type"] == "tool_call" and e.get("tool") == "revise_text"]
     assert {e["page"] for e in calls} == {"v1.2"}
+
+
+def test_the_proofreader_sees_the_skipped_regions_and_the_review_list(tmp_path):
+    """ch41-43: the translator flagged each gloss it could not cut out of a line of invented script, and
+    the proofreader, who saw neither the skipped regions nor those flags, put every one on the list again
+    as a page flag. Now it gets both, and a region already on the list is not flagged twice."""
+    pages, store, events, runner = _translated_chapter(tmp_path)
+    side = store.load_sidecar("002")
+    two = next(r for r in side["regions"] if r["translation"] == "譯2")
+    side["regions"].append({"id": 9, "skipped": True, "skip_category": "other", "ocr_agent": "ジャヒ これ",
+                            "match": {"center": [50.0, 50.0], "bbox": [40, 40, 60, 60]}})
+    side["review_flags"] = [{"region": two["id"], "type": "layout", "reason": "字級偏大，請核對", "agent": "translator"},
+                            {"region": 9, "type": "missing_text", "reason": "詞義「これ」無法拆出，請補「這個」",
+                             "agent": "translator"},
+                            {"region": None, "type": "inpaint", "reason": "網點請複核", "agent": "inpaint"}]
+    store.save_sidecar("002", side)
+    client = ScriptedClient([], proof=[
+        _calls(("flag_for_review", {"page": "002", "id": 2, "reason": "字太大"}),
+               ("flag_for_review", {"page": "002", "id": 3, "reason": "雙關沒翻出來"}),
+               ("flag_for_review", {"page": "002", "id": 3, "reason": "又一次"})),
+        _calls(("finish_proofread", {}))])
+    proofreader = Proofreader(AgentSettings(), client, store, events, "CHT", runner.memory)
+    result = asyncio.run(proofreader.run([p for p, _ in pages]))
+    events.close()
+    first = client.proof_requests[0][1]["content"]
+    assert "Page 002 (3 region(s))" in first
+    assert "Skipped by the translator" in first and "「ジャヒ これ」 (other)" in first
+    assert "Already on the review list: #2 layout: 字級偏大，請核對" in first
+    assert "missing_text: 詞義「これ」無法拆出，請補「這個」" in first and "網點" not in first
+    assert "do not flag" in client.proof_requests[0][0]["content"].lower()
+    results = [m["content"] for m in client.proof_requests[1] if m.get("role") == "tool"]
+    assert "already on the review list" in results[0] and "字級偏大" in results[0]
+    assert results[1] == "Added to the review list." and "already on the review list" in results[2]
+    assert result["flagged"] == 1
+    flags = store.load_sidecar("002")["review_flags"]
+    assert [f["agent"] for f in flags] == ["translator", "translator", "inpaint", "proofread"]

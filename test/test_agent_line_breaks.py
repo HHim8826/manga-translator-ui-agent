@@ -183,9 +183,10 @@ def test_lines_that_run_out_of_the_box():
     assert checks.line_overflow(column, "我倒沒覺得有什麼不對勁的地方啊[BR]好") == {
         "lines": 2, "longest": 15, "room": 10, "rows": 2}  # rounded for the agent
     assert checks.line_overflow(column, "好[BR]的[BR]啊")  # three columns in a box of one and a half
-    # punctuation and Latin letters are narrow: 「……嗯？OK」 is about 3.5 characters long
-    assert checks._cells("……嗯？ OK") == pytest.approx(3.5)
-    assert checks.line_overflow(column, "……嗯？……嗯？……嗯？……！") is None
+    # full-width punctuation takes a whole character, Latin letters half: 「……嗯？OK」 is 5 long
+    assert checks._cells("……嗯？ OK") == pytest.approx(5)
+    assert checks.line_overflow(column, "……嗯？……嗯？……嗯？") is None
+    assert checks.line_overflow(column, "……嗯？……嗯？……嗯？……！")  # 15 characters in a column of 10
     row = Region(id=2, data={"lines": [[[0, 0], [200, 0], [200, 30], [0, 30]]], "direction": "horizontal",
                              "font_size": 20})
     assert checks.line_room(row) == pytest.approx((10, 1.25))

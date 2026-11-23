@@ -34,6 +34,8 @@ Check each region for:
 
 {invented_script} The translator gives such regions the meaning only on purpose: do not add the readings back.
 
+Under each page you also get the text the translator skipped on purpose (sound effects drawn on the art, invented script, logos: kept as drawn) and what is already on the human review list, with the reason. Do not flag those again, not in other words and not for the whole page: the human already has them. Flag only problems that are not on the list yet.
+
 Change only what is wrong or clearly better, and keep the translator's choices and style otherwise: do not rewrite lines that are fine. [BR] in a translation is a line break the renderer follows: keep the breaks when you revise a line, at natural boundaries of the new text. Go through the chapter in page order, at most {per_round} pages at a time: view those pages with view_page when you need the picture (who is speaking, what is shown), then send the revise_text calls for them together with the view_page calls of the next pages. Never keep the revisions of the whole chapter for one response: a reply that long is cut off by the connection and lost. Use flag_for_review for what you cannot settle, and end with finish_proofread. Write every reason and note in {reason_lang}; a human reads them.{extra}"""
 PAGES_PER_ROUND = 2
 """Pages the proofreader views (and revises) per response. All revisions in one response took 63-125 s on
@@ -93,15 +95,60 @@ class ProofPage:
         """From the agent's sidecar, matched by box center."""
         self.locked: set = set()
         """Regions the user changed in the editor (a chapter checked again): not revised."""
+        self.skipped: List[tuple] = []
+        """(source, skip category) of the text the translator left as drawn: not in the JSON."""
+        self.on_list: List[tuple] = []
+        """(region number or None, flag type, reason) already on the human review list from the
+        translator (or an earlier proofreading): not flagged again."""
 
     def match_sidecar(self, side: Optional[dict]) -> None:
-        by_center = {tuple((e.get("match") or {}).get("center") or ()): e for e in (side or {}).get("regions", [])}
+        from .review import flag_agent
+
+        side = side if isinstance(side, dict) else {}
+        entries = [e for e in side.get("regions") or [] if isinstance(e, dict)]
+        by_center = {tuple((e.get("match") or {}).get("center") or ()): e for e in entries}
+        rid_at = {}
         for rid, region in self.regions.items():
+            rid_at[tuple(region.center)] = rid
             entry = by_center.get(tuple(region.center))
             if entry and entry.get("category"):
                 self.categories[rid] = str(entry["category"])
             if entry and entry.get("locked") and not entry.get("skipped"):
                 self.locked.add(rid)
+        for entry in entries:
+            if entry.get("skipped") and not entry.get("merged_into"):
+                text = _one_line(entry.get("ocr_agent") or self.source(Region(id=0, data=entry.get("json") or {})))
+                if text:
+                    self.skipped.append((text, str(entry.get("skip_category") or "")))
+        by_id = {e.get("id"): e for e in entries}
+        for flag in side.get("review_flags") or []:
+            if not isinstance(flag, dict) or flag_agent(flag, side) not in ("translator", "proofread"):
+                continue
+            number = flag.get("region")
+            if flag_agent(flag, side) == "translator":
+                entry = by_id.get(number)
+                center = (entry.get("match") or {}).get("center") if entry else None
+            else:  # an earlier proofreading's flag keeps where its box was
+                center = flag.get("center")
+            rid = rid_at.get(tuple(center)) if center else None
+            self.on_list.append((rid, str(flag.get("type") or ""), _one_line(flag.get("reason") or "")))
+
+    def listed(self, rid: int) -> str:
+        """The reasons region ``rid`` is already on the review list, or ''."""
+        return "; ".join(f"{kind}: {reason}" for number, kind, reason in self.on_list if number == rid)
+
+    def context(self) -> List[str]:
+        """The page's text skipped on purpose and its review list, under its regions."""
+        lines = []
+        if self.skipped:
+            shown = [f"「{_short(text, 30)}」 ({kind or 'skipped'})" for text, kind in self.skipped[:12]]
+            more = f" and {len(self.skipped) - 12} more" if len(self.skipped) > 12 else ""
+            lines.append("Skipped by the translator (kept as drawn): " + ", ".join(shown) + more)
+        if self.on_list:
+            items = [f"{'#' + str(rid) if rid else 'page'} {kind}: {_short(reason, 90)}"
+                     for rid, kind, reason in self.on_list]
+            lines.append("Already on the review list: " + "; ".join(items))
+        return lines
 
     @staticmethod
     def source(region: Region) -> str:
@@ -257,8 +304,15 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
         reason = str(args.get("reason") or "").strip()
         if not reason:
             raise ProofError("reason is required")
+        listed = page.listed(rid) if rid is not None else ""
+        if listed:  # the human has it already: one entry per problem on the review list
+            return (f"{page.stem} #{rid} is already on the review list ({listed}): not added again. If your "
+                    f"problem is another one, fix it with revise_text or say it in the finish_proofread note.",
+                    f"{page.stem} #{rid}: already listed", [])
         s.flags.append({"page": page.stem, "region": rid, "type": "uncertain_translation", "reason": reason,
                         "agent": "proofread", **where})
+        if rid is not None:
+            page.on_list.append((rid, "uncertain_translation", reason))
         return "Added to the review list.", f"{page.stem}" + (f" #{rid}" if rid else ""), []
     if name == "finish_proofread":
         s.note = str(args.get("note") or "")
@@ -308,7 +362,8 @@ class Proofreader:
         for stem, page in pages.items():
             lines = page.listing(self.line_breaks)
             count += len(lines)
-            listed.append(f"Page {stem} ({len(lines)} region(s)):\n" + ("\n".join(lines) if lines else "(no text)"))
+            listed.append(f"Page {stem} ({len(lines)} region(s)):\n" + ("\n".join(lines) if lines else "(no text)")
+                          + "".join("\n" + line for line in page.context()))
         parts.append(f"The chapter: {len(pages)} page(s), {count} translated region(s).\n\n" + "\n\n".join(listed))
         return "\n\n".join(parts)
 
