@@ -24,6 +24,22 @@ _UNKNOWN = object()
 """The JSON stamp of a page read without stamps: nothing to compare with."""
 
 
+def _t(key: str, **kwargs) -> str:
+    """The interface language's text for ``key`` (``locales/*.json``); before the app's services
+    are set up, the default manager's (the system language)."""
+    try:
+        from services import get_i18n_manager
+
+        manager = get_i18n_manager()
+        if manager is None:
+            from services.i18n_service import get_i18n_manager as default_manager
+
+            manager = default_manager()
+        return manager.translate(key, **kwargs)
+    except Exception:
+        return key
+
+
 def _close_images(*images: object) -> None:
     closed: set[int] = set()
     for image in images:
@@ -266,17 +282,14 @@ class EditorControllerExportService:
 
         view = getattr(self.controller, "view", None)
         dialog = Dialog(
-            "工程文件已被改动",
-            f"{os.path.basename(source_path)} 的工程文件在编辑器打开后被其他程序改过"
-            "（例如 AI Agent 或批量管理）。\n\n"
-            "覆盖保存：用编辑器里的内容保存，盖掉那些改动。\n"
-            "重新载入：放弃编辑器里还没保存的修改，载入新的内容。",
+            _t("Editor Changed On Disk Title"),
+            _t("Editor Changed On Disk Text", name=os.path.basename(source_path)),
             view if view is not None else QApplication.activeWindow(),
         )
         dialog.setTitleBarVisible(True)
-        dialog.yesButton.setText("覆盖保存")
-        dialog.cancelButton.setText("取消")
-        reload_button = PushButton("重新载入", dialog.buttonGroup)
+        dialog.yesButton.setText(_t("Editor Overwrite Save"))
+        dialog.cancelButton.setText(_t("Cancel"))
+        reload_button = PushButton(_t("Editor Reload"), dialog.buttonGroup)
         dialog.buttonLayout.insertWidget(1, reload_button, 1)
         chosen = {"value": "overwrite"}
         reload_button.clicked.connect(lambda: chosen.update(value="reload"))
@@ -291,7 +304,7 @@ class EditorControllerExportService:
         self.controller.commit_pending_edits()
         source_path = self.model.get_source_image_path()
         if not source_path:
-            self._reject_export("保存失败：当前图片没有来源路径")
+            self._reject_export(_t("Editor Save Failed No Source"))
             return False
         if self.json_changed_elsewhere(source_path):
             action = self._ask_changed_on_disk_action(source_path)
@@ -299,13 +312,13 @@ class EditorControllerExportService:
                 self.controller.document_service.do_load_image(source_path)
                 return False
             if action != "overwrite":
-                self._reject_export("没有保存：这一页的工程文件被其他程序改过")
+                self._reject_export(_t("Editor Not Saved Changed Elsewhere"))
                 return False
 
         try:
             image = self.model.get_image()
             if image is None:
-                self._reject_export("保存失败：缺少图像数据")
+                self._reject_export(_t("Editor Save Failed No Image"))
                 return False
             regions = self.model.get_regions() or []
             mask = self.model.get_refined_mask()
@@ -347,11 +360,11 @@ class EditorControllerExportService:
                 self._json_stamp = json_stamp(source_path)
             toast_manager = self.controller.get_toast_manager()
             if toast_manager is not None:
-                toast_manager.show_success("保存成功", 2500)
+                toast_manager.show_success(_t("Editor Saved"), 2500)
             return True
         except Exception as e:
             self.logger.error("Failed to save editor state", exc_info=True)
-            self._reject_export(f"保存失败：{e}")
+            self._reject_export(_t("Editor Save Failed Error", error=e))
             return False
 
     def export_image(
@@ -360,13 +373,13 @@ class EditorControllerExportService:
     ) -> Optional[concurrent.futures.Future]:
         source_path = self.model.get_source_image_path()
         if not source_path:
-            return self._reject_export("导出失败：当前图片没有来源路径")
+            return self._reject_export(_t("Editor Export Failed No Source"))
         source_path = os.path.abspath(source_path)
 
         try:
             export_base = self.model.get_export_base()
             if export_base is None:
-                return self._reject_export("导出失败：缺少活动文档")
+                return self._reject_export(_t("Editor Export Failed No Document"))
             config = self._build_config_dict(self.config_service.get_config())
 
             # 贴片整页预合成移到导出 worker（ExportService.execute_export_job）内执行，
@@ -385,13 +398,13 @@ class EditorControllerExportService:
             future = self._submit_job(job)
             if future is None:
                 job.release_resources()
-                return self._reject_export("导出队列已经关闭")
+                return self._reject_export(_t("Editor Export Queue Closed"))
             if self._is_open_document(source_path):
                 self._exported_revision = self._revision()
             return future
         except Exception as e:
             self.logger.error(f"Error during export request: {e}", exc_info=True)
-            return self._reject_export(f"导出快照创建失败：{e}")
+            return self._reject_export(_t("Editor Export Snapshot Failed", error=e))
 
     def _reject_export(self, message: str):
         toast_manager = self.controller.get_toast_manager()

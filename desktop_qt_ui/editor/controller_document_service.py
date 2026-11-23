@@ -22,6 +22,22 @@ if TYPE_CHECKING:
     from .editor_controller import EditorController
 
 
+def _t(key: str, **kwargs) -> str:
+    """The interface language's text for ``key`` (``locales/*.json``); before the app's services
+    are set up, the default manager's (the system language)."""
+    try:
+        from services import get_i18n_manager
+
+        manager = get_i18n_manager()
+        if manager is None:
+            from services.i18n_service import get_i18n_manager as default_manager
+
+            manager = default_manager()
+        return manager.translate(key, **kwargs)
+    except Exception:
+        return key
+
+
 class EditorControllerDocumentService:
     """文档加载/清理流程。"""
 
@@ -285,7 +301,9 @@ class EditorControllerDocumentService:
 
         ``purpose``: "switch" (another image), "close" (the window closes), "remove" (the page
         leaves the editor's list): False means stop there. "leave" (another page of the app; the
-        page stays open in the editor) never asks and never stops: the window close asks later.
+        page stays open in the editor) never asks and never stops: a page whose JSON another
+        program changed since it was opened is left as it is then (saving it would ask whether to
+        overwrite), and the next switch or the window close asks.
         Not only the switch: the last page of a chapter has no next image to switch to."""
         if self._is_shutdown:
             return True
@@ -295,6 +313,17 @@ class EditorControllerDocumentService:
         needs_export = getattr(export_service, "needs_export", None)
         if not dirty and not (callable(needs_export) and needs_export()):
             return True
+        if purpose == "leave":
+            changed = getattr(export_service, "json_changed_elsewhere", None)
+            source_path = (
+                self.controller.model.get_source_image_path() if callable(changed) else None
+            )
+            if source_path and changed(source_path):
+                self.logger.info(
+                    "Leaving the editor: the open page's JSON was changed by another program; "
+                    "it is saved (or reloaded) when the page is switched or the window closes"
+                )
+                return True
         blocking = purpose != "leave"
         auto_export = self._auto_export_on_switch_enabled()
         auto_save = self._auto_save_on_switch_enabled()
@@ -363,19 +392,19 @@ class EditorControllerDocumentService:
         dialog_parent = (
             self.view if self.view is not None else QApplication.activeWindow()
         )
-        then = {
-            "close": "关闭前要保存工程数据吗？",
-            "remove": "移除前要保存工程数据吗？",
-        }.get(purpose, "保存工程数据后再切换图片。")
+        then = _t({
+            "close": "Editor Unsaved Close",
+            "remove": "Editor Unsaved Remove",
+        }.get(purpose, "Editor Unsaved Switch"))
         dialog = Dialog(
-            "未保存的编辑",
-            f"当前图片有未保存的编辑\n\n{then}",
+            _t("Editor Unsaved Title"),
+            _t("Editor Unsaved Text", then=then),
             dialog_parent,
         )
         dialog.setTitleBarVisible(True)
-        dialog.yesButton.setText("保存")
-        dialog.cancelButton.setText("取消")
-        discard_button = PushButton("不保存", dialog.buttonGroup)
+        dialog.yesButton.setText(_t("Save"))
+        dialog.cancelButton.setText(_t("Cancel"))
+        discard_button = PushButton(_t("Editor Dont Save"), dialog.buttonGroup)
         dialog.buttonLayout.insertWidget(1, discard_button, 1)
         selected_action = {"value": "save"}
         discard_button.clicked.connect(lambda: selected_action.update(value="discard"))
@@ -396,7 +425,7 @@ class EditorControllerDocumentService:
         toast_manager = self.controller.get_toast_manager()
         if toast_manager is not None:
             self.controller._loading_toast = toast_manager.show_info(
-                "正在加载...", duration=0
+                _t("Editor Loading"), duration=0
             )
 
         generation = self._load_generation

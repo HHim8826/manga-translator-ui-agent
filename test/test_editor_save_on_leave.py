@@ -113,6 +113,37 @@ def test_leaving_the_editor_never_asks_and_the_choice_not_to_be_asked_holds(monk
     assert _settle(quiet, "close", monkeypatch) == (True, [])
 
 
+def test_leaving_the_editor_leaves_a_page_another_program_changed_for_later(monkeypatch):
+    """Review 2026-11-24 B3: with 切图时自动保存 on, leaving the editor saved the page, and the save
+    asked 覆盖保存/重新载入/取消 when an AI Agent run had changed its JSON (a reload while leaving)."""
+    controller = _Controller(auto_save=True, auto_export=True)
+    controller.model = SimpleNamespace(get_source_image_path=lambda: "001.png")
+    controller.export_service.json_changed_elsewhere = lambda path: path == "001.png"
+    assert _settle(controller, "leave", monkeypatch) == (True, [])
+    assert controller.saved == 0 and controller.exported == []  # the switch or the close asks
+    assert _settle(controller, "close", monkeypatch) == (True, [])
+    assert controller.saved == 1 and controller.exported == [True]  # (its save asks; faked here)
+    controller.export_service.json_changed_elsewhere = lambda path: False
+    assert _settle(controller, "leave", monkeypatch) == (True, []) and controller.saved == 2
+
+
+def test_the_save_dialogs_follow_the_interface_language(monkeypatch):
+    """Review 2026-11-24 U2: the save/export dialogs and toasts were Simplified Chinese whatever the
+    interface language."""
+    from editor import controller_document_service as document_module
+    from editor import controller_export_service as export_module
+    from services.i18n_service import get_i18n_manager
+
+    i18n = get_i18n_manager()  # the services are not set up in a test: the default manager
+    monkeypatch.setattr(i18n, "current_locale", "zh_TW")
+    assert export_module._t("Editor Overwrite Save") == "覆蓋儲存"
+    assert document_module._t("Editor Unsaved Text", then=document_module._t("Editor Unsaved Close")) == \
+        "目前的圖片有未儲存的編輯\n\n關閉前要儲存工程資料嗎？"
+    monkeypatch.setattr(i18n, "current_locale", "en_US")
+    assert export_module._t("Editor Save Failed Error", error="disk full") == "Save failed: disk full"
+    assert "{name}" not in export_module._t("Editor Changed On Disk Text", name="001.png")
+
+
 # --- the export service: what the open page needs, and a JSON changed by another program ---
 
 def _page(tmp_path):
