@@ -393,7 +393,7 @@ need extra Python packages.
    `PortableGit\cmd\git.exe` from the folder in place of `git`:
 
    ```bash
-   git remote add agents https://github.com/HHim8826/manga-translator-ui-Agent.git
+   git remote add agents https://github.com/HHim8826/manga-translator-ui-agent.git
    git fetch agents
    git checkout -B agents agents/agents
    ```

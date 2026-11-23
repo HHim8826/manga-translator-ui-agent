@@ -339,7 +339,7 @@ AI Agent 流程不是萬能的。使用前請先了解這些限制：
 2. 在程式資料夾裡切到這個分支（Windows 便攜包可以用資料夾裡的 `PortableGit\cmd\git.exe` 代替 `git`）：
 
    ```bash
-   git remote add agents https://github.com/HHim8826/manga-translator-ui-Agent.git
+   git remote add agents https://github.com/HHim8826/manga-translator-ui-agent.git
    git fetch agents
    git checkout -B agents agents/agents
    ```
