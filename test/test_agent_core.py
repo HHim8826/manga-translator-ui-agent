@@ -926,3 +926,36 @@ def test_workflow_can_review_after_the_whole_chapter(tmp_path):
     order, backend, paths = _review_workflow(tmp_path, review_while_translating=False)
     assert order.index(("translator", "run_end", None)) < order.index(("inpaint", "inpaint_start", "001"))
     assert sorted(backend.saved) == sorted(paths)
+
+
+def _image_size(url):
+    from io import BytesIO
+
+    from PIL import Image
+
+    return Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).size
+
+
+def test_whole_page_images_are_sent_at_most_the_set_size(tmp_path):
+    """Review 2026-11-24 P1: the page message, the recall check and get_candidates sent full-size scans."""
+    pages = [make_page(tmp_path, "001")]
+    runner, client, store, events = _runner(tmp_path, pages, _finish_page(), page_image_max_side=160)
+    asyncio.run(runner.run())
+    events.close()
+    text, image = client.requests[0][-1]["content"]
+    assert "(320x240 px, shown at 160x120; boxes are in page pixels)" in text["text"]
+    assert _image_size(image["image_url"]["url"]) == (160, 120)
+    text, image = client.recall_requests[0][-1]["content"]
+    assert text["text"] == "This page is 320x240 pixels (shown at 160x120; boxes are in page pixels)."
+    assert _image_size(image["image_url"]["url"]) == (160, 120)
+
+    session, tools = _session(tmp_path / "small", page_image_max_side=160)
+    result = tools.execute("get_candidates", "{}")
+    assert "(320x240 px, shown at 160x120; boxes are in page pixels)" in result.text
+    assert _image_size(result.images[0]) == (160, 120)
+    # 0 and a page within the limit: full size, said as before
+    for side in (0, 2048):
+        session, tools = _session(tmp_path / f"full{side}", page_image_max_side=side)
+        result = tools.execute("get_candidates", "{}")
+        assert "(320x240 px)" in result.text and _image_size(result.images[0]) == (320, 240)
+    assert AgentSettings().page_image_max_side == 2048

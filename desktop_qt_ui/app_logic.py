@@ -1348,6 +1348,7 @@ class MainAppLogic(QObject):
                     "max_context_tokens": self._t("label_max_context_tokens"),
                     "compact_threshold_tokens": self._t("label_compact_threshold_tokens"),
                     "keep_images_last_n_pages": self._t("label_keep_images_last_n_pages"),
+                    "page_image_max_side": self._t("label_page_image_max_side"),
                     "max_steps_per_page": self._t("label_max_steps_per_page"),
                     "inpaint_review_steps": self._t("label_inpaint_review_steps"),
                     "inpaint_attempts_per_region": self._t("label_inpaint_attempts_per_region"),

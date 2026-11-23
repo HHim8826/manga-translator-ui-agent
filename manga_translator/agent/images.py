@@ -50,6 +50,16 @@ def data_url(image: Image.Image, max_side: Optional[int] = None, quality: int = 
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def page_url(image: Image.Image, max_side: int) -> Tuple[str, str]:
+    """A whole page for a model, its longest side at most ``max_side`` (0: full size), and what to
+    say about it in the message: "" at full size, else the size shown (boxes stay in page pixels)."""
+    if max_side and max(image.size) > max_side:
+        shown = image.copy()
+        shown.thumbnail((max_side, max_side), Image.LANCZOS)
+        return data_url(shown), f"shown at {shown.width}x{shown.height}; boxes are in page pixels"
+    return data_url(image), ""
+
+
 def draw_marks(page: Image.Image, marks: Sequence[Tuple[int, Sequence[int], str]]) -> Image.Image:
     """Page with a numbered box per region. ``marks`` = (id, bbox, state) where
     state is ``pending`` (red), ``done`` (green) or ``skipped`` (gray)."""

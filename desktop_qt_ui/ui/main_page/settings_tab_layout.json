@@ -188,6 +188,7 @@
         "agent.max_context_tokens",
         "agent.compact_threshold_tokens",
         "agent.keep_images_last_n_pages",
+        "agent.page_image_max_side",
         "agent.max_steps_per_page",
         "agent.inpaint_review_steps",
         "agent.inpaint_attempts_per_region",

@@ -200,11 +200,11 @@ def _short(text: str, limit: int = 40) -> str:
 
 # --- reading ------------------------------------------------------------------
 def get_candidates(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
-    image = images.draw_marks(s.page_image, s.marks())
+    url, shown = images.page_url(images.draw_marks(s.page_image, s.marks()), s.settings.page_image_max_side)
     return ToolResult(
-        text=(f"Page {s.page_name} ({s.page_image.width}x{s.page_image.height} px): red = pending, "
-              f"green = translated, gray = skipped.\n{s.candidate_lines()}"),
-        images=[images.data_url(image)], summary=f"{len(s.doc.active_regions())} regions")
+        text=(f"Page {s.page_name} ({s.page_image.width}x{s.page_image.height} px{', ' + shown if shown else ''}): "
+              f"red = pending, green = translated, gray = skipped.\n{s.candidate_lines()}"),
+        images=[url], summary=f"{len(s.doc.active_regions())} regions")
 
 
 def _page_box(s: AgentSession, raw: Any) -> List[float]:

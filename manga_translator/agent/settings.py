@@ -25,6 +25,12 @@ class AgentSettings(BaseModel):
     below ``max_context_tokens``, or the conversation would hit the limit before it is compacted."""
     keep_images_last_n_pages: int = Field(default=5, ge=1)
     """Older pages keep their text in the conversation but their images are dropped."""
+    page_image_max_side: int = Field(default=2048, ge=0)
+    """Longest side of the whole-page images the translation agent and the recall check get (a zoom's
+    crop is not limited); 0 sends them at full size. The message gives the page's own size, and boxes
+    stay in page pixels. Vision APIs scale a larger image down on their side anyway (OpenAI's high
+    detail fits it in 2048x2048), so a full-size scan only made every request bigger: each step resends
+    the images of 5 to 9 pages (review 2026-11-24 P1)."""
     max_steps_per_page: int = Field(default=40, ge=1)
     """Model calls allowed for one page before it is flagged and the run moves on."""
     image_detail: str = "high"

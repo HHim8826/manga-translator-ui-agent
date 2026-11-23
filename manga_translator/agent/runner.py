@@ -386,11 +386,12 @@ class AgentRunner:
         doc = self.load_doc(path)
         page = images.open_page(path)
         marked = images.draw_marks(page, [(r.id, r.bbox, "pending") for r in doc.active_regions()])
+        url, shown = images.page_url(marked, self.settings.page_image_max_side)
+        size = f"This page is {page.width}x{page.height} pixels" + (f" ({shown})." if shown else ".")
         messages = [{"role": "system", "content": RECALL_PROMPT},
                     {"role": "user", "content": [
-                        {"type": "text", "text": f"This page is {page.width}x{page.height} pixels."},
-                        {"type": "image_url", "image_url": {"url": images.data_url(marked),
-                                                            "detail": self.settings.image_detail}}]}]
+                        {"type": "text", "text": size},
+                        {"type": "image_url", "image_url": {"url": url, "detail": self.settings.image_detail}}]}]
         reply = await self.client.complete(messages, [RECALL_TOOL], "required",
                                            effort=self.settings.review_reasoning_effort, cache_key="recall")
         for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
@@ -453,9 +454,11 @@ class AgentRunner:
         from . import images
         regions = doc.active_regions()
         page = self.session.page_image
+        url, shown = images.page_url(images.draw_marks(page, self.session.marks()), self.settings.page_image_max_side)
         checked = ", checked again: the list gives the current translations" if doc.revise else ""
         text = (f"Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
-                f"({page.width}x{page.height} px), {len(regions)} candidate region(s){checked}.\n"
+                f"({page.width}x{page.height} px{', ' + shown if shown else ''}), "
+                f"{len(regions)} candidate region(s){checked}.\n"
                 f"{self.session.candidate_lines()}\n")
         if recalled:
             text += ("A recall check added " + ", ".join(f"#{i}" for i in recalled)
@@ -465,10 +468,9 @@ class AgentRunner:
             text += "Check this page against the image, fix what is wrong with the tools, then call mark_page_done."
         else:
             text += "Work through this page with the tools, then call mark_page_done."
-        image = images.draw_marks(self.session.page_image, self.session.marks())
         return {"role": "user", "content": [
             {"type": "text", "text": text},
-            {"type": "image_url", "image_url": {"url": images.data_url(image), "detail": self.settings.image_detail}},
+            {"type": "image_url", "image_url": {"url": url, "detail": self.settings.image_detail}},
         ]}
 
     # --- pages --------------------------------------------------------------

@@ -7,6 +7,9 @@ For each page:
 The reference is the existing *_translations.json (local OCR output, may itself be wrong).
 Usage (from the project root):
     packaging/python/python.exe -X utf8 doc/verify_agent_perception.py . <chapter_dir> <out_dir> 003 006
+The environment variable PAGE_MAX_SIDE (like agent.page_image_max_side) scales the whole-page images of
+A and B down to that longest side; the text still gives the page's own size, so A's boxes stay in page
+pixels. Run once without it and once with PAGE_MAX_SIDE=2048, each into its own <out_dir>, to compare.
 """
 import base64
 import difflib
@@ -36,12 +39,22 @@ BASE = re.split(r"[,\n;]", env["OPENAI_API_BASE"])[0].strip()
 MODEL = env["OPENAI_MODEL"]
 client = OpenAI(api_key=KEY, base_url=BASE, timeout=300, max_retries=1)
 FONT = ImageFont.truetype(os.path.join(ROOT, "fonts", "msgothic.ttc"), 28)
+MAX_SIDE = int(os.environ.get("PAGE_MAX_SIDE") or 0)
 
 
 def data_url(img, fmt="JPEG"):
     buf = io.BytesIO()
     img.convert("RGB").save(buf, fmt, quality=92)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def page_url(img):
+    """A whole page, its longest side at most MAX_SIDE (0: full size), and what to say about it."""
+    if MAX_SIDE and max(img.size) > MAX_SIDE:
+        img = img.copy()
+        img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+        return data_url(img), f" (shown at {img.width}x{img.height}; boxes are in page pixels)"
+    return data_url(img), ""
 
 
 def ask_json(content, label):
@@ -98,15 +111,16 @@ for page in PAGES:
             for i, r in enumerate(regions)]
 
     # A. free detection
+    url, shown = page_url(img)
     free, u_free = ask_json([
         {"type": "text", "text": (
-            f"This is a Japanese manga page, {W}x{H} pixels. Find EVERY piece of text: speech bubbles, "
+            f"This is a Japanese manga page, {W}x{H} pixels{shown}. Find EVERY piece of text: speech bubbles, "
             "narration boxes, handwritten notes, signs, UI/status screens, and sound effects. "
             'Return JSON {"regions": [{"bbox": [x1,y1,x2,y2], "direction": "vertical|horizontal", '
             '"category": "dialogue|narration|note|sfx|sign|ui", "text": "exact Japanese transcription"}]} '
-            "with pixel coordinates in this image. Bbox must tightly enclose the text itself, not the whole bubble. "
-            "Transcribe exactly; do not translate or correct the author's wording.")},
-        {"type": "image_url", "image_url": {"url": data_url(img), "detail": "high"}}], "free")
+            f"with pixel coordinates of the {W}x{H} page. Bbox must tightly enclose the text itself, not the "
+            "whole bubble. Transcribe exactly; do not translate or correct the author's wording.")},
+        {"type": "image_url", "image_url": {"url": url, "detail": "high"}}], "free")
     free_regions = free.get("regions", [])
 
     # B. numbered reference boxes
@@ -124,7 +138,7 @@ for page in PAGES:
             "Red boxes with number tags mark text regions on this manga page. For every number, transcribe the "
             'Japanese text inside that box exactly. Return JSON {"1": "...", "2": "...", ...}. '
             "Use an empty string if the box has no readable text.")},
-        {"type": "image_url", "image_url": {"url": data_url(som), "detail": "high"}}], "som")
+        {"type": "image_url", "image_url": {"url": page_url(som)[0], "detail": "high"}}], "som")
 
     # C. magnified crops
     parts = [{"type": "text", "text": (
