@@ -1,6 +1,6 @@
 """State files of the agent workflow and its long-term memory.
 
-Layout (design doc, "資料格式")::
+Layout::
 
     manga_translator_work/agent/
         memory/glossary.json     terms, each with the page it came from

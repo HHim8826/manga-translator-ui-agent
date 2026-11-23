@@ -2,7 +2,7 @@
 
 The model is good at saying *where* text is but its boxes are loose (M0.5:
 IoU median 0.79, sometimes truncated). This module turns such a box into what
-a region needs (design doc, "精準操作設計": 吸附):
+a region needs (snapping):
 
 * a tight box and one quad per column (vertical) or row (horizontal);
 * the font size, text and background colors;

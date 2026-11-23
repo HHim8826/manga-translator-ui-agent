@@ -1,4 +1,4 @@
-"""The ``agent`` config section (design doc, "設定項")."""
+"""The ``agent`` config section."""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
@@ -78,7 +78,7 @@ class AgentSettings(BaseModel):
     """Attempts per API candidate before moving to the next candidate."""
     stream_requests: bool = True
     """Receive each reply as it is written (streaming). The reply starts within seconds, so a proxy
-    that cuts a connection after a silent while (the user's: 120 s) does not cut a long reply. An API
+    that cuts a connection after a silent while (for example 120 s) does not cut a long reply. An API
     that refuses streaming, or streams without token counts, gets requests without it."""
     memory_dir: str = ""
     """One folder for the glossary, characters and story summary of every chapter. Empty keeps them

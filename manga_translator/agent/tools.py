@@ -1,4 +1,4 @@
-"""Tools the agent calls (design doc, "工具規格"), M2 subset.
+"""Tools the agent calls, M2 subset.
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
 Structure: add_region, merge_regions, split_region, skip_region, set_reading_order, link_regions

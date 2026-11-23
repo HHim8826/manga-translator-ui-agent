@@ -1,4 +1,4 @@
-"""What the AI Agent left for the human on one page, for the editor (design doc, "編輯器").
+"""What the AI Agent left for the human on one page, for the editor.
 
 The agents keep their notes in the page's sidecar (``agent/pages/<page>.agent.json``), not in the
 JSON the editor loads. ``load`` turns it into three lists:

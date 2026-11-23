@@ -1,4 +1,4 @@
-"""The inpainting review agent (design doc, "修圖審查與修補", "Agent 角色").
+"""The inpainting review agent.
 
 After the translation agent finished a chapter, every finished page goes
 through one short, separate conversation: the program inpaints the page block

@@ -1,6 +1,6 @@
 """Deterministic checks on an inpainting result.
 
-These run before any AI review (see doc/DESIGN_ai_agent_workflow_2026-11-20.md):
+These run before any AI review:
 they are cheap, reproducible, and catch the common failures so that only
 borderline regions need a model to look at them.
 
@@ -212,7 +212,7 @@ def check_inpaint(
 ) -> InpaintCheck:
     """Run every check and list the failures in ``issues``.
 
-    ``issues`` uses the failure types from the design doc:
+    ``issues`` uses these failure types:
     ``outside_changed``, ``residual_text``, ``broken_lines``.
     Residual text is only checked when ``text_map_after`` is given. It is
     judged in pixels, not as a share of the mask: one leftover glyph is

@@ -1,4 +1,4 @@
-"""Inpainting of one page for the review agent (design doc, "修圖審查與修補").
+"""Inpainting of one page for the review agent.
 
 The page mask (the refined mask in the page JSON, after the translation agent's
 edits) is split into *units*: the mask components of one kept region. A unit
@@ -8,7 +8,7 @@ every unit's chosen attempt pasted in under that attempt's mask, so pixels
 outside the mask never change and a retry always starts again from the
 original (only the other units' results are kept as context).
 
-Precise operations (design doc, "精準操作設計") work on numbers the program
+Precise operations work on numbers the program
 draws, not on coordinates: mask components M1..Mn and stroke candidates
 S1..Sn, grid cells of the last view, and parameters such as "dilate 3 px
 around the residual text". The checks from ``inpainting/quality_checks.py``

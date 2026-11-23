@@ -1,6 +1,6 @@
 """The main agent's conversation: one chapter, page by page, in one conversation.
 
-Context rules (design doc, "上下文與記憶管理"):
+Context rules:
 
 * the system prompt, tool definitions and memory snapshot come first and stay
   fixed until a compaction, so the prefix is cached;

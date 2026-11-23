@@ -1,6 +1,6 @@
 """Event log of an agent run: one JSON object per line, also pushed to live listeners.
 
-Event types (design doc, "事件紀錄"): ``run_start`` (with ``chapter`` and ``batch``: the chapters
+Event types: ``run_start`` (with ``chapter`` and ``batch``: the chapters
 of one workflow run share the batch id), ``page_start``, ``tool_call``, ``tool_result``, ``flag``,
 ``usage``, ``compact``, ``recall``, ``error``, ``page_done``, ``run_end`` (``reason``: empty, or
 ``stopped``/``failed`` when the run ended early), ``inpaint_start``/``inpaint_done``,

@@ -1,6 +1,6 @@
 """Agents page: what the AI agent is doing, live, or replayed from a run log.
 
-Layout (design doc, "Agents 頁面"), M2 skeleton:
+Layout, M2 skeleton:
 * header: run status, current page, context usage bar, open a run log, problems-only filter
 * left: pages with their state and review-flag count (click to filter the timeline)
 * middle: activity timeline (tool calls with the agent's reason, results, flags, errors)

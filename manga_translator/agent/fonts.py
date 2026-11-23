@@ -1,4 +1,4 @@
-"""Fonts for the agent workflow (design doc, "字體").
+"""Fonts for the agent workflow.
 
 ``fix_missing_glyphs``: when a region's font has no glyph for a character, Qt draws that one
 character from whatever font it finds (``A-OTF Shin Go Pr6N`` has no 值, 嗯, 啥 ... for
