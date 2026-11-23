@@ -1129,6 +1129,37 @@ def _compute_top_aligned_center(region: 'TextBlock', text_height: float) -> tupl
     return (float(nc[0]), float(nc[1]))
 
 
+def _edge_aligned(region: 'TextBlock', render_horizontally: bool) -> Optional[str]:
+    """'left' or 'right' for horizontal text set to that alignment (the region's own, or the
+    config's), else None."""
+    if not render_horizontally:
+        return None
+    side = getattr(region, '_alignment', None)
+    side = getattr(side, 'value', side)
+    return side if side in ('left', 'right') else None
+
+
+def _compute_edge_aligned_center(region: 'TextBlock', center: tuple, text_width: float, body_x: float,
+                                 side: str) -> tuple:
+    """Move the anchor (where the body center goes) along the box so text aligned left (right) starts
+    (ends) where the original lines did: a list of questions with their answers below them, a note
+    in a box. ``body_x`` is the body center inside the rendered box of ``text_width``. Text as wide
+    as the box or wider stays where it is."""
+    pts = region.min_rect  # (1, 4, 2)
+    mid = (pts[:, [1, 2, 3, 0]] + pts) / 2
+    right_mid = mid[0, 1].astype(float)
+    left_mid = mid[0, 3].astype(float)
+    box_w = float(np.linalg.norm(right_mid - left_mid))
+    if box_w <= 0 or text_width >= box_w:
+        return center
+    axis = (right_mid - left_mid) / box_w
+    c = np.array(center, dtype=float)
+    along = float(np.dot(c - left_mid, axis))
+    target = body_x if side == 'left' else box_w - (text_width - body_x)
+    nc = c + (target - along) * axis
+    return (float(nc[0]), float(nc[1]))
+
+
 def _resolve_layout_anchor_mode(*, apply_bubble_centering: bool, skip_font_scaling: bool = False) -> str:
     """统一中心锚点策略。
 
@@ -1153,14 +1184,17 @@ def _resolve_region_layout_center(
     anchor_mode: str = 'top',
     render_value=None,
 ) -> tuple:
-    if anchor_mode in ('center', 'center_box'):
+    if anchor_mode == 'center_box':
         return tuple(region.center)
-    if anchor_mode != 'top':
+    if anchor_mode not in ('center', 'top'):
         raise ValueError(f"Unsupported anchor_mode: {anchor_mode!r}")
+    side = _edge_aligned(region, render_horizontally)
+    if anchor_mode == 'center' and side is None:
+        return tuple(region.center)
 
     if render_value is None:
         render_value = _region_render_value(region)
-    _, req_h, _, (_, body_y) = calc_box_from_font(
+    req_w, req_h, _, (body_x, body_y) = calc_box_from_font(
         int(max(font_size, 1)),
         render_value,
         render_horizontally,
@@ -1170,10 +1204,16 @@ def _resolve_region_layout_center(
         letter_spacing=letter_spacing_multiplier,
         stroke_width=_resolve_region_stroke_width(region, config),
     )
-    # 上对齐用正文本体高度（正文中心到底边的两倍），把框外注音/着重号排除，
-    # 这样正文顶边贴气泡顶边，而不是让注音顶边贴气泡。
-    body_height = 2.0 * (req_h - body_y)
-    return _compute_top_aligned_center(region, body_height)
+    if anchor_mode == 'top':
+        # 上对齐用正文本体高度（正文中心到底边的两倍），把框外注音/着重号排除，
+        # 这样正文顶边贴气泡顶边，而不是让注音顶边贴气泡。
+        body_height = 2.0 * (req_h - body_y)
+        center = _compute_top_aligned_center(region, body_height)
+    else:
+        center = tuple(region.center)
+    if side is not None:
+        center = _compute_edge_aligned_center(region, center, float(req_w), float(body_x), side)
+    return center
 
 
 def _calc_region_dst_points_for_font(

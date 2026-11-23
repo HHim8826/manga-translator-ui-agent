@@ -318,7 +318,8 @@ def add_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     else:
         raise RegionError("give box ([x1, y1, x2, y2] page pixels) or cells (grid of your last zoom)")
     direction = str(a.get("direction") or "")
-    snap = snap_text(s.page_array, box, direction or "v", exclude=s.doc.occupied(s.page_array.shape))
+    snap = snap_text(s.page_array, box, direction or "v", exclude=s.doc.occupied(s.page_array.shape),
+                     grow=not a.get("exact"))
     if snap is None:
         x1, y1, x2, y2 = box
         inside = [r.id for r in s.doc.active_regions()
@@ -333,12 +334,20 @@ def add_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     preview = images.snap_preview(s.page_image, snap.bbox, snap.lines, snap.erase, snap.erase_origin, others)
     x1, y1, x2, y2 = snap.bbox
     warning = f" Warning: {snap.warning}." if snap.warning else ""
+    exact = "" if a.get("exact") else ", or exact: true when it caught strokes of a neighbouring label"
     return ToolResult(
-        text=(f"Added #{region.id}: {x2 - x1}x{y2 - y1}px at [{x1}, {y1}, {x2}, {y2}], {len(snap.lines)} line(s), "
-              f"font≈{snap.font_size}px. Red pixels will be erased, the green box is where the translation goes.{warning} "
-              f"If it caught the wrong strokes or missed some, call undo and try a tighter or larger box. "
-              f"Then set_text or skip_region #{region.id} like any region."),
+        text=(f"Added #{region.id}: {x2 - x1}x{y2 - y1}px at [{x1}, {y1}, {x2}, {y2}], {len(snap.lines)} line(s)"
+              f"{_slant_note(snap)}, font≈{snap.font_size}px. Red pixels will be erased, the green box is where the "
+              f"translation goes.{warning} If it caught the wrong strokes or missed some, call undo and try a "
+              f"tighter or larger box{exact}. Then set_text or skip_region #{region.id} like any region."),
         images=[images.data_url(preview)], summary=f"#{region.id} {x2 - x1}x{y2 - y1}")
+
+
+def _slant_note(snap) -> str:
+    if not snap.angle:
+        return ""
+    way = "rising" if snap.angle < 0 else "falling"
+    return f", written on a slant ({way} {abs(snap.angle):.0f}° to the right; the translation is drawn along it)"
 
 
 def merge_regions(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -417,7 +426,8 @@ def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     warning = f" Warning: {snap.warning}." if snap.warning else ""
     return ToolResult(
         text=(f"Cut out of #{old.id}: the {snap.strokes} stroke(s) inside the box are now #{new.id}, {direction}, "
-              f"{len(snap.lines)} line(s) at [{x1}, {y1}, {x2}, {y2}], font≈{snap.font_size}px (red in the image); "
+              f"{len(snap.lines)} line(s){_slant_note(snap)} at [{x1}, {y1}, {x2}, {y2}], font≈{snap.font_size}px "
+              f"(red in the image); "
               f"#{old.id} keeps the rest at {old.bbox} (gray).{warning} If the wrong strokes moved, undo and give a "
               f"tighter box (zoom first). Both need set_text or skip_region (any text #{old.id} had was cleared): "
               f"the strokes of a skipped part stay drawn, those of a translated part are erased."),
@@ -443,7 +453,8 @@ def fit_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if region.translation and s.line_breaks:
         breaks = f" Check the line breaks of its translation against {len(snap.lines)} source line(s)."
     return ToolResult(
-        text=(f"#{region.id} now has {len(snap.lines)} line(s) at [{x1}, {y1}, {x2}, {y2}], {direction}, "
+        text=(f"#{region.id} now has {len(snap.lines)} line(s){_slant_note(snap)} at [{x1}, {y1}, {x2}, {y2}], "
+              f"{direction}, "
               f"font≈{snap.font_size}px (was {before}). Red pixels will be erased, the green box is where the "
               f"translation goes.{warning} If it caught the wrong strokes, undo and give a tighter or larger box. "
               f"Its text stays.{breaks}"),
@@ -714,6 +725,9 @@ TOOLS: List[Tool] = [
          _obj({"box": BOX, "cells": {"type": "string", "description": "Grid cells of the last zoom, like C4 or B3:D5"},
                "direction": {"type": "string", "enum": ["v", "h"], "description": "v = vertical text, h = horizontal"},
                "after": {"type": "integer", "description": "Optional: put it after this region in reading order"},
+               "exact": {"type": "boolean", "description": "Optional: take only the strokes whose middle lies in "
+                         "the box, for a label close to other labels (by default nearby strokes of the same size "
+                         "join, for text the box cut off)"},
                "reason": REASON}, ["direction", "reason"]), add_region, writes=True),
     Tool("merge_regions", "Merge regions that are one text block (for example one bubble split in two).",
          _obj({"ids": IDS, "reason": REASON}, ["ids", "reason"]), merge_regions, writes=True),
@@ -730,7 +744,8 @@ TOOLS: List[Tool] = [
                                             "differs from the region's"},
                "reason": REASON}, ["id", "reason"]), split_region, writes=True),
     Tool("fit_region", "Put a region's box on its text strokes again: for a detected box that took in some of the "
-         "art (its font size then reads too large), cut off part of the text, or read lines written apart as one. "
+         "art (its font size then reads too large), cut off part of the text, read lines written apart as one, or "
+         "did not see that a label is written on a slant (a slanted line gets a slanted box). "
          "Give a box around the region's text in page pixels, or grid cells of your last zoom (default: its current "
          "box); strokes of other regions are left out. Its lines and font size follow the strokes, its text stays.",
          _obj({"id": ID, "box": BOX,

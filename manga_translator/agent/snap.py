@@ -15,11 +15,15 @@ Text that already belongs to another region is excluded.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 
 MAX_ELONGATION = 18.0
 """A stroke longer than this many times its thickness is a line (bubble
@@ -40,6 +44,9 @@ class SnapResult:
     erase_origin: Tuple[int, int]
     strokes: int
     warning: str = ""
+    angle: float = 0.0
+    """Slant of the line (``TextBlock.angle``): the angle of its direction on the page in degrees,
+    y down, so a line rising to the right is negative; 0 for text that runs along the axes."""
 
 
 def _runs(profile: np.ndarray, min_gap: int) -> List[Tuple[int, int]]:
@@ -63,11 +70,183 @@ def _runs(profile: np.ndarray, min_gap: int) -> List[Tuple[int, int]]:
     return [(a, b) for a, b in merged]
 
 
+def _split_touching(runs: List[Tuple[int, int]], sub: np.ndarray, vertical: bool,
+                    char: float) -> List[Tuple[int, int]]:
+    """Cut the ``runs`` of the profile of ``sub`` (0/1 ink) as long as two lines or more at the
+    clear valleys of ink between them: lines of handwriting set so tight that they touch (ch42 p1).
+    A valley holds at most 30% of the run's usual ink, and every line cut off looks like one: at
+    least 0.6 ``char`` across, 1.2 ``char`` along and a fifth of the ink of the heaviest (a big
+    sound effect of a few thin strokes is not cut)."""
+    ink = sub.sum(axis=0 if vertical else 1)
+
+    def line_like(parts: List[Tuple[int, int]]) -> bool:
+        heaviest = max(int(ink[p:q].sum()) for p, q in parts)
+        for p, q in parts:
+            span = np.flatnonzero((sub[:, p:q] if vertical else sub[p:q, :]).any(axis=1 if vertical else 0))
+            if (q - p < 0.6 * char or not len(span) or span[-1] - span[0] + 1 < 1.2 * char
+                    or ink[p:q].sum() < 0.2 * heaviest):
+                return False
+        return True
+
+    out: List[Tuple[int, int]] = []
+    for a, b in runs:
+        length = b - a
+        count = int(round(length / max(char, 1.0)))
+        if length < 1.8 * char or count < 2:
+            out.append((a, b))
+            continue
+        seg = ink[a:b].astype(np.float64)
+        usual = float(np.median(seg[seg > 0])) if (seg > 0).any() else 0.0
+        cuts = []
+        for k in range(1, count):
+            at, slack = k * length / count, 0.3 * length / count
+            lo, hi = max(1, int(at - slack)), min(length - 1, int(at + slack) + 1)
+            if hi > lo:
+                row = lo + int(np.argmin(seg[lo:hi]))
+                if seg[row] <= 0.3 * usual and (not cuts or row > cuts[-1]):
+                    cuts.append(row)
+        edges = [0] + cuts + [length]
+        parts = [(a + edges[i], a + edges[i + 1]) for i in range(len(edges) - 1)]
+        if cuts and line_like(parts):
+            out.extend(parts)
+        else:
+            out.append((a, b))
+    return out
+
+
 def _gap(a: Sequence[int], b: Sequence[int]) -> int:
     """Chebyshev gap between two boxes (x1, y1, x2, y2); 0 when they touch."""
     dx = max(0, max(a[0], b[0]) - min(a[2], b[2]))
     dy = max(0, max(a[1], b[1]) - min(a[3], b[3]))
     return max(dx, dy)
+
+
+SLANT_MIN, SLANT_MAX = 5.0, 45.0
+SLANT_INK = 0.8
+"""A line of text tilted by this much (degrees) gets a slanted quad: a label written along a road or
+a roof on a map. Less is lettering that runs along the axes; more is read in the other direction."""
+
+
+def _bracket(box: Sequence[int], char: float, vertical: bool) -> bool:
+    """A stroke as long across the lines as more than one of them and thin along them: a bracket
+    around a text of more lines."""
+    width, height = box[2] - box[0], box[3] - box[1]
+    across, along = (width, height) if vertical else (height, width)
+    return across >= 1.5 * char and across >= 3 * along
+
+
+def _tone(small: list, strokes: list, dot: float, largest: float) -> set:
+    """The labels of the ``small`` components that are screentone around the ``strokes`` of a text.
+    A box is on tone when some of its dots lie in a regular lattice: their 4 nearest neighbours
+    about as far away as each other and about their size (even in a small box cut by the white rim
+    around lettering and with two tones in it, a few do; the small strokes of handwriting, a column
+    of kana and dakuten, do not). Then a dot with 3 or more others close by is tone (the two marks
+    of a dakuten and the middle dot of an ellipsis have fewer); so are the dots hanging on to such a
+    lattice (cut in half by the white rim) that do not touch a stroke, and the dots away from the
+    strokes."""
+    if len(small) < 5:
+        return set()
+    mids = np.array([((c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2) for c in small])
+    sizes = np.array([c["size"] for c in small], np.float64)
+    tree = cKDTree(mids)
+    dist, idx = tree.query(mids, k=5)
+    even = dist[:, 4] <= 1.6 * dist[:, 1]
+    around = sizes[idx[:, 1:]]
+    like = np.all((around >= 0.5 * sizes[:, None]) & (around <= 2.0 * sizes[:, None]), axis=1)
+    if (even & like).sum() < max(8, 0.1 * len(small)):
+        return set()
+    reach = 3.0 * np.maximum(sizes, max(dot, 2.0))
+    crowd = np.array([len(n) - 1 for n in tree.query_ball_point(mids, r=reach)])
+    lattice = crowd >= 3
+    edge = np.zeros(len(small), bool)
+    if lattice.any():
+        pitch = float(np.median(dist[lattice, 1]))
+        pairs = tree.query_pairs(1.5 * pitch, output_type="ndarray").reshape(-1, 2)
+        graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(small),) * 2)
+        _count, group = connected_components(graph, directed=False)
+        edge = np.isin(group, np.unique(group[lattice])) & ~lattice
+    near = max(2.0, 0.3 * largest)
+    touch = max(2.0, 0.1 * largest)
+    tone = set()
+    for c, in_lattice, on_edge in zip(small, lattice, edge):
+        gap = min(_gap(c["box"], t["box"]) for t in strokes)
+        if in_lattice or gap > near or (on_edge and gap > touch):
+            tone.add(c["label"])
+    return tone
+
+
+def _slanted(labels: np.ndarray, ids: Sequence[int], char: float, vertical: bool):
+    """One slanted line of text among the strokes ``ids`` of ``labels`` (connected components): its
+    quad (``labels`` pixels), its size across the line, its slant (``TextBlock.angle``), the strokes
+    on it and its axis; None when the strokes run along the axes. The slant is the one at which the
+    ink, seen across the line, is most heaped up (the sum of squares of its profile, as in
+    deskewing a scanned page; in steps of an eighth of a character, so it follows the glyphs and
+    not the strokes in them: the many level strokes of a kanji heap up at 0°). An upright box around a slanted line also takes in the corners of the
+    labels next to it (a roof label under a road label on a map): the line keeps the strokes in the
+    narrowest band that holds most of the ink (SLANT_INK of it), the rest are left to their labels.
+    The quad must be clearly smaller than the upright box, so a short word of uneven glyphs stays
+    upright."""
+    ids = list(ids)
+    ys, xs = np.nonzero(np.isin(labels, ids))
+    if len(xs) < 20:
+        return None
+    pts = np.stack([xs, ys], axis=1).astype(np.float64) + 0.5
+    sample = pts[:: max(1, len(pts) // 4000)]
+    count = len(sample)
+    k = max(1, int(SLANT_INK * count)) - 1
+
+    def across_axis(tilt: float) -> np.ndarray:
+        t = math.radians(tilt)
+        return np.array([math.cos(t), math.sin(t)]) if vertical else np.array([-math.sin(t), math.cos(t)])
+
+    def heaped(tilt: float) -> float:
+        place = sample @ across_axis(tilt)
+        place = (place - place.min()) / step
+        cell = np.floor(place).astype(int)
+        part = place - cell
+        profile = (np.bincount(cell, 1.0 - part, cell.max() + 2) + np.bincount(cell + 1, part, cell.max() + 2))
+        profile = np.convolve(profile, [0.25, 0.5, 0.25])
+        return float((profile ** 2).sum())
+
+    step = max(1.0, char / 8.0)
+    scores = {float(tilt): heaped(tilt) for tilt in np.arange(-SLANT_MAX, SLANT_MAX + 0.25, 0.5)}
+    tilt = max(scores, key=lambda a: (scores[a], -abs(a)))
+    if abs(tilt) < SLANT_MIN or scores[tilt] < 1.15 * scores[0.0]:  # upright reads about as well
+        return None
+    spread = np.sort(sample @ across_axis(tilt))
+    widths = spread[k:] - spread[:count - k]
+    i = int(np.argmin(widths))
+    width, low, high = float(widths[i]), float(spread[i]), float(spread[i + k])
+    axis_across = across_axis(tilt)
+    slack = 0.25 * width
+    on_line, glyphs = [], 0
+    for i in ids:
+        where = np.argwhere(labels == i)
+        cy, cx = where.mean(axis=0) + 0.5
+        if low - slack <= cx * axis_across[0] + cy * axis_across[1] <= high + slack:
+            on_line.append(i)
+            glyphs += int((where.max(axis=0) - where.min(axis=0)).max() + 1 >= 0.5 * char)
+    if glyphs < 2:  # one stroke and a few dots: no line of glyphs to follow
+        return None
+    ys, xs = np.nonzero(np.isin(labels, on_line))
+    if len(xs) < 20:
+        return None
+    pts = np.stack([xs, ys], axis=1).astype(np.float64) + 0.5
+    evals = np.linalg.eigvalsh(np.cov((pts - pts.mean(axis=0)).T))
+    if evals[1] < 2.5 * max(evals[0], 1e-6):  # not a line: about as long as it is wide
+        return None
+    t = math.radians(tilt)
+    u = np.array([math.cos(t), math.sin(t)])  # along a row, across a column
+    v = np.array([-math.sin(t), math.cos(t)])  # across a row, along a column
+    pu, pv = pts @ u, pts @ v
+    a1, a2, b1, b2 = pu.min() - 0.5, pu.max() + 0.5, pv.min() - 0.5, pv.max() + 0.5
+    upright = (xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1)
+    if (a2 - a1) * (b2 - b1) > 0.85 * upright:
+        return None
+    quad = [a1 * u + b1 * v, a2 * u + b1 * v, a2 * u + b2 * v, a1 * u + b2 * v]
+    across = (a2 - a1) if vertical else (b2 - b1)
+    axis = (pts.mean(axis=0), axis_across, 0.75 * width)  # a point on the line, its normal, the reach off it
+    return quad, across, tilt, on_line, axis
 
 
 def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
@@ -131,6 +310,17 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     seeds = [c for c in comps if inside_inner(c) and not c["touches"] and c["textlike"]]
     if not seeds:
         return None
+    # Screentone: a box on a toned area takes in dozens of dots of one small size, more than the
+    # text has strokes. They are tone, not text: not erased, not counted (ch42 p1, labels on a map).
+    largest = max(c["size"] for c in seeds)
+    tiny = max(3.0, 0.35 * largest)
+    strokes = [c for c in seeds if c["size"] > tiny]
+    dots = [c for c in seeds if c["size"] <= tiny]
+    if strokes and len(dots) >= 15 and len(dots) > 1.5 * len(strokes):
+        small = [c for c in comps if c["size"] <= tiny]
+        tone = _tone(small, strokes, float(np.median([c["size"] for c in dots])), largest)
+        comps = [c for c in comps if c["label"] not in tone]
+        seeds = [c for c in seeds if c["label"] not in tone]
     sizes = [c["size"] for c in seeds]
     # Ellipsis dots and furigana are many and small: estimate the character
     # size from the large strokes too, or the kanji next to them look oversized.
@@ -156,11 +346,25 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     union = [min(c["box"][0] for c in seeds), min(c["box"][1] for c in seeds),
              max(c["box"][2] for c in seeds), max(c["box"][3] for c in seeds)]
     reach = max(3.0, 0.6 * char)
-    for _ in range(12 if grow else 0):
+    vertical = direction.startswith("v")
+    # Strokes inside the box that form a slanted line grow along it only: the labels beside a
+    # label on a map are as close to it as its own next glyph.
+    along = _slanted(labels, list(kept), char, vertical) if grow else None
+
+    def off_line(c) -> bool:
+        if along is None:
+            return False
+        point, normal, near = along[4]
+        mx, my = (c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2
+        return abs((mx - point[0]) * normal[0] + (my - point[1]) * normal[1]) > near
+
+    # Along a slanted line, one step only: the strokes the box cut off at its ends. A dashed outline
+    # the label is written along (a tent on a map) is spaced like glyphs and would be followed on.
+    for _ in range((1 if along is not None else 12) if grow else 0):
         grew = False
         for c in comps:
             if (c["label"] in kept or c["touches"] or not c["textlike"] or c["size"] > 2 * char
-                    or _gap(c["box"], union) > reach):
+                    or _gap(c["box"], union) > reach or off_line(c)):
                 continue
             kept[c["label"]] = c
             union = [min(union[0], c["box"][0]), min(union[1], c["box"][1]),
@@ -172,12 +376,39 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     keep_mask = np.isin(labels, list(kept)).astype(np.uint8)
     ux1, uy1, ux2, uy2 = union
     sub = keep_mask[uy1:uy2, ux1:ux2]
-    vertical = direction.startswith("v")
-    profile = sub.any(axis=0 if vertical else 1)
-    runs = _runs(profile, max(2, int(round(0.15 * char))))
-    spans = [b - a for a, b in runs]
-    widest = max(spans) if spans else 0
-    main = [(a, b) for a, b in runs if b - a >= 0.6 * widest] or runs
+    gap = max(2, int(round(0.15 * char)))
+
+    def main_runs(runs: List[Tuple[int, int]], ink: np.ndarray) -> List[Tuple[int, int]]:
+        # a line is as long as the others and holds some ink: a few strokes of an outline the box
+        # took in (a dashed frame) are erased with the text but make no line
+        widest = max((b - a for a, b in runs), default=0)
+        heaviest = max((int(ink[a:b].sum()) for a, b in runs), default=0)
+        return [(a, b) for a, b in runs if b - a >= 0.6 * widest and ink[a:b].sum() >= 0.15 * heaviest] or runs
+
+    def split_lines(mask: np.ndarray):
+        ink = mask.sum(axis=0 if vertical else 1)
+        return ink, _split_touching(_runs(ink > 0, gap), mask, vertical, char)
+
+    ink_per_row = sub.sum(axis=0 if vertical else 1)
+    runs = _runs(ink_per_row > 0, gap)
+    # one line: written on a slant? (a label along a road or a roof). If not, lines set so tight
+    # that they touch are cut apart (a slanted line looks like such lines, row by row)
+    slant = None
+    if len(main_runs(runs, ink_per_row)) == 1:
+        slant = _slanted(labels[uy1:uy2, ux1:ux2], list(kept), char, vertical)
+    if slant is None:
+        ink_per_row, runs = split_lines(sub)
+        # Brackets drawn around a text of more lines are as tall as all of them (ch42 p1, a
+        # handwritten "（資材 / 置き場？）") and join its lines into one; erased with the text, they make
+        # no line. Only when the lines show without them: the stem of a big "ト" looks like one too.
+        braces = [label for label, c in kept.items() if _bracket(c["box"], char, vertical)]
+        if braces and len(braces) < len(kept):
+            bare = np.isin(labels, [label for label in kept if label not in braces])[uy1:uy2, ux1:ux2]
+            bare_ink, bare_runs = split_lines(bare.astype(np.uint8))
+            shown = len(main_runs(bare_runs, bare_ink))
+            if shown >= 2 and shown >= len(main_runs(runs, ink_per_row)):
+                sub, ink_per_row, runs = bare, bare_ink, bare_runs
+    main = main_runs(runs, ink_per_row)
     lines = []
     for a, b in main:
         part = sub[:, a:b] if vertical else sub[a:b, :]
@@ -194,6 +425,18 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     if not lines:
         return None
     font_size = int(round(float(np.median([b - a for a, b in main]))))
+    angle = 0.0
+    if slant is not None:
+        quad, across, angle, on_line, _axis = slant
+        ox, oy = ux1 + cx1, uy1 + cy1
+        lines = [[[round(float(px) + ox, 1), round(float(py) + oy, 1)] for px, py in quad]]
+        font_size = int(round(across))
+        if len(on_line) < len(kept):  # strokes of the labels next to it stay theirs
+            kept = {label: kept[label] for label in on_line}
+            keep_mask = np.isin(labels, list(kept)).astype(np.uint8)
+            union = [min(c["box"][0] for c in kept.values()), min(c["box"][1] for c in kept.values()),
+                     max(c["box"][2] for c in kept.values()), max(c["box"][3] for c in kept.values())]
+            ux1, uy1, ux2, uy2 = union
 
     rgb = crop if crop.ndim == 3 else cv2.cvtColor(crop, cv2.COLOR_GRAY2RGB)
     fg = np.median(rgb[keep_mask > 0], axis=0)
@@ -218,4 +461,4 @@ def snap_text(image: np.ndarray, box: Sequence[float], direction: str,
     return SnapResult(bbox=bbox, lines=lines, font_size=max(6, font_size),
                       fg=[int(v) for v in fg], bg=[int(v) for v in bg],
                       erase=erase[ey1:ey2, ex1:ex2].copy(), erase_origin=(cx1 + ex1, cy1 + ey1),
-                      strokes=len(kept), warning=warning)
+                      strokes=len(kept), warning=warning, angle=round(angle, 2))

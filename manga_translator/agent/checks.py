@@ -29,6 +29,9 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
+import cv2
+import numpy as np
+
 from .page import BREAK, needs_break, text_length
 from .store import normalize
 
@@ -49,15 +52,19 @@ WEIGHTS = {
     "needs_second_read": 0.15,
     "missing_line_break": 0.1,
     "line_overflow": 0.15,
+    "overlap": 0.3,
 }
 SERIOUS = {"untranslated_kana": "uncertain_translation", "glossary_mismatch": "uncertain_translation",
-           "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr"}
+           "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr", "overlap": "layout"}
 """Issues that go to the review list when they are still there at the end, with their flag type."""
 
 REGION_FLAG_WEIGHT = 0.25
 PAGE_FLAG_WEIGHT = 0.2
 SMALL_FONT_PX = 22
 OVERFLOW_RATIO = 2.5
+OVERLAP_SHARE = 0.3
+"""Two translated regions whose boxes share this much of the smaller box get their translations drawn
+on top of each other (ch42 p1: a map label inside the box of the note beside it)."""
 LINE_ROOM_RATIO = 1.2
 LINE_ROOM_SLACK = 1.0
 """A line may run this far past the box: ``ratio * room + slack`` cells (bubbles have room around the
@@ -95,6 +102,9 @@ AGENT_TEXT = {
                      "fits about {room} characters per line and {rows} line(s). The renderer keeps your [BR] and "
                      "does not shrink the text, so it would run out of the box: break it into shorter lines of "
                      "about even length (set_line_breaks), or shorten it.",
+    "overlap": "#{region}: its box and #{other}'s overlap ({share}% of #{region}'s box), so their translations would "
+               "be drawn on top of each other. Zoom: when #{other}'s box also holds #{region}'s text, fit_region "
+               "#{other} to its own text (or split_region it); when they are one text, merge_regions them.",
 }
 WHY = {
     "small": "small text",
@@ -114,12 +124,13 @@ HUMAN_TEXT = {
         "needs_second_read": "沒有放大確認",
         "missing_line_break": "原文 {lines} 行，譯文沒有換行",
         "line_overflow": "最長一行 {longest} 字，框內以原字級每行約容納 {room} 字，會超出框",
+        "overlap": "和 #{other} 的框重疊，兩段譯文會疊在一起",
         "page": "程式檢查的信心分數 {score:.2f}：{summary}",
         "count": "{count} 個框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "沒用術語表譯法",
                   "character_mismatch": "沒用角色譯名", "empty_source": "沒有原文", "overflow": "譯文過長",
                   "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行",
-                  "line_overflow": "超出框"},
+                  "line_overflow": "超出框", "overlap": "框重疊"},
         "none": "沒有發現問題",
     },
     "CHS": {
@@ -131,12 +142,13 @@ HUMAN_TEXT = {
         "needs_second_read": "没有放大确认",
         "missing_line_break": "原文 {lines} 行，译文没有换行",
         "line_overflow": "最长一行 {longest} 字，框内以原字号每行约容纳 {room} 字，会超出框",
+        "overlap": "和 #{other} 的框重叠，两段译文会叠在一起",
         "page": "程序检查的置信分数 {score:.2f}：{summary}",
         "count": "{count} 个框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "没用术语表译法",
                   "character_mismatch": "没用角色译名", "empty_source": "没有原文", "overflow": "译文过长",
                   "needs_second_read": "没有放大确认", "missing_line_break": "没有换行",
-                  "line_overflow": "超出框"},
+                  "line_overflow": "超出框", "overlap": "框重叠"},
         "none": "没有发现问题",
     },
     "ENG": {
@@ -149,12 +161,14 @@ HUMAN_TEXT = {
         "missing_line_break": "the source has {lines} lines, the translation has no line break",
         "line_overflow": "the longest line has {longest} characters, the box fits about {room} per line at the "
                          "original size, so it runs out of the box",
+        "overlap": "its box overlaps the box of #{other}, so the two translations would be drawn on top of each other",
         "page": "program check score {score:.2f}: {summary}",
         "count": "{count} region(s): {label}",
         "short": {"untranslated_kana": "kana left", "glossary_mismatch": "glossary not used",
                   "character_mismatch": "character name not used", "empty_source": "no source text",
                   "overflow": "translation too long", "needs_second_read": "not zoomed",
-                  "missing_line_break": "no line break", "line_overflow": "runs out of the box"},
+                  "missing_line_break": "no line break", "line_overflow": "runs out of the box",
+                  "overlap": "overlapping boxes"},
         "none": "no issues found",
     },
 }
@@ -336,12 +350,54 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
     return issues
 
 
+def _shared(a: "Region", b: "Region") -> Tuple[float, bool]:
+    """Share of the smaller region's lines that the other's lines cover, and whether ``a`` is the
+    smaller one. The lines as drawn: two labels written on a slant side by side have upright boxes
+    that overlap while their slanted lines do not."""
+    ab, bb = a.bbox, b.bbox
+    x1, y1, x2, y2 = max(ab[0], bb[0]), max(ab[1], bb[1]), min(ab[2], bb[2]), min(ab[3], bb[3])
+    if x2 <= x1 or y2 <= y1:
+        return 0.0, True
+    left, top = min(ab[0], bb[0]), min(ab[1], bb[1])
+    width, height = max(ab[2], bb[2]) - left + 1, max(ab[3], bb[3]) - top + 1
+
+    def fill(region) -> np.ndarray:
+        canvas = np.zeros((height, width), np.uint8)
+        polys = [np.round(p - (left, top)).astype(np.int32).reshape(-1, 1, 2) for p in region.polygons]
+        cv2.fillPoly(canvas, polys, 1)
+        return canvas
+
+    ma, mb = fill(a), fill(b)
+    sa, sb = int(ma.sum()), int(mb.sum())
+    if not sa or not sb:
+        return 0.0, sa <= sb
+    return float((ma & mb).sum()) / min(sa, sb), sa <= sb
+
+
+def overlap_issues(session: "AgentSession") -> List[Issue]:
+    """Translated regions whose lines overlap (``OVERLAP_SHARE`` of the smaller one): the smaller one
+    gets the issue. Two locked regions are the user's to place."""
+    regions = [r for r in session.doc.active_regions() if r.translation and not r.skipped]
+    issues: List[Issue] = []
+    for i, a in enumerate(regions):
+        for b in regions[i + 1:]:
+            if a.locked and b.locked:
+                continue
+            share, a_smaller = _shared(a, b)
+            if share >= OVERLAP_SHARE:
+                small, big = (a, b) if a_smaller else (b, a)
+                issues.append(Issue("overlap", small.id, {"other": big.id, "share": int(round(100 * share))},
+                                    WEIGHTS["overlap"]))
+    return issues
+
+
 def page_issues(session: "AgentSession") -> List[Issue]:
     """Issues of the translated regions; on a page checked again, not of the user's locked regions."""
     issues: List[Issue] = []
     for region in session.doc.active_regions():
         if region.translation and not region.skipped and not region.locked:
             issues.extend(region_issues(session, region))
+    issues.extend(overlap_issues(session))
     return issues
 
 

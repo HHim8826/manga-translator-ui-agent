@@ -153,6 +153,34 @@ def line_groups(region: "Region") -> List[List[int]]:
     return sorted(groups.values(), key=lambda g: g[0])
 
 
+ALIGN_EDGE = 0.35
+"""Line starts (ends) within this many font sizes of each other stand at one edge."""
+ALIGN_RAGGED = 1.0
+"""... and the other ends spread at least this many font sizes."""
+
+
+def layout_alignment(region: "Region") -> str:
+    """``left`` or ``right`` for horizontal text whose source lines start (end) at one edge and end
+    (start) ragged: a list of questions with the answer under each, a note in a box. Ch43 p8 had
+    such lists drawn centered, each answer in the middle under its question. Empty for centered
+    text, vertical text, a slanted line and a single line."""
+    polys = region.polygons
+    if len(polys) < 2 or region.direction[:1] != "h" or float(region.data.get("angle") or 0):
+        return ""
+    if len(line_groups(region)) > 1:
+        return ""
+    font = region.font_size or float(np.median([p[:, 1].max() - p[:, 1].min() for p in polys]))
+    lefts = [float(p[:, 0].min()) for p in polys]
+    rights = [float(p[:, 0].max()) for p in polys]
+    edge, ragged = max(4.0, ALIGN_EDGE * font), max(8.0, ALIGN_RAGGED * font)
+    left_spread, right_spread = max(lefts) - min(lefts), max(rights) - min(rights)
+    if left_spread <= edge and right_spread >= ragged:
+        return "left"
+    if right_spread <= edge and left_spread >= ragged:
+        return "right"
+    return ""
+
+
 def custom_frame(data: Optional[dict]) -> Optional[List[float]]:
     """The white frame the user set for a JSON region in the editor (``has_custom_white_frame``): the
     editor sets it when the frame is dragged or resized, and when the font, its size, the stroke,
@@ -627,7 +655,7 @@ class PageDoc:
         data = {k: copy.deepcopy(template[k]) for k in STYLE_KEYS if k in template}
         x1, y1, x2, y2 = snap.bbox
         data.update({"lines": snap.lines, "texts": [hint] if hint else [], "text": hint, "translation": "",
-                     "angle": 0, "font_size": snap.font_size, "fg_colors": snap.fg, "bg_colors": snap.bg,
+                     "angle": snap.angle, "font_size": snap.font_size, "fg_colors": snap.fg, "bg_colors": snap.bg,
                      "direction": direction, "alignment": "center",
                      "center": [round((x1 + x2) / 2, 1), round((y1 + y2) / 2, 1)]})
         region = Region(id=rid, data=data, ocr_local=hint, origin=origin, origin_kind=kind,
@@ -761,6 +789,7 @@ class PageDoc:
             region.data["direction"] = direction[:1]
         region.data["lines"] = snap.lines
         region.data["font_size"] = snap.font_size
+        region.data["angle"] = snap.angle
         region.data.pop("render_box_rect_local", None)
         region.data["center"] = region.center
         region.erase = (snap.erase_origin[0], snap.erase_origin[1], snap.erase)
@@ -803,6 +832,9 @@ class PageDoc:
             data["center"] = region.center
             if region.font:
                 data["font_family"] = region.font
+            side = "" if region.user_edited else layout_alignment(region)
+            if side and data.get("alignment") in (None, "", "auto", "center"):
+                data["alignment"] = side  # set as the source lines were
             out.append(data)
         return out
 
