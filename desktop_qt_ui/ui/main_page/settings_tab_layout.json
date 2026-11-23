@@ -181,6 +181,8 @@
         "agent.model",
         "agent.reasoning_effort",
         "agent.review_reasoning_effort",
+        "agent.image_detail",
+        "agent.double_read",
         "agent.extra_instructions",
         "agent.memory_dir",
         "agent.max_context_tokens",
@@ -189,8 +191,11 @@
         "agent.max_steps_per_page",
         "agent.inpaint_review_steps",
         "agent.inpaint_attempts_per_region",
+        "agent.ops_per_region",
         "agent.proofread_steps",
-        "agent.low_confidence_threshold"
+        "agent.low_confidence_threshold",
+        "agent.request_timeout",
+        "agent.retry_attempts"
       ]
     },
     {

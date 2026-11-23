@@ -81,3 +81,37 @@ def test_reasoning_effort_settings_are_dropdowns_with_a_model_default():
         shown = [catalog.get(text, "") for text in names.values()]
         assert all(shown) and len(set(shown)) == len(shown), locale
     assert catalogs["en_US"]["Agent Effort Default"] != catalogs["zh_TW"]["Agent Effort Default"]
+
+
+def test_the_request_and_reading_settings_are_on_the_agent_tab():
+    """Review 2026-11-24 U5: these were only in config.json."""
+    from types import SimpleNamespace
+
+    from app_logic import MainAppLogic
+
+    keys = _agent_keys()
+    for key in ("request_timeout", "retry_attempts", "image_detail", "double_read", "ops_per_region"):
+        assert key in keys, key
+    fake = SimpleNamespace(_t=lambda key: key)
+    choices = {
+        "image_detail": MainAppLogic._agent_choice_names(fake, "Agent Image Detail", ("high", "low")),
+        "double_read": MainAppLogic._agent_choice_names(
+            fake, "Agent Double Read", ("small_or_handwritten", "all", "none")),
+    }
+    defaults = AgentSettings()
+    from manga_translator.agent.runner import DOUBLE_READ
+
+    assert set(choices["double_read"]) == set(DOUBLE_READ)
+    for key, names in choices.items():
+        assert getattr(defaults, key) in names, key
+        assert _setting_control_kind(f"agent.{key}", key, getattr(defaults, key), [], names) == "combo"
+    source = (ROOT / "desktop_qt_ui" / "app_logic.py").read_text(encoding="utf-8")
+    for key in choices:
+        assert len(re.findall(rf'"{key}": self\._agent_choice_names\(', source)) == 1, key
+    catalogs = {
+        locale: json.loads((LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8")) for locale in LOCALES
+    }
+    for locale, catalog in catalogs.items():
+        for names in choices.values():
+            shown = [catalog.get(text, "") for text in names.values()]
+            assert all(shown) and len(set(shown)) == len(shown), (locale, shown)

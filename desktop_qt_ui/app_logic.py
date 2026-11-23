@@ -1171,6 +1171,10 @@ class MainAppLogic(QObject):
         names.update({level: self._t(f"Agent Effort {level}") for level in ("low", "medium", "high", "xhigh")})
         return names
 
+    def _agent_choice_names(self, prefix: str, values) -> Dict[str, str]:
+        """The choices of an agent setting, named by the locale keys "<prefix> <value>"."""
+        return {value: self._t(f"{prefix} {value}") for value in values}
+
     def get_display_mapping(self, key: str) -> Optional[Dict[str, str]]:
         # 每次都动态生成翻译映射，确保语言切换时能正确更新
         display_name_maps = {
@@ -1247,6 +1251,8 @@ class MainAppLogic(QObject):
                 },
                 "reasoning_effort": self._agent_effort_names(),
                 "review_reasoning_effort": self._agent_effort_names(),
+                "image_detail": self._agent_choice_names("Agent Image Detail", ("high", "low")),
+                "double_read": self._agent_choice_names("Agent Double Read", ("small_or_handwritten", "all", "none")),
                 "ocr_vl_language_hint": {
                     "auto": self._t("ocr_lang_auto"),
                     "multilingual": self._t("ocr_lang_multilingual"),
@@ -1347,6 +1353,11 @@ class MainAppLogic(QObject):
                     "inpaint_attempts_per_region": self._t("label_inpaint_attempts_per_region"),
                     "proofread_steps": self._t("label_proofread_steps"),
                     "low_confidence_threshold": self._t("label_low_confidence_threshold"),
+                    "image_detail": self._t("label_image_detail"),
+                    "double_read": self._t("label_double_read"),
+                    "ops_per_region": self._t("label_ops_per_region"),
+                    "request_timeout": self._t("label_request_timeout"),
+                    "retry_attempts": self._t("label_retry_attempts"),
                     "renderer": self._t("label_renderer"),
                     "font_family": self._t("label_font_family"),
                     "disable_system_fonts": self._t("label_disable_system_fonts"),
