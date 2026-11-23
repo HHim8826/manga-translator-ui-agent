@@ -19,9 +19,11 @@ from manga_translator.image_formats import resolve_pil_image_format
 from manga_translator.rendering.rich_text import is_redundant_plain_document
 from manga_translator.utils import open_pil_image, save_pil_image
 from manga_translator.utils.path_manager import (
+    NO_OUTPUT_FORMATS,
     find_json_path,
     get_inpainted_path,
     get_json_path,
+    output_file_name,
 )
 from PIL import Image
 
@@ -232,20 +234,21 @@ class ExportService:
             else:  # no output folder (a new setup, or the folder was removed): not over the source
                 output_dir = self.source_result_directory(source_path)
 
-        base_name = os.path.splitext(os.path.basename(source_path))[0]
         output_format = str(cli.get("format") or "").strip().lower()
-        if not output_format or output_format == "不指定":
+        if output_format in NO_OUTPUT_FORMATS:
             output_format = (
                 os.path.splitext(source_path)[1].lower().lstrip(".") or "png"
             )
-        output_path = os.path.join(output_dir, f"{base_name}.{output_format}")
+        # the batch's name: 001.jpg and 001.png of one folder saved as PNG are not one file
+        output_name = output_file_name(source_path, output_format)
+        output_path = os.path.join(output_dir, output_name)
         if self.is_source_file(output_path, source_path):
             self.logger.warning(
                 f"Export of {os.path.basename(source_path)} would replace the source image; "
                 f"it goes to {self.source_result_directory(source_path)} instead"
             )
             output_dir = self.source_result_directory(source_path)
-            output_path = os.path.join(output_dir, f"{base_name}.{output_format}")
+            output_path = os.path.join(output_dir, output_name)
         os.makedirs(output_dir, exist_ok=True)
         return output_path
 

@@ -87,6 +87,26 @@ def page_name(image_path: str) -> str:
     return stem
 
 
+NO_OUTPUT_FORMATS = ("", "none", "不指定")
+"""Output format values that keep each page's own format."""
+
+
+def output_file_name(image_path: str, output_format: Optional[str] = None) -> str:
+    """The file name of a page's output image (the batch, the editor's export, the CLI): the page's
+    own name without an output format; its stem with the format (``001.png``) otherwise. When the
+    format changes the page's extension and another image of its folder has the same stem
+    (``001.jpg`` and ``001.png`` saved as PNG), the page's whole name goes before the format
+    (``001.jpg.png``), as ``page_name`` does for its work files: the two would be one output file."""
+    base = os.path.basename(image_path)
+    fmt = str(output_format or "").strip()
+    if fmt.lower() in NO_OUTPUT_FORMATS:
+        return base
+    stem, ext = os.path.splitext(base)
+    if ext.lower().lstrip(".") != fmt.lower().lstrip(".") and page_name(image_path) != stem:
+        stem = base
+    return f"{stem}.{fmt.lstrip('.')}"
+
+
 def _json_names(json_path: str) -> frozenset:
     """The file names (case folded) of the images a JSON has entries for."""
     try:

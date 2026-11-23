@@ -2607,12 +2607,9 @@ class TranslationWorker(QObject):
                         final_output_dir = os.path.join(output_folder, os.path.basename(source_folder), relative_path)
                 final_output_dir = os.path.normpath(final_output_dir)
         
-        # 处理输出文件名和格式
-        base_filename, _ = os.path.splitext(os.path.basename(file_path))
-        if output_format and output_format.strip() and output_format.lower() not in ['none', '不指定']:
-            output_filename = f"{base_filename}.{output_format}"
-        else:
-            output_filename = os.path.basename(file_path)
+        # 处理输出文件名和格式（和 MangaTranslator._calculate_output_path 同一条规则）
+        from manga_translator.utils.path_manager import output_file_name
+        output_filename = output_file_name(file_path, output_format)
         
         final_output_path = os.path.join(final_output_dir, output_filename)
         return final_output_path

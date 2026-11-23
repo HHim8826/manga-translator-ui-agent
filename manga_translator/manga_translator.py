@@ -615,12 +615,9 @@ class MangaTranslator:
         
         os.makedirs(final_output_dir, exist_ok=True)
         
-        # 处理输出文件名和格式
-        base_filename, _ = os.path.splitext(os.path.basename(file_path))
-        if output_format and output_format.strip() and output_format.lower() != 'none':
-            output_filename = f"{base_filename}.{output_format}"
-        else:
-            output_filename = os.path.basename(file_path)
+        # 处理输出文件名和格式（同文件夹 001.jpg 与 001.png 输出成同一格式时不会写到同一个文件）
+        from .utils.path_manager import output_file_name
+        output_filename = output_file_name(file_path, output_format)
         
         final_output_path = os.path.join(final_output_dir, output_filename)
         return final_output_path

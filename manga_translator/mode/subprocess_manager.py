@@ -81,10 +81,9 @@ def _output_key(file_path: str, input_folders: Iterable[str], output_format: Opt
                 folder_part = os.path.basename(folder) if relative == "." else os.path.join(
                     os.path.basename(folder), relative)
                 break
-    stem, ext = os.path.splitext(os.path.basename(file_path))
-    fmt = output_format if output_format and output_format.strip() and output_format.lower() not in (
-        "none", "不指定") else ext.lstrip(".")
-    return os.path.normcase(os.path.normpath(os.path.join(folder_part, f"{stem}.{fmt.lower()}")))
+    from manga_translator.utils.path_manager import output_file_name
+    name = output_file_name(file_path, output_format)
+    return os.path.normcase(os.path.normpath(os.path.join(folder_part, name.lower())))
 
 
 def same_output_paths(files: Sequence[str], input_folders: Iterable[str],

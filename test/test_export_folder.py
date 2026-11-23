@@ -117,3 +117,35 @@ def test_the_editor_keeps_its_other_choices(tmp_path):
     saved = tmp_path / "elsewhere"
     _write_json(image, last_export_dir=str(saved))
     assert _export_path(tmp_path, image) == str(saved / "001.png")
+
+
+def test_pages_that_share_a_stem_get_output_images_of_their_own(tmp_path):
+    """Review 2026-11-24 B2: ``001.jpg`` and ``001.png`` of one folder saved as PNG were both written
+    to ``001.png`` by the batch, the desktop precheck and the editor (the later one replaced the
+    earlier, or was skipped as already done); the CLI took them as one output."""
+    from app_logic import TranslationWorker
+    from manga_translator.mode.subprocess_manager import same_output_paths
+    from manga_translator.utils.path_manager import output_file_name
+
+    chapter, png = _chapter(tmp_path)
+    jpg = chapter / "001.jpg"
+    Image.new("RGB", (64, 64), "red").save(jpg)
+    other = chapter / "002.jpg"
+    Image.new("RGB", (64, 64), "blue").save(other)
+    assert [output_file_name(str(p), "png") for p in (jpg, png, other)] == ["001.jpg.png", "001.png", "002.png"]
+    assert [output_file_name(str(p), fmt) for p, fmt in ((jpg, None), (png, "不指定"), (jpg, "jpg"))] == \
+        ["001.jpg", "001.png", "001.jpg"]  # its own format: its own name
+
+    output = tmp_path / "output"
+    save_info = {"output_folder": str(output), "format": "png", "input_folders": {os.path.normpath(str(chapter))}}
+    batch = [MangaTranslator._calculate_output_path(None, str(p), save_info) for p in (jpg, png)]
+    assert batch == [str(output / "ch35" / "001.jpg.png"), str(output / "ch35" / "001.png")]
+    logic = type("Logic", (), {"file_to_folder_map": {}})()
+    precheck = [TranslationWorker._calculate_output_path(logic, str(p), save_info) for p in (jpg, png)]
+    assert [os.path.basename(p) for p in precheck] == ["001.jpg.png", "001.png"]
+    editor = [_export_path(tmp_path, p, format="png") for p in (jpg, png)]
+    assert [os.path.basename(p) for p in editor] == ["001.jpg.png", "001.png"]
+    assert same_output_paths([str(png), str(jpg)], [], "png") == {}
+
+    os.remove(png)  # 001.jpg is the only 001 again: the name it always had
+    assert output_file_name(str(jpg), "png") == "001.png"
