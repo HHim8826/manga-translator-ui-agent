@@ -3467,6 +3467,7 @@ class FileScannerRunnable(QRunnable):
                     return
                 processed_archives.add(norm_archive)
 
+                notes = []  # an older version's pages, pages moved aside: said in the log panel
                 try:
                     self._emit_progress(f"Extracting: {os.path.basename(archive_path)}")
                     archive_output_base_dir = _get_archive_output_base_dir(archive_path, scan_root)
@@ -3479,11 +3480,13 @@ class FileScannerRunnable(QRunnable):
                                 return
                             clear_output_extract_root(archive_output_base_dir, archive_path)
                         extract_dir = get_output_extract_dir(archive_output_base_dir, archive_path)
-                        images, extracted_dir = extract_images_from_archive(archive_path, extract_dir)
+                        images, extracted_dir = extract_images_from_archive(archive_path, extract_dir, notes=notes)
                         if images:
                             write_output_extract_marker(archive_output_base_dir, archive_path)
                     else:
-                        images, extracted_dir = extract_images_from_archive(archive_path)
+                        images, extracted_dir = extract_images_from_archive(archive_path, notes=notes)
+                    for note in notes:
+                        self._emit_progress(f"Warning: {note}")
 
                     if not self._is_running:
                         return

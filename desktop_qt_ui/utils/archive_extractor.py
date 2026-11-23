@@ -32,6 +32,11 @@ REPLACED_DIRNAME = 'replaced'
 logger = logging.getLogger(__name__)
 ARCHIVE_SOURCE_MARKER_FILENAME = '.archive_source.txt'
 EXTRACT_META_FILENAME = '.extract_meta.json'
+EXTRACTOR_VERSION = 2
+"""Raised when the same archive gives other pages: 2 = a PDF page with visible text, drawings or
+several images is rendered whole (version 1 took one of its images). Recorded in the extraction
+meta; a folder an older version extracted is kept while its archive is unchanged (its pages carry
+the user's work), and the import says so."""
 
 
 def is_archive_file(file_path: str) -> bool:
@@ -65,7 +70,31 @@ def _build_extract_meta(archive_path: str) -> dict:
         'archive_path': _normalize_abs_path(archive_path),
         'archive_mtime': int(os.path.getmtime(archive_path)) if os.path.exists(archive_path) else 0,
         'archive_size': int(os.path.getsize(archive_path)) if os.path.exists(archive_path) else 0,
+        'extractor_version': EXTRACTOR_VERSION,
     }
+
+
+def _same_archive(cached: Optional[dict], expected: dict) -> bool:
+    """The folder was extracted from this archive as it is now (whichever version extracted it)."""
+    return bool(cached) and all(cached.get(key) == expected[key]
+                                for key in ('archive_path', 'archive_mtime', 'archive_size'))
+
+
+def _extractor_version(meta: Optional[dict]) -> int:
+    try:
+        return int((meta or {}).get('extractor_version') or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _older_pages_note(archive_path: str, version: int) -> Optional[str]:
+    """What an older extractor did otherwise with this kind of archive, or None."""
+    if version < 2 and archive_path.lower().endswith('.pdf'):
+        return (f"{os.path.basename(archive_path)} was extracted by an older version: a page with text or "
+                f"several images kept one of its images, so dialogue set as text may be missing. The PDF has "
+                f"not changed, so its pages and their work stay as they are; a new PDF version is extracted "
+                f"the new way")
+    return None
 
 def _get_extract_meta_path(output_dir: str) -> str:
     return os.path.join(output_dir, EXTRACT_META_FILENAME)
@@ -480,13 +509,15 @@ def natural_sort_key(s: str):
             for text in re.split(r'(\d+)', s)]
 
 
-def extract_images_from_archive(archive_path: str, output_dir: Optional[str] = None) -> Tuple[List[str], str]:
+def extract_images_from_archive(archive_path: str, output_dir: Optional[str] = None,
+                                notes: Optional[List[str]] = None) -> Tuple[List[str], str]:
     """
     从压缩包/文档中提取图片
     
     Args:
         archive_path: 压缩包/文档路径
         output_dir: 输出目录，如果为 None 则使用临时目录
+        notes: 给使用者看的说明（旧版解压的、换掉的页移到哪里），由调用方显示
     
     Returns:
         (提取的图片路径列表, 输出目录)
@@ -504,11 +535,16 @@ def extract_images_from_archive(archive_path: str, output_dir: Optional[str] = N
             if ext in IMAGE_EXTENSIONS:
                 existing_images.append(os.path.join(output_dir, f))
         cached_meta = _read_extract_meta(output_dir)
-        if existing_images and cached_meta == expected_meta:
+        if existing_images and _same_archive(cached_meta, expected_meta):
+            # the meta keeps the version that extracted the pages: the note comes at every import
+            note = _older_pages_note(archive_path, _extractor_version(cached_meta))
+            if note and notes is not None:
+                notes.append(note)
             return sorted(existing_images), output_dir
         if os.path.isdir(os.path.join(output_dir, WORK_DIRNAME)):
             # 工作目录（校稿 JSON、手修图、Agent 备份）在里面：先解压到旁边，再按内容核对每一页
-            images = _update_extract_output_dir(archive_path, output_dir)
+            images = _update_extract_output_dir(archive_path, output_dir, notes=notes,
+                                                old_version=_extractor_version(cached_meta))
             _write_extract_meta(output_dir, archive_path)
             return images, output_dir
         # 目录存在但缓存不可用（来源/版本不匹配或残留脏数据），没有工作文件，清空后重解压
@@ -621,7 +657,8 @@ def _remap_agent_records(work_dir: str, renamed: dict, gone: set) -> None:
             logger.warning(f"could not update {path} for the archive's new pages", exc_info=True)
 
 
-def _update_extract_output_dir(archive_path: str, output_dir: str) -> List[str]:
+def _update_extract_output_dir(archive_path: str, output_dir: str, notes: Optional[List[str]] = None,
+                               old_version: int = EXTRACTOR_VERSION) -> List[str]:
     """Bring an extraction folder that has work files (校稿 JSON, the user's repairs, the AI Agent's
     backups) up to the archive's new version, without deleting anything; returns its pages.
 
@@ -689,6 +726,13 @@ def _update_extract_output_dir(archive_path: str, output_dir: str) -> List[str]:
                 f"renamed with their work files, {len(new) - len(unchanged) - len(moves)} new"
                 + (f"; {len(gone)} page(s) no longer in it, or replaced, were moved with their work files to "
                    f"{aside}" if gone else ""))
+        if gone and notes is not None:
+            older = _older_pages_note(archive_path, old_version)
+            notes.append(
+                f"{os.path.basename(archive_path)} changed: {len(gone)} page(s) no longer in it, or with other "
+                f"content, were moved with their work files to {aside}"
+                + (" (this version extracts some PDF pages otherwise, so unchanged pages can be among them)"
+                   if older else ""))
         return sorted(os.path.join(output_dir, name) for name in new)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

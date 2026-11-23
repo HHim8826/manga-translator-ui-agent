@@ -61,3 +61,46 @@ def test_each_page_gives_one_image_and_text_is_kept(tmp_path):
     assert text_box.getextrema()[0] < 100  # dark text where the dialogue is
     assert images[1].endswith(".png") and images[3].endswith(".png")
     assert Image.open(images[4]).size == (800, 1200)  # turned: rendered at the image's resolution
+
+
+def test_a_pdf_an_older_version_extracted_keeps_its_pages_and_says_so(tmp_path):
+    """Review 2026-11-24 B4: the extraction meta had no version. A PDF imported before P2-03 kept its
+    old pages without a word; once the PDF changed, pages the new way renders otherwise were moved to
+    ``replaced`` with only a line in the log file."""
+    import json
+    import os
+
+    from desktop_qt_ui.utils.archive_extractor import EXTRACTOR_VERSION, extract_images_from_archive
+
+    pdf = _pdf(tmp_path / "book.pdf", [_scan, _mixed])
+    folder = str(tmp_path / "out" / "book" / "original_images")
+    images, _ = extract_images_from_archive(pdf, folder)
+    meta_path = os.path.join(folder, ".extract_meta.json")
+    with open(meta_path, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    assert meta["extractor_version"] == EXTRACTOR_VERSION == 2
+    notes = []
+    assert extract_images_from_archive(pdf, folder, notes=notes)[0] == images and notes == []
+
+    del meta["extractor_version"]  # as an older version left it
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
+    work = os.path.join(folder, "manga_translator_work", "json")
+    os.makedirs(work)
+    with open(os.path.join(work, "page_0002_translations.json"), "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    assert extract_images_from_archive(pdf, folder, notes=notes)[0] == images  # unchanged: kept, work too
+    assert len(notes) == 1 and "older version" in notes[0]
+
+    os.utime(pdf, (os.path.getmtime(pdf) + 60,) * 2)  # a new version of the PDF (its pages render the same)
+    with open(meta_path, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    os.replace(images[1], images[1] + ".old")  # page 2 as the older version extracted it: other bytes
+    Image.new("RGB", (50, 50), "white").save(images[1])
+    os.remove(images[1] + ".old")
+    notes = []
+    extract_images_from_archive(pdf, folder, notes=notes)
+    assert len(notes) == 1 and "1 page(s)" in notes[0] and "replaced" in notes[0]
+    assert "extracts some PDF pages otherwise" in notes[0]
+    with open(meta_path, encoding="utf-8") as fh:
+        assert json.load(fh)["extractor_version"] == EXTRACTOR_VERSION
