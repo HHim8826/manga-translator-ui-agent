@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 SUPPORTED_BRANCHES = ("main", "beta")
@@ -184,6 +185,42 @@ def remote_file(
         ["show", f"origin/{branch}:{relative_path}"],
         executable=executable,
     )
+
+
+@dataclass(frozen=True)
+class LocalWork:
+    """What an update to origin/<target> would take out of the running program."""
+
+    branch: str
+    """The branch the program runs when the update would switch to another one (``local/main``),
+    else empty. Its commits stay on that branch; the program no longer runs them."""
+    commits: int
+    """Commits of HEAD that origin/<target> does not have. On the target branch itself the update
+    resets the branch over them (only the reflog keeps them)."""
+    target: str
+
+
+def local_work(
+    root: Path,
+    target: str,
+    *,
+    executable: str | None = None,
+) -> LocalWork | None:
+    """What ``git checkout -f -B <target> origin/<target>`` (the update) would take out of the
+    running program: the branch it runs when that is another named branch, and the commits of HEAD
+    origin/<target> does not have (after a fetch). None when the update takes nothing."""
+    branch, detached = current_branch(root, executable=executable)
+    other = "" if detached or branch == target else branch
+    value = git_output(
+        root, ["rev-list", "--count", f"origin/{target}..HEAD"], executable=executable
+    )
+    try:
+        commits = int(value) if value is not None else 0
+    except ValueError:
+        commits = 0
+    if not other and commits <= 0:
+        return None
+    return LocalWork(other, max(commits, 0), target)
 
 
 def commits_behind(

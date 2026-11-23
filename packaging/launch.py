@@ -33,6 +33,7 @@ from desktop_qt_ui.core.git_update_helpers import (
 from desktop_qt_ui.core.git_update_helpers import (
     fetch_origin,
     git_output,
+    local_work,
     non_interactive_git_env,
     set_origin_url,
 )
@@ -2520,12 +2521,45 @@ def check_version_info():
     return current_version, remote_version
 
 
-def update_code_force(skip_confirm=False, target_branch=None):
+def keeps_local_work(branch, automatic=False):
+    """The update would take the program's own branch (local/main) or commits out of it: say so.
+    The automatic mode (the desktop's update) stops there; the menu asks for a typed yes.
+    True: do not update."""
+    work = local_work(PATH_ROOT, branch, executable=git)
+    if work is None:
+        return False
+    print()
+    if work.branch:
+        print(L(f"[警告] 目前的程序跑的是分支 {work.branch}，有 {work.commits} 个提交不在 origin/{branch}。"
+                f"强制同步会切到 {branch}，这些修改就不在程序里了（提交仍留在分支 {work.branch}，"
+                f"未提交的修改会被覆盖）。",
+                f"[WARNING] The program runs branch {work.branch}, with {work.commits} commit(s) "
+                f"origin/{branch} does not have. A force sync switches to {branch} and the program no "
+                f"longer has them (they stay on branch {work.branch}; uncommitted changes are overwritten)."))
+    else:
+        print(L(f"[警告] {branch} 有 {work.commits} 个提交不在 origin/{branch}。强制同步会把分支重设到 "
+                f"origin/{branch}，这些提交只能从 git reflog 找回。",
+                f"[WARNING] {branch} has {work.commits} commit(s) origin/{branch} does not have. A force "
+                f"sync resets the branch to origin/{branch}; only git reflog keeps them."))
+    print(L("要保留它们，请手动 git fetch 后 rebase 或 merge。",
+            "To keep them, git fetch and rebase or merge by hand."))
+    if automatic:
+        print(L("[取消] 自动更新不会做这种同步", "[CANCELLED] The automatic update does not do this"))
+        return True
+    confirm = input(L("仍要强制同步吗？输入 yes 继续: ", "Force sync anyway? Type yes to go on: ")).strip().lower()
+    if confirm != "yes":
+        print(L("取消更新", "Update cancelled"))
+        return True
+    return False
+
+
+def update_code_force(skip_confirm=False, target_branch=None, automatic=False):
     """强制更新代码（同步到远程分支），同步失败时提示切换镜像源重试
 
     Args:
         skip_confirm: 是否跳过确认提示（用于完整更新流程中）
         target_branch: 目标分支（默认当前分支，游离状态回落 main）
+        automatic: 桌面端确认后的自动更新：会切走当前分支或丢掉本地提交时不更新
     """
     ensure_git_safe_directory()  # 确保 safe.directory 已配置
     branch = target_branch or get_update_branch()
@@ -2545,6 +2579,8 @@ def update_code_force(skip_confirm=False, target_branch=None):
 
     print()
     if not git_fetch_with_mirror_prompt():
+        return False
+    if keeps_local_work(branch, automatic=automatic):
         return False
 
     while True:
@@ -3077,7 +3113,7 @@ def run_full_update(args, automatic=False):
     if code_needs_update:
         print()
         print(L("[1/2] 更新代码...", "[1/2] Updating code..."))
-        if not update_code_force(skip_confirm=True):
+        if not update_code_force(skip_confirm=True, automatic=automatic):
             print(L("[错误] 代码更新失败，跳过依赖更新",
                     "[ERROR] Code update failed; skipping dependency update"))
             print()

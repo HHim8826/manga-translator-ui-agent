@@ -12,6 +12,7 @@ from desktop_qt_ui.core.git_update_helpers import (
     current_commit,
     fetch_origin,
     git_executable,
+    local_work,
     remote_commit,
     remote_file,
     update_branch,
@@ -31,6 +32,17 @@ class UpdateInfo:
     current_commit: str = ""
     latest_commit: str = ""
     commits_behind: int = 0
+    local_branch: str = ""
+    """The branch the program runs when updating would switch to ``update_branch`` (local/main)."""
+    local_commits: int = 0
+    """Commits of the program that origin/<update_branch> does not have."""
+    update_branch: str = ""
+
+    @property
+    def keeps_local_work(self) -> bool:
+        """Updating here (``checkout -f -B``) would take the program's own branch or commits out of
+        it: the desktop does not start it (git fetch, then rebase or merge by hand)."""
+        return bool(self.local_branch or self.local_commits > 0)
 
     @property
     def is_update_available(self) -> bool:
@@ -92,6 +104,7 @@ def fetch_latest_release(
     behind = commits_behind(root, branch, executable=executable)
     if behind is None:
         raise RuntimeError(f"Unable to compare HEAD with origin/{branch}")
+    work = local_work(root, branch, executable=executable)
     changelog_path = f"doc/CHANGELOG_v{latest_version}.md"
     release_notes = (
         remote_file(
@@ -111,6 +124,9 @@ def fetch_latest_release(
         current_commit=local_commit,
         latest_commit=latest_commit,
         commits_behind=behind,
+        local_branch=work.branch if work else "",
+        local_commits=work.commits if work else 0,
+        update_branch=branch,
     )
 
 def launch_update_maintenance(branch: str | None = None) -> bool:

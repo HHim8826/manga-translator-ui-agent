@@ -269,7 +269,12 @@ class MainView(QObject):
             QDesktopServices.openUrl(QUrl(self._latest_update_info.release_url))
 
     def start_update_maintenance(self) -> bool:
-        """Launch the existing packaging/launch.py maintenance workflow."""
+        """Launch the existing packaging/launch.py maintenance workflow. Not when it would take the
+        program's own branch or commits out of it (``UpdateInfo.keeps_local_work``)."""
+        info = self._latest_update_info
+        if info is not None and getattr(info, "keeps_local_work", False):
+            self._set_about_update_status("Update Keeps Local Work Status")
+            return False
         started = launch_update_maintenance(self._update_branch)
         if started:
             self._set_about_update_status("Update Process Started")

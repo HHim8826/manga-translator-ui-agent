@@ -181,3 +181,73 @@ def test_automatic_maintenance_restarts_after_update(monkeypatch):
     maintenance_launch.maintenance_menu(automatic=True)
 
     assert events == [("update", True), ("restart", True)]
+
+
+# --- review 2026-11-24 B1: the update took the program off its branch (local/main) ---------------
+
+from test_agents_page import app  # noqa: E402, F401  (one QApplication for the session)
+
+
+def _git(monkeypatch, branch, detached, ahead):
+    monkeypatch.setattr(git_update_helpers, "current_branch", lambda _root, **_kw: (branch, detached))
+    monkeypatch.setattr(git_update_helpers, "git_output",
+                        lambda _root, args, **_kw: str(ahead) if args[:2] == ["rev-list", "--count"] else None)
+
+
+def test_the_update_knows_what_it_would_take_out_of_the_program(monkeypatch, tmp_path):
+    _git(monkeypatch, "local/main", False, 97)
+    assert git_update_helpers.local_work(tmp_path, "main") == git_update_helpers.LocalWork("local/main", 97, "main")
+    _git(monkeypatch, "main", False, 3)  # the update resets main over its own commits
+    assert git_update_helpers.local_work(tmp_path, "main") == git_update_helpers.LocalWork("", 3, "main")
+    _git(monkeypatch, "main", False, 0)
+    assert git_update_helpers.local_work(tmp_path, "main") is None
+    _git(monkeypatch, "v3.0.4", True, 0)  # a release tag
+    assert git_update_helpers.local_work(tmp_path, "main") is None
+    assert UpdateInfo("3.0.4", "3.0.5", "", "", "", local_branch="local/main", local_commits=97).keeps_local_work
+    assert not UpdateInfo("3.0.4", "3.0.5", "", "", "").keeps_local_work
+
+
+def test_the_desktop_does_not_offer_an_update_that_takes_the_programs_branch(monkeypatch, app):  # noqa: F811
+    from PyQt6.QtWidgets import QPushButton
+    from ui.main_page.pages.about_page import UpdateDialog
+    from ui.main_page.view import MainView
+
+    t = lambda key, **kw: " ".join([key] + [f"{k}={v}" for k, v in sorted(kw.items())])  # noqa: E731
+    info = UpdateInfo("3.0.4", "3.0.4", "", "", "", current_commit="a", latest_commit="b", commits_behind=2,
+                      local_branch="local/main", local_commits=97, update_branch="main")
+    started = []
+    dialog = UpdateDialog(info, t, None, on_update=lambda: started.append(True) or True)
+    buttons = [b.text() for b in dialog.findChildren(QPushButton)]
+    assert "Update Now" not in buttons and "Open Release Page" in buttons
+    assert dialog.local_work_label.text() == "Update Local Work Branch branch=local/main count=97 target=main"
+    plain = UpdateDialog(UpdateInfo("3.0.4", "3.0.5", "", "", ""), t, None, on_update=lambda: True)
+    assert "Update Now" in [b.text() for b in plain.findChildren(QPushButton)]
+    dialog.deleteLater()
+    plain.deleteLater()
+
+    statuses = []
+    view = type("View", (), {"_latest_update_info": info, "_update_branch": None,
+                             "_set_about_update_status": lambda self, key, **kw: statuses.append(key)})()
+    monkeypatch.setattr("ui.main_page.view.launch_update_maintenance", lambda *_a: started.append(True) or True)
+    assert MainView.start_update_maintenance(view) is False
+    assert started == [] and statuses == ["Update Keeps Local Work Status"]
+
+
+def test_the_launcher_does_not_take_the_programs_branch_without_a_typed_yes(monkeypatch):
+    work = git_update_helpers.LocalWork("local/main", 97, "main")
+    monkeypatch.setattr(maintenance_launch, "local_work", lambda _root, _branch, **_kw: work)
+    monkeypatch.setattr(maintenance_launch, "ensure_git_safe_directory", lambda: None)
+    monkeypatch.setattr(maintenance_launch, "git_fetch_with_mirror_prompt", lambda: True)
+    monkeypatch.setattr(maintenance_launch, "get_update_branch", lambda: "main")
+    checkouts = []
+    monkeypatch.setattr(maintenance_launch.subprocess, "run", lambda args, **_kw: checkouts.append(args))
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("asked")))
+    # the desktop's update (automatic): not made, not asked
+    assert maintenance_launch.update_code_force(skip_confirm=True, automatic=True) is False
+    assert checkouts == []
+    answers = iter(["y", "yes"])
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_kw: next(answers))
+    assert maintenance_launch.keeps_local_work("main") is True  # "y" is not enough
+    assert maintenance_launch.keeps_local_work("main") is False  # typed yes: the menu may go on
+    monkeypatch.setattr(maintenance_launch, "local_work", lambda _root, _branch, **_kw: None)
+    assert maintenance_launch.keeps_local_work("main", automatic=True) is False  # nothing to lose

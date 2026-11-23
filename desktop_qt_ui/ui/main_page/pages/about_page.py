@@ -737,6 +737,26 @@ class UpdateDialog:
             commit_summary.setWordWrap(True)
             dialog.textLayout.addWidget(commit_summary)
 
+        keeps_local_work = bool(getattr(info, "keeps_local_work", False))
+        if keeps_local_work:
+            # the update (checkout -f -B <branch> origin/<branch>) would switch the program off its
+            # branch, or reset the branch over its own commits: no "Update Now" here
+            key = ("Update Local Work Branch" if getattr(info, "local_branch", "")
+                   else "Update Local Work Commits")
+            warning = BodyLabel(
+                translate(
+                    key,
+                    branch=getattr(info, "local_branch", ""),
+                    count=getattr(info, "local_commits", 0),
+                    target=getattr(info, "update_branch", "") or "main",
+                ),
+                dialog,
+            )
+            warning.setWordWrap(True)
+            warning.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            dialog.textLayout.addWidget(warning)
+            dialog.local_work_label = warning
+
         log_heading = StrongBodyLabel(translate("Update Log"), dialog)
         dialog.textLayout.addWidget(log_heading)
 
@@ -762,7 +782,7 @@ class UpdateDialog:
 
         dialog.yesButton.hide()
         dialog.cancelButton.setText(translate("Later"))
-        if on_update is not None:
+        if on_update is not None and not keeps_local_work:
             update_button = PrimaryPushButton(
                 translate("Update Now"), dialog.buttonGroup
             )
