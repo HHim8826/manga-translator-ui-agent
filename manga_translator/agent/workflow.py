@@ -375,6 +375,21 @@ def line_break_rules(config) -> str:
     return rules or LINE_BREAK_RULES
 
 
+def _render_backend(translator, config, font_service):
+    """The renderer for the size check at mark_page_done (``render_check.py``): the font service's,
+    or one of its own when the font features are off; None when the pipeline cannot load a page from
+    memory."""
+    backend = getattr(font_service, "backend", None)
+    if backend is not None:
+        return backend
+    if not (hasattr(translator, "_load_text_and_regions_from_file")
+            and hasattr(translator, "set_preloaded_load_text_payload")):
+        return None
+    from .fonts import PipelineFontBackend
+
+    return PipelineFontBackend(translator, config)
+
+
 async def _font_service(translator, config, settings: AgentSettings, target_lang: str, log):
     """Installed fonts and the renderer for the layout check; None when the pipeline has no renderer
     (or the fonts cannot be read), and the agents go on without the font features."""
@@ -873,6 +888,7 @@ async def run_agent_workflow(
                 log(f"[Agent] Work prompt: {work_prompt.name}, {len(work_prompt.terms)} glossary term(s)")
         work_memory, prompt_name = _work_memory(settings, prompt_path, log)
         font_service = fonts if font_task is None else await font_task
+        render_backend = _render_backend(translator, config, font_service)
         breaks = line_break_rules(config)
         if breaks:
             log("[Agent] AI line breaks: on (translations get [BR] line breaks by the source line count)")
@@ -945,7 +961,8 @@ async def run_agent_workflow(
                                          run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
                                                    **({"work_memory": seeded} if seeded else {})},
                                          preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
-                                         default_font=getattr(getattr(config, "render", None), "font_family", "") or "")
+                                         default_font=getattr(getattr(config, "render", None), "font_family", "") or "",
+                                         render_backend=render_backend)
                     review: List[dict] = []
                     proof_task: Optional[asyncio.Future] = None
                     try:

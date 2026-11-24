@@ -192,7 +192,7 @@ class AgentRunner:
                  work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
                  font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None,
                  preprocess_failed: Optional[Dict[str, str]] = None, revise: bool = False,
-                 revise_fonts=None, default_font: str = ""):
+                 revise_fonts=None, default_font: str = "", render_backend=None):
         self.settings = settings
         self.revise = revise
         """The pages were finished by an earlier run: check them again (``revise.py``)."""
@@ -210,10 +210,10 @@ class AgentRunner:
         """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
         """``fonts.FontService`` with a font sheet for set_font_style, or None."""
-        backend = getattr(self.revise_fonts, "backend", None)
+        backend = render_backend if render_backend is not None else getattr(self.revise_fonts, "backend", None)
         self.render_check = RenderCheck(backend) if hasattr(backend, "load_page") else None
         """The size the render draws each region at, before mark_page_done (``render_check.py``);
-        None without the font service's renderer."""
+        None without a renderer (``render_backend``, else the font service's)."""
         self.line_breaks = line_breaks
         """The AI line break rules when the render setting disable_auto_wrap is on, else empty."""
         self.client = client

@@ -161,3 +161,33 @@ def test_the_renderer_draws_the_page_the_agent_is_about_to_save(tmp_path, monkey
     drawn = asyncio.run(backend.render_alone(doc.image_path, blocks[2]))
     ink = np.argwhere(drawn.min(axis=2) < 128)
     assert len(ink) and 140 <= ink[:, 0].mean() <= 190 and 190 <= ink[:, 1].mean() <= 290  # in box #3
+
+
+def test_the_size_check_has_a_renderer_with_the_font_features_off():
+    from manga_translator.agent.fonts import PipelineFontBackend
+    from manga_translator.agent.workflow import _render_backend
+
+    class Pipeline:
+        def _load_text_and_regions_from_file(self, path, config):
+            return None
+
+        def set_preloaded_load_text_payload(self, path, payload):
+            pass
+
+    own = SimpleNamespace(backend=object())
+    assert _render_backend(Pipeline(), None, own) is own.backend  # the font service's
+    assert isinstance(_render_backend(Pipeline(), None, None), PipelineFontBackend)  # choose_fonts / fix_missing_glyphs off
+    assert _render_backend(object(), None, None) is None  # no page from memory: no check
+
+
+def test_the_runner_takes_the_renderer_it_is_given(tmp_path):
+    pages = [make_page(tmp_path, "001")]
+    runner, client, store, events = _runner(tmp_path, pages, [])
+    events.close()
+    assert runner.render_check is None
+    from manga_translator.agent.runner import AgentRunner
+    from manga_translator.agent.settings import AgentSettings
+
+    backend = SimpleNamespace(load_page=None)
+    with_backend = AgentRunner(AgentSettings(), client, store, events, [pages[0][0]], "CHT", render_backend=backend)
+    assert with_backend.render_check is not None and with_backend.render_check.backend is backend
