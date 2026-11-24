@@ -5,7 +5,9 @@ every region the agent typeset alone, with the user's render settings and the pa
 font check's renderer, ``fonts.PipelineFontBackend``), and sets the size of the drawn glyphs against
 
 - the size of the source strokes the translation replaces (``snap_text`` on the original), and
-- the same source text drawn elsewhere on the page.
+- the same source text drawn elsewhere on the page,
+
+and the angle it is drawn at against the slant of the source lines (a slanted label typeset upright).
 
 Both sizes are measured the same way, so what the measuring gets wrong on one side it mostly gets wrong
 on the other. Two lines that touch are read as one line twice as thick; the size is then the extent
@@ -17,7 +19,7 @@ ch42 p1 (the README's hard page): a label cut in two by the detector drawn at 54
 a note squeezed to 10 px over 21 px strokes, and a slanted 「テント屋根」 typeset upright at 40 px while
 its five copies on the map are drawn at 19 px. On chapters 38-43 the measuring alone, without the line
 count, mistook 19 of 27 regions; with it, 3 of 14 (source lines the detector took as one, screentone
-under the source)."""
+under the source). The angle: 7 of 602, all slanted labels or sound effects drawn upright."""
 from __future__ import annotations
 
 import re
@@ -42,6 +44,9 @@ LINE_PITCH = 1.1
 """A line takes this many font sizes across the lines, the gap with it."""
 SAME_SOURCE = 1.35
 """The same text elsewhere counts only when its source strokes are about as big."""
+TURNED = 15
+"""Source lines slanted this much or more, drawn this many degrees off. Not the other way round: the
+measuring misses a slant more often than it finds one that is not there."""
 _PLAIN = re.compile(r"[\s？?！!…・、。]")
 _DOTS = re.compile(r"[…‥⋯︙︰]")
 COVER = 0.7
@@ -55,6 +60,10 @@ class Drawn:
     """Size of the drawn glyphs, px."""
     source: Optional[float]
     """Size of the source strokes, px; None when they could not be measured."""
+    source_angle: Optional[float] = None
+    """Slant of the source lines, degrees; None when they could not be measured."""
+    angle: float = 0.0
+    """The angle the region is drawn at (its JSON ``angle``)."""
 
 
 def measured_size(snap, lines: int, direction: str, extent: Optional[float] = None) -> Optional[float]:
@@ -87,6 +96,13 @@ def lines_across(polygons, direction: str) -> tuple:
     return count, bands[-1][1] - bands[0][0]
 
 
+def _angle(region: "Region") -> float:
+    try:
+        return float(region.data.get("angle") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _lines(text: str) -> int:
     return text.count("[BR]") + text.count("\n") + 1
 
@@ -104,17 +120,20 @@ class RenderCheck:
 
     def __init__(self, backend):
         self.backend = backend
-        self._source: Dict[tuple, Optional[float]] = {}
-        """(image, box, direction, lines) -> source size: the strokes do not change during a run."""
+        self._source: Dict[tuple, tuple] = {}
+        """(image, box, direction, lines, extent) -> source (size, slant): the strokes do not change
+        during a run."""
 
-    def source_size(self, image: np.ndarray, image_path: str, region: "Region") -> Optional[float]:
+    def source(self, image: np.ndarray, image_path: str, region: "Region") -> tuple:
+        """(size px, slant degrees) of the source strokes, each None when not measured."""
         direction = "v" if region.direction.startswith("v") else "h"
         lines, extent = lines_across(region.polygons, direction)
         box = _box(region)
         key = (image_path, box, direction, lines, round(extent))
         if key not in self._source:
             snap = snap_text(image, box, direction, grow=False)
-            self._source[key] = measured_size(snap, lines, direction, extent)
+            size = measured_size(snap, lines, direction, extent)
+            self._source[key] = (size, float(snap.angle) if size is not None else None)
         return self._source[key]
 
     async def measure(self, doc: "PageDoc") -> Dict[int, Drawn]:
@@ -143,7 +162,8 @@ class RenderCheck:
             drawn = measured_size(snap, _lines(region.translation), direction)
             if drawn is None:
                 continue
-            out[rid] = Drawn(drawn=drawn, source=self.source_size(image, doc.image_path, region))
+            size, slant = self.source(image, doc.image_path, region)
+            out[rid] = Drawn(drawn=drawn, source=size, source_angle=slant, angle=_angle(region))
         return out
 
     async def issues(self, doc: "PageDoc") -> List[Issue]:
@@ -158,7 +178,8 @@ def _dotted(translation: str) -> bool:
 
 def size_issues(doc: "PageDoc", sizes: Dict[int, Drawn]) -> List[Issue]:
     """``drawn_large`` / ``drawn_small`` against the source strokes, then ``drawn_unlike`` against the
-    same text elsewhere on the page (the regions not already listed)."""
+    same text elsewhere on the page (the regions not already listed), then ``drawn_turned`` (the
+    regions with nothing else listed)."""
     issues: List[Issue] = []
     listed = set()
     for rid, size in sizes.items():
@@ -194,4 +215,12 @@ def size_issues(doc: "PageDoc", sizes: Dict[int, Drawn]) -> List[Issue]:
             issues.append(Issue("drawn_unlike", rid, {"drawn": int(round(sizes[rid].drawn)),
                                                       "other": int(round(drawn)), "text": key[:12]},
                                 WEIGHTS["drawn_unlike"]))
+    listed = {i.region for i in issues}
+    for rid, size in sizes.items():
+        if rid in listed or size.source_angle is None or size.source is None or size.source < MIN_SOURCE_PX:
+            continue
+        off = abs(size.source_angle - size.angle) % 180
+        if abs(size.source_angle) >= TURNED and min(off, 180 - off) >= TURNED:
+            issues.append(Issue("drawn_turned", rid, {"source": int(round(size.source_angle)),
+                                                      "drawn": int(round(size.angle))}, WEIGHTS["drawn_turned"]))
     return sorted(issues, key=lambda i: i.region or 0)

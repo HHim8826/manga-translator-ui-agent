@@ -1844,6 +1844,7 @@
   "Agent Check drawn_large": "渲染後字太大",
   "Agent Check drawn_small": "渲染後字太小",
   "Agent Check drawn_unlike": "和同頁相同的字大小不一",
+  "Agent Check drawn_turned": "渲染後角度不符",
   "Agent Result Editor Box": "第 {n} 框",
   "Agent Rerun Translated": "有 {count} 頁已經有不是 AI Agent 做的譯文（一般翻譯，或在編輯器裡寫的）：{pages}。重跑會換成 AI Agent 的翻譯，換之前會把它們的 JSON 備份到 manga_translator_work/agent/backups；只處理沒完成的頁時不會動它們。",
   "Agent Rerun Stop Note": "中途停止或失敗時，還沒做完的頁會還原成執行前的樣子。",

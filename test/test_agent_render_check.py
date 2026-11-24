@@ -191,3 +191,16 @@ def test_the_runner_takes_the_renderer_it_is_given(tmp_path):
     backend = SimpleNamespace(load_page=None)
     with_backend = AgentRunner(AgentSettings(), client, store, events, [pages[0][0]], "CHT", render_backend=backend)
     assert with_backend.render_check is not None and with_backend.render_check.backend is backend
+
+
+def test_a_slanted_label_drawn_upright(tmp_path):
+    doc = _doc(tmp_path, ["置き", "下り", "にっ", "スッ"])
+    sizes = {1: Drawn(24, 25, source_angle=-26, angle=0),  # ch42 p1 「堆」: upright over 置き slanted 26°
+             2: Drawn(15, 15, source_angle=39, angle=37),  # drawn along the slant
+             3: Drawn(30, 28, source_angle=2, angle=30),  # the agent's slant over strokes measured upright: not said
+             4: Drawn(30, 28, source_angle=None, angle=0)}
+    issues = size_issues(doc, sizes)
+    assert [(i.code, i.region, i.detail) for i in issues] == [("drawn_turned", 1, {"source": -26, "drawn": 0})]
+    # a region already listed for its size is not listed twice; 85° and -85° are 10° apart
+    assert [i.code for i in size_issues(doc, {1: Drawn(54, 25, source_angle=-26, angle=0)})] == ["drawn_large"]
+    assert size_issues(doc, {1: Drawn(24, 25, source_angle=85, angle=-85)}) == []

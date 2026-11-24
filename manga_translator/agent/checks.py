@@ -56,10 +56,12 @@ WEIGHTS = {
     "drawn_large": 0.25,
     "drawn_small": 0.25,
     "drawn_unlike": 0.2,
+    "drawn_turned": 0.2,
 }
 SERIOUS = {"untranslated_kana": "uncertain_translation", "glossary_mismatch": "uncertain_translation",
            "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr", "overlap": "layout",
-           "drawn_large": "layout", "drawn_small": "layout", "drawn_unlike": "layout"}
+           "drawn_large": "layout", "drawn_small": "layout", "drawn_unlike": "layout",
+           "drawn_turned": "layout"}
 """Issues that go to the review list when they are still there at the end, with their flag type."""
 
 REGION_FLAG_WEIGHT = 0.25
@@ -121,6 +123,9 @@ AGENT_TEXT = {
     "drawn_unlike": "#{region}: rendered, its glyphs are about {drawn} px, while the same source text 「{text}」 "
                     "elsewhere on this page is drawn at about {other} px, its strokes as big. Zoom and fit_region "
                     "its box to its own strokes so the same labels look alike.",
+    "drawn_turned": "#{region}: its source lines are slanted about {source}°, but it is drawn at {drawn}°. Zoom, "
+                    "then fit_region it along its own strokes (a slanted label gets a slanted box); if the "
+                    "detector cut the label in two, merge_regions the pieces first.",
 }
 WHY = {
     "small": "small text",
@@ -144,13 +149,15 @@ HUMAN_TEXT = {
         "drawn_large": "渲染後字約 {drawn} px，原文約 {source} px，字太大",
         "drawn_small": "渲染後字約 {drawn} px，原文約 {source} px，字太小",
         "drawn_unlike": "渲染後字約 {drawn} px，同一頁相同的「{text}」約 {other} px",
+        "drawn_turned": "原文斜約 {source}°，渲染後是 {drawn}°，角度不符",
         "page": "程式檢查的信心分數 {score:.2f}：{summary}",
         "count": "{count} 個框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "沒用術語表譯法",
                   "character_mismatch": "沒用角色譯名", "empty_source": "沒有原文", "overflow": "譯文過長",
                   "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行",
                   "line_overflow": "超出框", "overlap": "框重疊", "drawn_large": "渲染後字太大",
-                  "drawn_small": "渲染後字太小", "drawn_unlike": "和同頁相同的字大小不一"},
+                  "drawn_small": "渲染後字太小", "drawn_unlike": "和同頁相同的字大小不一",
+                  "drawn_turned": "渲染後角度不符"},
         "none": "沒有發現問題",
     },
     "CHS": {
@@ -166,13 +173,15 @@ HUMAN_TEXT = {
         "drawn_large": "渲染后字约 {drawn} px，原文约 {source} px，字太大",
         "drawn_small": "渲染后字约 {drawn} px，原文约 {source} px，字太小",
         "drawn_unlike": "渲染后字约 {drawn} px，同一页相同的「{text}」约 {other} px",
+        "drawn_turned": "原文斜约 {source}°，渲染后是 {drawn}°，角度不符",
         "page": "程序检查的置信分数 {score:.2f}：{summary}",
         "count": "{count} 个框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "没用术语表译法",
                   "character_mismatch": "没用角色译名", "empty_source": "没有原文", "overflow": "译文过长",
                   "needs_second_read": "没有放大确认", "missing_line_break": "没有换行",
                   "line_overflow": "超出框", "overlap": "框重叠", "drawn_large": "渲染后字太大",
-                  "drawn_small": "渲染后字太小", "drawn_unlike": "和同页相同的字大小不一"},
+                  "drawn_small": "渲染后字太小", "drawn_unlike": "和同页相同的字大小不一",
+                  "drawn_turned": "渲染后角度不符"},
         "none": "没有发现问题",
     },
     "ENG": {
@@ -189,6 +198,7 @@ HUMAN_TEXT = {
         "drawn_large": "rendered at about {drawn} px over source text of about {source} px: too big",
         "drawn_small": "rendered at about {drawn} px over source text of about {source} px: too small",
         "drawn_unlike": "rendered at about {drawn} px, while the same 「{text}」 on this page is about {other} px",
+        "drawn_turned": "source slanted about {source}°, drawn at {drawn}°",
         "page": "program check score {score:.2f}: {summary}",
         "count": "{count} region(s): {label}",
         "short": {"untranslated_kana": "kana left", "glossary_mismatch": "glossary not used",
@@ -196,7 +206,7 @@ HUMAN_TEXT = {
                   "overflow": "translation too long", "needs_second_read": "not zoomed",
                   "missing_line_break": "no line break", "line_overflow": "runs out of the box",
                   "overlap": "overlapping boxes", "drawn_large": "drawn too big", "drawn_small": "drawn too small",
-                  "drawn_unlike": "unlike the same text on the page"},
+                  "drawn_unlike": "unlike the same text on the page", "drawn_turned": "drawn at the wrong angle"},
         "none": "no issues found",
     },
 }

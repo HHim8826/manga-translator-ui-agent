@@ -19,7 +19,7 @@ FLAG_KINDS = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "mi
 ISSUES = ("residual_text", "broken_lines")
 CHECKS = ("untranslated_kana", "glossary_mismatch", "character_mismatch", "empty_source", "overflow",
           "needs_second_read", "missing_line_break", "line_overflow", "overlap", "drawn_large", "drawn_small",
-          "drawn_unlike")
+          "drawn_unlike", "drawn_turned")
 EDITOR_ORDER = ("proofread", "fonts", "editor")
 """Who numbers regions like the editor (the JSON order): the proofreader, the font check, and the
 editor's AI Agent tab. The translator's own numbers (#4) are the preview's boxes."""

@@ -1846,6 +1846,7 @@
   "Agent Check drawn_large": "drawn too big",
   "Agent Check drawn_small": "drawn too small",
   "Agent Check drawn_unlike": "unlike the same text on the page",
+  "Agent Check drawn_turned": "drawn at the wrong angle",
   "Agent Result Editor Box": "box {n}",
   "Agent Rerun Translated": "{count} page(s) have translations the AI Agent did not make (another translation mode, or written in the editor): {pages}. A rerun replaces them with the AI Agent's, after copying their JSON to manga_translator_work/agent/backups; processing only the pages not done leaves them alone.",
   "Agent Rerun Stop Note": "If the run stops or fails, the pages it did not finish go back to how they were before it.",
