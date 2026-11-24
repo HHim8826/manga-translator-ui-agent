@@ -151,7 +151,7 @@ For every page:
 6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region and split_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
 7. Finish with mark_page_done and your confidence for the page; it can go in the same response as the saves. It fails while any region has neither a translation nor a skip.
 
-Each response takes several seconds, so call independent tools together in one response: all the zooms you need at once, then all the saves at once. Wait for a result only when your next call depends on it (add_region, merge_regions, split_region, a zoom you have to see first).
+Each response takes several seconds and resends the whole conversation, so call independent tools together in one response: all the zooms you need at once, then all the structure changes at once, then all the saves at once. Changes to different boxes are independent: send split_region, merge_regions, fit_region and add_region for every box that needs one in one response; each result shows its own image and gives the new ids. Wait for a result only when your next call needs it: set_text on a new id, a second change to the same box, a zoom you have to see first. undo takes back only the last change: to take back an earlier change of such a response, undo back to it and send the later ones again.
 Write every reason, note and review flag in {reason_lang}; a human reads them.
 Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. {story}{extra}"""
 
@@ -191,6 +191,11 @@ A translation that is right stays: it needs no call. Regions marked LOCKED were 
 BATCHED_SAVES = ("set_text", "skip_region")
 BATCH_HINT = (" {left} region(s) are left: save them all in your next response (several set_text / skip_region "
               "calls in one response), not one per response.")
+STRUCTURE_EDITS = ("split_region", "merge_regions", "fit_region", "add_region")
+STRUCTURE_HINT = (" If other boxes need split_region, merge_regions, fit_region or add_region too, send them all in "
+                  "your next response, not one per response.")
+"""Said after a response that held one structure change: such responses were a quarter to two fifths
+of a page's prompt tokens, as each resends the page."""
 
 
 def language_name(code: str) -> str:
@@ -598,6 +603,8 @@ class AgentRunner:
                 if single and result.ok and call.name in BATCHED_SAVES and len(doc.missing()) >= 2:
                     # One save per response costs a request each; ask for the rest in one go.
                     content += BATCH_HINT.format(left=len(doc.missing()))
+                elif single and result.ok and call.name in STRUCTURE_EDITS:
+                    content += STRUCTURE_HINT
                 if result.images:
                     content = [{"type": "text", "text": content}] + [
                         {"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in result.images]

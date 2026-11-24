@@ -451,6 +451,27 @@ def test_single_saves_get_a_hint_to_save_the_rest_together(tmp_path):
     assert "Save the whole page in one response" in runner.system_prompt()
 
 
+def test_a_single_structure_change_gets_a_hint_to_send_the_others_together(tmp_path):
+    """Responses that held one split, merge, fit or add were a quarter to two fifths of a page's
+    prompt tokens: after one, the agent is told to send the rest at once."""
+    pairs = ((20, 100), (120, 200), (220, 300))  # three pairs of touching columns: each pair merges
+    boxes = tuple(box for x1, x2 in pairs for box in ((x1, 20, (x1 + x2) // 2, 120), ((x1 + x2) // 2, 20, x2, 120)))
+    pages = [make_page(tmp_path, "001", boxes=boxes)]
+    merge = lambda a, b: ("merge_regions", {"ids": [a, b], "reason": "一段話被切開"})  # noqa: E731
+    save = [("set_text", {"id": i, "source_text": f"text{i}", "translation": f"譯{i}", "category": "dialogue",
+                          "confidence": 0.9}) for i in range(1, 7)]  # the merged-away ids fail, the kept ones save
+    script = [_calls(merge(1, 2)), _calls(merge(3, 4), merge(5, 6)), _calls(*save, ("mark_page_done", {"confidence": 0.9}))]
+    runner, client, store, events = _runner(tmp_path, pages, script)
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert outcomes[0]["status"] == "done"
+    one, two = client.requests[1][-1]["content"], [m["content"] for m in client.requests[2][-2:]]
+    assert one.startswith("Merged into #") and "send them all in your next response" in one
+    assert all(t.startswith("Merged into #") and "next response" not in t for t in two)  # two at once: no hint
+    prompt = runner.system_prompt()
+    assert "all the structure changes at once" in prompt and "undo back to it and send the later ones again" in prompt
+
+
 def test_starting_each_page_afresh_asks_for_every_speaker_in_the_character_list(tmp_path):
     """A later page sees the character list, not the earlier pages: without the speakers' genders
     in it, a page addressed a woman with 你 where the chapter used 妳."""
