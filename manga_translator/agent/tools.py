@@ -569,6 +569,10 @@ def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
                  f"typeset as one line: add {BREAK} at natural breaks with set_line_breaks.")
     else:
         text += _overflow_note(s, region)
+    # said now, not at mark_page_done: a refused mark_page_done costs a request, which resends the page
+    for issue in checks.region_issues(s, region):
+        if issue.code == "needs_second_read":
+            text += " " + checks.agent_text(issue) + " Do it before mark_page_done."
     return ToolResult(text=text, summary=summary)
 
 

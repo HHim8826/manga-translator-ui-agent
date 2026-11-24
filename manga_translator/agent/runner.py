@@ -4,6 +4,9 @@ Context rules:
 
 * the system prompt, tool definitions and memory snapshot come first and stay
   fixed until a compaction, so the prefix is cached;
+* each page starts afresh from them, its message led by the last pages' translations
+  (``RECAP_PAGES``); earlier pages are reachable through the memory tools. With
+  ``whole_chapter_conversation`` the earlier pages stay instead, and:
 * pages older than ``keep_images_last_n_pages`` keep their text but lose their images,
   n pages at a time so the cached prefix changes once every n pages, and not when only a
   few pages are left (``AgentRunner.drop_images``);
@@ -47,6 +50,8 @@ try:
 except Exception:  # pragma: no cover - keeps the module importable in isolation
     VALID_LANGUAGES = {}
 
+RECAP_PAGES = 2
+"""A page started afresh sees the translations of this many pages before it."""
 DROP_PAGES_LEFT = 4
 """Old page images are dropped only while at least this many pages (the current one included) are left
 (``AgentRunner.drop_images``)."""
@@ -104,7 +109,18 @@ DOUBLE_READ = {
     "none": "Zoom only when you cannot read the text from the page image.",
 }
 
-SYSTEM_PROMPT = """You are the translation agent inside a manga translation app. You work through one chapter page by page in a single conversation, so earlier pages are your context for later ones.
+FLOW = {
+    True: ("You work through one chapter page by page in a single conversation, so earlier pages are your context "
+           "for later ones.", "Update the story summary every few pages with story_summary_update."),
+    False: ("You work through one chapter page by page, and each page starts a new conversation: what earlier pages "
+            "settled reaches you through the glossary, character list and story summary below, the translations of "
+            "the last pages at the top of the page message, and search_past_translations.",
+            "Update the story summary with story_summary_update every few pages and whenever something happens that "
+            "later pages need to know: they see the summary, not this page."),
+}
+"""The prompt's lines on the conversation, by ``whole_chapter_conversation``."""
+
+SYSTEM_PROMPT = """You are the translation agent inside a manga translation app. {flow}
 
 You are not a coding assistant here: you cannot run code, read files or browse. You act only by calling the tools provided; any other tool name fails.
 
@@ -127,7 +143,7 @@ For every page:
 
 Each response takes several seconds, so call independent tools together in one response: all the zooms you need at once, then all the saves at once. Wait for a result only when your next call depends on it (add_region, merge_regions, split_region, a zoom you have to see first).
 Write every reason, note and review flag in {reason_lang}; a human reads them.
-Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. Update the story summary every few pages with story_summary_update.{extra}"""
+Do not invent text that is not on the page. Keep translations short enough for their bubble; use measure_bubble when unsure. {story}{extra}"""
 
 
 INVENTED_SCRIPT = ("Invented script: a made-up language may be drawn as invented glyphs with a kana reading beside "
@@ -261,7 +277,9 @@ class AgentRunner:
             extra += REVISE_PROMPT
         if self.settings.extra_instructions.strip():
             extra += f"\n\nAdditional instructions from the user:\n{self.settings.extra_instructions}"
-        return SYSTEM_PROMPT.format(double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
+        flow, story = FLOW[bool(self.settings.whole_chapter_conversation)]
+        return SYSTEM_PROMPT.format(flow=flow, story=story,
+                                    double_read=DOUBLE_READ.get(self.settings.double_read, DOUBLE_READ["small_or_handwritten"]),
                                     target=target, reason_lang=target, extra=extra,
                                     invented_script=INVENTED_SCRIPT)
 
@@ -345,6 +363,27 @@ class AgentRunner:
                 message = strip_images(message, f"page {page_index + 1}")
             out.append(message)
         return out
+
+    def fresh_page(self) -> None:
+        """Start the next page without the earlier pages' messages: the preamble again, with the memory as
+        the earlier pages left it, so it stays cached while nothing was added to the memory."""
+        self.history = []
+        self.images_from = 0
+        self._build_preamble()
+        self.session.last_prompt_tokens = 0
+
+    def recap(self) -> str:
+        """The finished pages of this run, and what the last ``RECAP_PAGES`` of them say."""
+        if not self.done_pages:
+            return ""
+        lines = ["Pages already finished in this run: " + ", ".join(self.done_pages) + ". Their translations "
+                 "are saved; use search_past_translations to see how something was translated before."]
+        for stem in self.done_pages[-RECAP_PAGES:]:
+            entries = [p for p in self.session.past if p["page"] == stem]
+            if entries:
+                lines.append(f"Page {stem} as translated:")
+                lines += [f"- #{p['id']} {p['source'] or ''} → {p['translation']}" for p in entries]
+        return "\n".join(lines) + "\n\n"
 
     def compact(self, reason: str) -> None:
         recap = ""
@@ -463,7 +502,8 @@ class AgentRunner:
         page = self.session.page_image
         url, shown = images.page_url(images.draw_marks(page, self.session.marks()), self.settings.page_image_max_side)
         checked = ", checked again: the list gives the current translations" if doc.revise else ""
-        text = (f"Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
+        recap = "" if self.settings.whole_chapter_conversation else self.recap()
+        text = (f"{recap}Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
                 f"({page.width}x{page.height} px{', ' + shown if shown else ''}), "
                 f"{len(regions)} candidate region(s){checked}.\n"
                 f"{self.session.candidate_lines()}\n")
@@ -483,9 +523,13 @@ class AgentRunner:
     # --- pages --------------------------------------------------------------
     async def run_page(self, index: int, doc: PageDoc) -> Dict[str, Any]:
         st = self.settings
-        if self.session.last_prompt_tokens >= st.compact_threshold_tokens:
-            self.compact("threshold")
-        self.drop_images(index)
+        if not st.whole_chapter_conversation:
+            if self.history:
+                self.fresh_page()
+        else:
+            if self.session.last_prompt_tokens >= st.compact_threshold_tokens:
+                self.compact("threshold")
+            self.drop_images(index)
         self.session.start_page(index, doc)
         page = doc.stem
         boxes = doc.boxes()

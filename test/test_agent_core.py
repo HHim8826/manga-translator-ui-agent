@@ -306,7 +306,8 @@ def _runner(tmp_path, pages, script, recall=None, **settings):
 
 def test_runner_finishes_pages_and_strips_old_images(tmp_path):
     pages = [make_page(tmp_path, f"{i:03d}") for i in range(1, 6)]  # page 2 has 4 pages left: page 1's image goes
-    runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 5, keep_images_last_n_pages=1)
+    runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 5, keep_images_last_n_pages=1,
+                                            whole_chapter_conversation=True)
     outcomes = asyncio.run(runner.run())
     events.close()
     assert [o["status"] for o in outcomes] == ["done"] * 5
@@ -382,11 +383,34 @@ def test_runner_flags_failed_page_and_continues(tmp_path):
     assert all(m.get("role") != "tool" for m in client.requests[-2][:3])
 
 
+
+def test_each_page_starts_afresh_with_the_last_pages_translations(tmp_path):
+    """Every request resends the conversation: a page carries no earlier page's messages or images, only
+    the preamble (the same, so it stays cached) and what the last RECAP_PAGES pages were translated as."""
+    from manga_translator.agent.runner import RECAP_PAGES
+
+    pages = [make_page(tmp_path, f"{i:03d}") for i in range(1, 5)]
+    runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 4)
+    outcomes = asyncio.run(runner.run())
+    events.close()
+    assert [o["status"] for o in outcomes] == ["done"] * 4
+    assert len(client.requests) == 8
+    first, last = client.requests[0], client.requests[6]  # the first requests of pages 1 and 4
+    assert last[:2] == first[:2], "the preamble is the same: cached"
+    assert len(last) == 3 and len(first) == 3, "preamble + the page's own message, nothing from earlier pages"
+    text = last[2]["content"][0]["text"]
+    assert text.startswith("Pages already finished in this run: 001, 002, 003.")
+    assert "Page 001 as translated" not in text and RECAP_PAGES == 2
+    assert "Page 002 as translated:\n- #1 text1 → 譯1" in text and "Page 003 as translated:" in text
+    assert sum(1 for part in last[2]["content"] if part.get("type") == "image_url") == 1  # page 4 only
+    assert not any(e["type"] == "compact" for e in read_events(events.path))
+
 def test_runner_step_limit_and_compaction(tmp_path):
     pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
     big = ChatReply(content="thinking", prompt_tokens=5000)
     runner, client, store, events = _runner(tmp_path, pages, [big, big] + _finish_page(),
-                                            max_steps_per_page=2, compact_threshold_tokens=4000)
+                                            max_steps_per_page=2, compact_threshold_tokens=4000,
+                                            whole_chapter_conversation=True)
     outcomes = asyncio.run(runner.run())
     events.close()
     assert outcomes[0]["status"] == "incomplete" and outcomes[0]["missing"] == [1, 2, 3]
@@ -781,6 +805,17 @@ def _say(tools, rid, source, translation, confidence=0.95):
                                         "category": "dialogue", "confidence": confidence})
     assert result.ok, result.text
 
+
+
+def test_set_text_asks_for_the_second_read_before_mark_page_done(tmp_path):
+    """A refused mark_page_done costs a request that resends the whole page: set_text says it first."""
+    session, tools = _checked_session(tmp_path)
+    args = {"id": 3, "source_text": "全然違う", "translation": "完全不同", "category": "dialogue", "confidence": 0.95}
+    first = tools.execute("set_text", args)
+    assert "#3: your reading differs from the local OCR" in first.text and "Do it before mark_page_done." in first.text
+    assert tools.execute("zoom", {"id": 3}).ok
+    again = tools.execute("set_text", args)
+    assert again.ok and "second read" not in again.text and "mark_page_done" not in again.text
 
 def test_program_checks_are_shown_once_then_set_the_confidence(tmp_path):
     session, tools = _checked_session(tmp_path)

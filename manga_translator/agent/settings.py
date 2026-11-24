@@ -25,6 +25,12 @@ class AgentSettings(BaseModel):
     below ``max_context_tokens``, or the conversation would hit the limit before it is compacted."""
     keep_images_last_n_pages: int = Field(default=5, ge=1)
     """Older pages keep their text in the conversation but their images are dropped."""
+    whole_chapter_conversation: bool = False
+    """Carry the earlier pages' conversation (their images and tool results) to the next page, up to
+    ``compact_threshold_tokens``. Off, each page starts from the memory and the last pages' translations
+    (``AgentRunner.run_page``): every request resends the conversation, and on 131 pages of real runs
+    the carried pages made the translation agent's requests 2.6 times as big (391k tokens a page; about
+    150k starting each page afresh)."""
     page_image_max_side: int = Field(default=2048, ge=0)
     """Longest side of the whole-page images the translation agent and the recall check get (a zoom's
     crop is not limited); 0 sends them at full size. The message gives the page's own size, and boxes
