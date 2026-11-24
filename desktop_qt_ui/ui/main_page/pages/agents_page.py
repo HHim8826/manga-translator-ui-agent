@@ -576,6 +576,17 @@ class AgentsPage(QWidget):
                 if added:
                     detail += " · " + ", ".join(f"#{i}" for i in added)
                 self._add_row(event, self._t("Agents Recall"), detail, "")
+        elif kind == "render_check":  # the sizes the render draws, before mark_page_done
+            ids = sorted({int(i["region"]) for i in event.get("issues") or [] if isinstance(i, dict) and i.get("region")})
+            if event.get("ok") is False:
+                row = self._add_row(event, self._t("Agents Render Check"), str(event.get("error", "")), "", problem=True)
+                self._paint(row, ERROR)
+            elif ids:
+                detail = self._t("Agents Render Check Detail", count=len(ids)) + " · " + ", ".join(f"#{i}" for i in ids)
+                row = self._add_row(event, self._t("Agents Render Check"), detail, "", problem=True)
+                self._paint(row, WARN)
+            else:
+                self._add_row(event, self._t("Agents Render Check"), self._t("Agents Render Check OK"), "")
         elif kind == "inpaint_start":
             self._set_page(page, state="inpainting")
             if not (self._translating or self._proofreading):  # the status line follows the main work

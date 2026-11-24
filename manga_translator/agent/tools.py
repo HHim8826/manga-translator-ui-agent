@@ -81,6 +81,8 @@ class AgentSession:
         self.review_shown = False
         self.recall_failed = False
         self.page_tool_errors = 0
+        self.render_issues: List[checks.Issue] = []
+        """``render_check`` issues of the page, measured by the runner before each mark_page_done."""
 
     def was_zoomed(self, region: Region) -> bool:
         """Zoomed by id (also before a merge into it), or inside a zoomed area."""

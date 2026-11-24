@@ -53,9 +53,13 @@ WEIGHTS = {
     "missing_line_break": 0.1,
     "line_overflow": 0.15,
     "overlap": 0.3,
+    "drawn_large": 0.25,
+    "drawn_small": 0.25,
+    "drawn_unlike": 0.2,
 }
 SERIOUS = {"untranslated_kana": "uncertain_translation", "glossary_mismatch": "uncertain_translation",
-           "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr", "overlap": "layout"}
+           "character_mismatch": "uncertain_translation", "empty_source": "uncertain_ocr", "overlap": "layout",
+           "drawn_large": "layout", "drawn_small": "layout", "drawn_unlike": "layout"}
 """Issues that go to the review list when they are still there at the end, with their flag type."""
 
 REGION_FLAG_WEIGHT = 0.25
@@ -105,6 +109,18 @@ AGENT_TEXT = {
     "overlap": "#{region}: its box and #{other}'s overlap ({share}% of #{region}'s box), so their translations would "
                "be drawn on top of each other. Zoom: when #{other}'s box also holds #{region}'s text, fit_region "
                "#{other} to its own text (or split_region it); when they are one text, merge_regions them.",
+    # render_check.py: measured on the text as the render draws it
+    "drawn_large": "#{region}: rendered, its glyphs are about {drawn} px, the source text they replace about {source} "
+                   "px ({times} times as big). Its box is much bigger than its text: zoom, then fit_region it to its "
+                   "own strokes (a slanted label gets a slanted box), or merge_regions it with the rest of a word or "
+                   "label the detector cut in two.",
+    "drawn_small": "#{region}: rendered, its glyphs are about {drawn} px, the source text about {source} px (shrunk "
+                   "to {percent}%). The translation needs more room than its box gives: a shorter translation, line "
+                   "breaks that use the box better (set_line_breaks), or a box that holds all of its source text "
+                   "(fit_region, merge_regions).",
+    "drawn_unlike": "#{region}: rendered, its glyphs are about {drawn} px, while the same source text 「{text}」 "
+                    "elsewhere on this page is drawn at about {other} px, its strokes as big. Zoom and fit_region "
+                    "its box to its own strokes so the same labels look alike.",
 }
 WHY = {
     "small": "small text",
@@ -125,12 +141,16 @@ HUMAN_TEXT = {
         "missing_line_break": "原文 {lines} 行，譯文沒有換行",
         "line_overflow": "最長一行 {longest} 字，框內以原字級每行約容納 {room} 字，會超出框",
         "overlap": "和 #{other} 的框重疊，兩段譯文會疊在一起",
+        "drawn_large": "渲染後字約 {drawn} px，原文約 {source} px，字太大",
+        "drawn_small": "渲染後字約 {drawn} px，原文約 {source} px，字太小",
+        "drawn_unlike": "渲染後字約 {drawn} px，同一頁相同的「{text}」約 {other} px",
         "page": "程式檢查的信心分數 {score:.2f}：{summary}",
         "count": "{count} 個框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "沒用術語表譯法",
                   "character_mismatch": "沒用角色譯名", "empty_source": "沒有原文", "overflow": "譯文過長",
                   "needs_second_read": "沒有放大確認", "missing_line_break": "沒有換行",
-                  "line_overflow": "超出框", "overlap": "框重疊"},
+                  "line_overflow": "超出框", "overlap": "框重疊", "drawn_large": "渲染後字太大",
+                  "drawn_small": "渲染後字太小", "drawn_unlike": "和同頁相同的字大小不一"},
         "none": "沒有發現問題",
     },
     "CHS": {
@@ -143,12 +163,16 @@ HUMAN_TEXT = {
         "missing_line_break": "原文 {lines} 行，译文没有换行",
         "line_overflow": "最长一行 {longest} 字，框内以原字号每行约容纳 {room} 字，会超出框",
         "overlap": "和 #{other} 的框重叠，两段译文会叠在一起",
+        "drawn_large": "渲染后字约 {drawn} px，原文约 {source} px，字太大",
+        "drawn_small": "渲染后字约 {drawn} px，原文约 {source} px，字太小",
+        "drawn_unlike": "渲染后字约 {drawn} px，同一页相同的「{text}」约 {other} px",
         "page": "程序检查的置信分数 {score:.2f}：{summary}",
         "count": "{count} 个框{label}",
         "short": {"untranslated_kana": "留有假名", "glossary_mismatch": "没用术语表译法",
                   "character_mismatch": "没用角色译名", "empty_source": "没有原文", "overflow": "译文过长",
                   "needs_second_read": "没有放大确认", "missing_line_break": "没有换行",
-                  "line_overflow": "超出框", "overlap": "框重叠"},
+                  "line_overflow": "超出框", "overlap": "框重叠", "drawn_large": "渲染后字太大",
+                  "drawn_small": "渲染后字太小", "drawn_unlike": "和同页相同的字大小不一"},
         "none": "没有发现问题",
     },
     "ENG": {
@@ -162,13 +186,17 @@ HUMAN_TEXT = {
         "line_overflow": "the longest line has {longest} characters, the box fits about {room} per line at the "
                          "original size, so it runs out of the box",
         "overlap": "its box overlaps the box of #{other}, so the two translations would be drawn on top of each other",
+        "drawn_large": "rendered at about {drawn} px over source text of about {source} px: too big",
+        "drawn_small": "rendered at about {drawn} px over source text of about {source} px: too small",
+        "drawn_unlike": "rendered at about {drawn} px, while the same 「{text}」 on this page is about {other} px",
         "page": "program check score {score:.2f}: {summary}",
         "count": "{count} region(s): {label}",
         "short": {"untranslated_kana": "kana left", "glossary_mismatch": "glossary not used",
                   "character_mismatch": "character name not used", "empty_source": "no source text",
                   "overflow": "translation too long", "needs_second_read": "not zoomed",
                   "missing_line_break": "no line break", "line_overflow": "runs out of the box",
-                  "overlap": "overlapping boxes"},
+                  "overlap": "overlapping boxes", "drawn_large": "drawn too big", "drawn_small": "drawn too small",
+                  "drawn_unlike": "unlike the same text on the page"},
         "none": "no issues found",
     },
 }
@@ -394,12 +422,14 @@ def overlap_issues(session: "AgentSession") -> List[Issue]:
 
 
 def page_issues(session: "AgentSession") -> List[Issue]:
-    """Issues of the translated regions; on a page checked again, not of the user's locked regions."""
+    """Issues of the translated regions; on a page checked again, not of the user's locked regions.
+    With them the sizes the render draws (``render_check``), measured by the runner just before."""
     issues: List[Issue] = []
     for region in session.doc.active_regions():
         if region.translation and not region.skipped and not region.locked:
             issues.extend(region_issues(session, region))
     issues.extend(overlap_issues(session))
+    issues.extend(getattr(session, "render_issues", None) or [])
     return issues
 
 

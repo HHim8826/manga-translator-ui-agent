@@ -32,6 +32,7 @@ from . import json_guard
 from .events import EventLog
 from .font_styles import styles_text
 from .page import PageDoc
+from .render_check import RenderCheck
 from .settings import AgentSettings
 from .snap import snap_text
 from .store import AgentStore
@@ -209,6 +210,10 @@ class AgentRunner:
         """The work's prompt file (instructions + glossary), shared with the classic translators."""
         self.fonts = fonts if fonts is not None and getattr(fonts, "choices", None) else None
         """``fonts.FontService`` with a font sheet for set_font_style, or None."""
+        backend = getattr(self.revise_fonts, "backend", None)
+        self.render_check = RenderCheck(backend) if hasattr(backend, "load_page") else None
+        """The size the render draws each region at, before mark_page_done (``render_check.py``);
+        None without the font service's renderer."""
         self.line_breaks = line_breaks
         """The AI line break rules when the render setting disable_auto_wrap is on, else empty."""
         self.client = client
@@ -521,6 +526,8 @@ class AgentRunner:
                     self.history.append((index, {"role": "tool", "tool_call_id": call.id,
                                                  "content": "Not run: mark_page_done already finished the page."}))
                     continue
+                if call.name == "mark_page_done":
+                    self.session.render_issues = await self._render_issues(doc)
                 result = self.registry.execute(call.name, call.arguments)
                 if not result.ok and call.name != "mark_page_done":
                     self.session.page_tool_errors += 1
@@ -551,6 +558,22 @@ class AgentRunner:
             doc.flag(None, "step_limit", reason)
             self.events.emit("flag", page=page, region=None, flag="step_limit", reason=reason)
         return self._finish_page(doc)
+
+    async def _render_issues(self, doc: PageDoc) -> list:
+        """``render_check`` issues of the page as the agent is about to finish it; none when a region
+        is still without a translation (mark_page_done refuses the page then) or the check fails."""
+        if self.render_check is None or doc.missing():
+            return []
+        try:
+            issues = await self.render_check.issues(doc)
+        except (AgentStopped, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            logger.warning("agent: the render size check failed", exc_info=True)
+            self.events.emit("render_check", page=doc.stem, ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
+            return []
+        self.events.emit("render_check", page=doc.stem, ok=True, issues=[i.to_dict() for i in issues])
+        return issues
 
     def _hand_over(self, doc: PageDoc, kind: str, **fields: Any) -> None:
         """The user saved the page in the editor during the run: their version stays (status

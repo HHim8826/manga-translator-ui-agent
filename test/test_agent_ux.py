@@ -54,10 +54,17 @@ def _result_keys():
     keys |= {f"Agent Flag {k}" for k in agent_results.FLAG_KINDS}
     keys |= {f"Agent Skip {k}" for k in agent_results.SKIP_KINDS}
     keys |= {f"Agent Issue {k}" for k in agent_results.ISSUES}
+    keys |= {f"Agent Check {k}" for k in agent_results.CHECKS}
     keys |= {f"Agent Mask {k}" for k in ("dilate", "erode", "paint add", "paint remove")}
     keys |= {"Agents Page Confidence", "Agent Progress Preprocess", "Agent Progress Translate",
              "Agent Progress Proofread", "Agent Progress Render"}
     return keys
+
+
+def test_every_program_check_has_a_name_on_the_results_page():
+    from manga_translator.agent import checks
+
+    assert set(agent_results.CHECKS) == set(checks.WEIGHTS)
 
 
 def test_every_new_text_is_in_every_locale():

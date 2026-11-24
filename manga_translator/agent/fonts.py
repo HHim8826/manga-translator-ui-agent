@@ -722,6 +722,15 @@ def layout_ok(ref: Optional[Ink], new: Optional[Ink]) -> Tuple[bool, str]:
     return True, ""
 
 
+def _flag(value: Any, default: bool) -> bool:
+    """A page flag of the translation JSON (``skip_font_scaling`` ...), as the loader reads it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default if value is None else bool(value)
+
+
 def ink_of(rendered: np.ndarray, canvas_color: Sequence[int], region_box: Sequence[int]) -> Optional[Ink]:
     diff = np.abs(rendered.astype(np.int16) - np.asarray(canvas_color, dtype=np.int16)).max(axis=2) > 40
     ys, xs = np.nonzero(diff)
@@ -743,17 +752,16 @@ class PipelineFontBackend:
         self.translator = translator
         self.config = config
         self._pages: Dict[str, tuple] = {}
+        self._images: Dict[str, tuple] = {}
+        self._drafts: Dict[str, tuple] = {}
 
-    def _page(self, image_path: str):
-        if image_path not in self._pages:
+    def _image(self, image_path: str) -> tuple:
+        """(page image RGB, bubble mask) of one page at a time."""
+        if image_path not in self._images:
             from PIL import Image
 
             from ..utils import Context
 
-            regions, _mask, _refined, skip_font_scaling, skip_replacements, failed = \
-                self.translator._load_text_and_regions_from_file(image_path, self.config)
-            if failed:  # region numbers would not match the JSON
-                regions = None
             img = np.asarray(Image.open(image_path).convert("RGB"))
             ctx = Context()
             ctx.img_rgb = img
@@ -762,9 +770,58 @@ class PipelineFontBackend:
                 self.translator._prime_bubble_detection_cache(self.config, ctx)
             except Exception:
                 logger.warning("fonts: no bubble mask for the layout check", exc_info=True)
-            self._pages = {image_path: (regions, img, ctx.bubble_mask, bool(skip_font_scaling),
+            self._images = {image_path: (img, ctx.bubble_mask)}
+        return self._images[image_path]
+
+    def _page(self, image_path: str):
+        if image_path not in self._pages:
+            regions, _mask, _refined, skip_font_scaling, skip_replacements, failed = \
+                self.translator._load_text_and_regions_from_file(image_path, self.config)
+            if failed:  # region numbers would not match the JSON
+                regions = None
+            img, bubble_mask = self._image(image_path)
+            self._pages = {image_path: (regions, img, bubble_mask, bool(skip_font_scaling),
                                         bool(skip_replacements))}  # one page at a time
         return self._pages[image_path]
+
+    async def load_page(self, image_path: str, page_data: dict):
+        """The regions of ``page_data`` (a page of the translation JSON as the agent is about to save it)
+        as the render loads them, and the page image (RGB); None when a region does not load. For
+        ``render_alone`` (``render_check``)."""
+        preload = getattr(self.translator, "set_preloaded_load_text_payload", None)
+        if preload is None:
+            return None
+        preload(image_path, copy.deepcopy(page_data))
+        try:
+            regions, _mask, _refined, _scaling, _replacements, failed = \
+                self.translator._load_text_and_regions_from_file(image_path, self.config)
+        finally:
+            preload(image_path, None)
+        if failed or regions is None:
+            return None
+        img, bubble_mask = self._image(image_path)
+        # a payload from memory is read as the editor's (no replacements): the page's own flags instead
+        self._drafts = {image_path: (bubble_mask, _flag(page_data.get("skip_font_scaling"), True),
+                                     _flag(page_data.get("skip_text_replacements"), False))}
+        return regions, img
+
+    async def render_alone(self, image_path: str, block) -> Optional[np.ndarray]:
+        """``block`` (from ``load_page``) drawn alone on a white page, or None."""
+        from ..rendering import dispatch as dispatch_rendering
+
+        if image_path not in self._drafts:
+            return None
+        img, _bubble = self._image(image_path)
+        bubble_mask, skip_scaling, skip_replacements = self._drafts[image_path]
+        canvas = np.full_like(img, 255)
+        try:
+            out = await dispatch_rendering(canvas, [copy.deepcopy(block)], self.config, img,
+                                           skip_font_scaling=skip_scaling, skip_text_replacements=skip_replacements,
+                                           bubble_mask=bubble_mask)
+        except Exception:
+            logger.warning("fonts: a region could not be rendered for the size check", exc_info=True)
+            return None
+        return np.asarray(out[0] if isinstance(out, tuple) else out)
 
     async def ink(self, image_path: str, index: int, font: str) -> Optional[Ink]:
         from ..rendering import dispatch as dispatch_rendering
@@ -786,6 +843,7 @@ class PipelineFontBackend:
 
     def done(self, image_path: str) -> None:
         self._pages.pop(image_path, None)
+        self._drafts.pop(image_path, None)
 
 
 # --- the service ------------------------------------------------------------------

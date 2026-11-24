@@ -108,6 +108,26 @@ def test_recall_events_show_added_regions_and_failures(app):
     assert page.page_list.item(1).text() == "004 · Agent Page Done · Agents Page Confidence percent=85"
 
 
+def test_render_check_events_list_the_regions_drawn_at_the_wrong_size(app):
+    from ui.main_page.pages.agents_page import AgentsPage
+
+    page = AgentsPage(_t)
+    page.replay([
+        {"type": "run_start", "pages": ["004.jpg"], "model": "m"},
+        {"type": "render_check", "page": "004", "ok": True, "issues": [
+            {"code": "drawn_large", "region": 5, "detail": {}, "weight": 0.25},
+            {"code": "drawn_small", "region": 2, "detail": {}, "weight": 0.25}]},
+        {"type": "render_check", "page": "004", "ok": True, "issues": []},
+        {"type": "render_check", "page": "004", "ok": False, "error": "RuntimeError: no renderer"},
+    ])
+    rows = [page.timeline.topLevelItem(i) for i in range(page.timeline.topLevelItemCount())]
+    assert [r.text(2) for r in rows] == ["Agents Render Check"] * 3
+    assert [r.text(3) for r in rows] == ["Agents Render Check Detail count=2 · #2, #5", "Agents Render Check OK",
+                                         "RuntimeError: no renderer"]
+    page.problems_only.setChecked(True)
+    assert [r.isHidden() for r in rows] == [False, True, False]
+
+
 def test_live_events_arrive_through_the_listener(app, tmp_path):
     from ui.main_page.pages.agents_page import AgentsPage
 
