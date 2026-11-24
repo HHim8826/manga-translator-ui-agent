@@ -470,6 +470,7 @@ def test_a_single_structure_change_gets_a_hint_to_send_the_others_together(tmp_p
     assert all(t.startswith("Merged into #") and "next response" not in t for t in two)  # two at once: no hint
     prompt = runner.system_prompt()
     assert "all the structure changes at once" in prompt and "undo back to it and send the later ones again" in prompt
+    assert "Saves never wait for each other" in prompt and "needs it: set_text" not in prompt  # read as one save a request
 
 
 def test_starting_each_page_afresh_asks_for_every_speaker_in_the_character_list(tmp_path):
