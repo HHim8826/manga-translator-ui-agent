@@ -460,6 +460,10 @@ class _RenderEvents:
         image = _image_path(getattr(ctx, "image_name", "") or "")
         if not image:
             return
+        error = getattr(ctx, "translation_error", None)
+        if error:  # the pipeline could not typeset the page (out of memory, say) and saved it untranslated
+            self._end(image, "failed", error=str(error), output=getattr(ctx, "output_path", None))
+            return
         self.pending.pop(_key(image), None)
         log = self._log(image)
         if log is not None:

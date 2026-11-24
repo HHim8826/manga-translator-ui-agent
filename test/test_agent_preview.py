@@ -59,6 +59,7 @@ class RenderingTranslator(FakeTranslator):
         self.on_result_saved = None
         self.out = tmp_path / "out"
         self.out.mkdir()
+        self.errors = {}  # page name -> the error MangaTranslator saves that page untranslated with
 
     async def translate_batch(self, images_with_configs, save_info=None):
         result = await super().translate_batch(images_with_configs, save_info)
@@ -66,7 +67,8 @@ class RenderingTranslator(FakeTranslator):
             for path, _ in images_with_configs:
                 output = str(self.out / os.path.basename(path))
                 cv2.imwrite(output, np.zeros((10, 10, 3), np.uint8))
-                self.on_result_saved(SimpleNamespace(image_name=path, output_path=output))
+                self.on_result_saved(SimpleNamespace(image_name=path, output_path=output,
+                                                     translation_error=self.errors.get(os.path.basename(path))))
         return result
 
 
@@ -91,6 +93,28 @@ def test_render_events_go_to_the_chapter_run_log(tmp_path):
     assert [e["page"] for e in done] == ["001", "002"]
     assert done[0]["image"] == paths[0] and done[0]["output"] == str(translator.out / "001.png")
     assert all(e["agent"] == "render" and e["run"] == logged[0]["run"] for e in done)
+
+
+def test_a_page_saved_untranslated_is_a_failed_render(tmp_path):
+    """When typesetting fails (out of memory, say) MangaTranslator saves the original page and still
+    calls on_result_saved: that page is reported failed, not done."""
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    translator = RenderingTranslator(tmp_path)
+    translator.errors["002.png"] = "Unable to allocate 30.9 MiB"
+    client = ScriptedClient(_finish_page() + _finish_page())
+    asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {}, client=client, log=lambda m: None,
+                                   agent_settings={"inpaint_review": False, "recall_pass": False}))
+    runs = folder / "manga_translator_work" / "agent" / "runs"
+    done = [e for e in read_events(str(runs / os.listdir(runs)[0])) if e["type"] == "render_done"]
+    assert [(e["page"], e["result"]) for e in done] == [("001", "saved"), ("002", "failed")]
+    assert done[1]["error"] == "Unable to allocate 30.9 MiB" and done[1]["output"] == str(translator.out / "002.png")
 
 
 def test_inpaint_done_names_the_saved_image(tmp_path):
