@@ -30,7 +30,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 from . import json_guard
 from .events import EventLog
@@ -53,6 +53,9 @@ except Exception:  # pragma: no cover - keeps the module importable in isolation
 
 RECAP_PAGES = 2
 """A page started afresh sees the translations of this many pages before it."""
+CONTEXT_IMAGE_SIDE = 1024
+"""Longest side of the earlier pages' images (``context_page_images``): enough to tell the characters
+apart; their text is in the recap."""
 
 
 def _natural(stem: str) -> list:
@@ -387,11 +390,59 @@ class AgentRunner:
         self._build_preamble()
         self.session.last_prompt_tokens = 0
 
+    def _earlier_pages(self, current: str) -> List[str]:
+        """The translated pages before ``current``, this run's and an earlier run's (a chapter is often run
+        in parts), oldest first."""
+        return sorted({p["page"] for p in self.session.past if _natural(p["page"]) < _natural(current)},
+                      key=_natural)
+
+    def _page_image(self, name: str, folder: str) -> Optional[str]:
+        """The image of the page called ``name``: one of this run's, else one in ``folder`` (a page an
+        earlier run translated)."""
+        for path in self.pages:
+            if page_stem(path) == name:
+                return path
+        from ..image_formats import SUPPORTED_IMAGE_EXTENSIONS
+        try:
+            files = sorted(os.listdir(folder))
+        except OSError:
+            return None
+        for file in files:
+            path = os.path.join(folder, file)
+            if os.path.splitext(file)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS and page_stem(path) == name:
+                return path
+        return None
+
+    def context_images(self, doc: PageDoc) -> Tuple[str, List[str]]:
+        """The text and the image urls of the ``context_page_images`` translated pages before ``doc``;
+        ("", []) when the setting is 0, the chapter is one conversation (its pages are in it already) or
+        no earlier page has an image."""
+        from . import images
+        count = self.settings.context_page_images
+        if not count or self.settings.whole_chapter_conversation:
+            return "", []
+        names, urls = [], []
+        for name in self._earlier_pages(doc.stem)[-count:]:
+            path = self._page_image(name, os.path.dirname(doc.image_path))
+            if path is None:
+                continue
+            try:
+                urls.append(images.data_url(images.thumbnail(path, CONTEXT_IMAGE_SIDE)))
+            except Exception:  # an unreadable page: the others still help
+                logger.warning("agent: the context image of page %s could not be read", name, exc_info=True)
+                continue
+            names.append(name)
+        if not names:
+            return "", []
+        text = (f"Earlier page{'s' if len(names) > 1 else ''} for context only, oldest first: {', '.join(names)}. "
+                "They are already translated: look at them to see who is who, who speaks to whom and what "
+                "happened. Do not translate them; their numbered boxes and ids are not this page's.")
+        return text, urls
+
     def recap(self, current: str) -> str:
         """The translated pages before ``current`` (this run's and an earlier run's: a chapter is often run
         in parts), and what the last ``RECAP_PAGES`` of them say."""
-        earlier = sorted({p["page"] for p in self.session.past if _natural(p["page"]) < _natural(current)},
-                         key=_natural)
+        earlier = self._earlier_pages(current)
         if not earlier:
             return ""
         lines = ["Pages before this one, already translated: " + ", ".join(earlier) + ". Their translations "
@@ -533,10 +584,14 @@ class AgentRunner:
             text += "Check this page against the image, fix what is wrong with the tools, then call mark_page_done."
         else:
             text += "Work through this page with the tools, then call mark_page_done."
-        return {"role": "user", "content": [
-            {"type": "text", "text": text},
-            {"type": "image_url", "image_url": {"url": url, "detail": self.settings.image_detail}},
-        ]}
+        content = [{"type": "text", "text": text},
+                   {"type": "image_url", "image_url": {"url": url, "detail": self.settings.image_detail}}]
+        context, urls = self.context_images(doc)
+        if urls:
+            content.append({"type": "text", "text": context})
+            content += [{"type": "image_url", "image_url": {"url": u, "detail": self.settings.image_detail}}
+                        for u in urls]
+        return {"role": "user", "content": content}
 
     # --- pages --------------------------------------------------------------
     async def run_page(self, index: int, doc: PageDoc) -> Dict[str, Any]:

@@ -1800,6 +1800,8 @@
   "desc_agent_show_page_on_start": "AI Agent ワークフローを始めると AI Agent ページに切り替え、各ページの進み具合・タイムライン・プレビューを表示します。",
   "label_whole_chapter_conversation": "1 話を 1 つの会話で進める",
   "desc_agent_whole_chapter_conversation": "次のページに移っても、前のページの会話（画像とツールの結果を含む）を残します。リクエストのたびに再送されるため、10 ページの 1 話でトークンが約 2.6 倍になります。オフにすると、各ページは記憶と直前 2 ページの訳文だけを持って始まります。",
+  "label_context_page_images": "前のページの画像",
+  "desc_agent_context_page_images": "「1 話を 1 つの会話で進める」がオフのとき、各ページに翻訳済みの前のページの画像をこの枚数だけ添えます（長辺最大 1024 px）。誰が誰か、誰が誰に話しているかが分かるようになります。トークンが増えます：画像 1 枚につき、そのページのリクエストごとに約 870 トークン、1 ページで約 8k（ほとんどはキャッシュされます）。0 で添付なし、最大 3 枚。",
   "Agent Review Empty": "AI Agent はこのページを処理していません。",
   "Agent Review Summary": "AI Agent：{state}",
   "Agent Review Flags": "要確認（{count}）",

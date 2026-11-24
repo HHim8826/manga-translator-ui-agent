@@ -1800,6 +1800,8 @@
   "desc_agent_show_page_on_start": "AI Agent 워크플로를 시작하면 AI Agent 페이지로 바꿔 각 페이지의 진행, 타임라인, 미리 보기를 보여 줍니다.",
   "label_whole_chapter_conversation": "한 화를 한 대화로 진행",
   "desc_agent_whole_chapter_conversation": "다음 페이지로 넘어가도 앞 페이지의 대화(이미지와 도구 결과 포함)를 유지합니다. 요청할 때마다 다시 보내므로 10페이지짜리 한 화에서 토큰이 약 2.6배가 됩니다. 끄면 각 페이지는 메모리와 직전 2페이지의 번역만 가지고 새로 시작합니다.",
+  "label_context_page_images": "앞 페이지 이미지",
+  "desc_agent_context_page_images": "'한 화를 한 대화로 진행'이 꺼져 있을 때 각 페이지에 이미 번역한 앞 페이지의 이미지를 이 수만큼 함께 보냅니다(긴 변 최대 1024 px). 누가 누구인지, 누가 누구에게 말하는지 알 수 있게 됩니다. 토큰을 더 씁니다: 이미지 한 장마다 그 페이지의 요청마다 약 870토큰, 페이지당 약 8k(대부분 캐시됨). 0이면 보내지 않으며 최대 3장입니다.",
   "Agent Review Empty": "AI Agent가 이 페이지를 처리하지 않았습니다.",
   "Agent Review Summary": "AI Agent: {state}",
   "Agent Review Flags": "검토 필요 ({count})",

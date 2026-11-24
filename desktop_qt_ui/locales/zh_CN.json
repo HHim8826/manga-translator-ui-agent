@@ -1810,6 +1810,8 @@
   "desc_agent_show_page_on_start": "开始 AI Agent 流程时自动切到 AI Agent 页，看每页的进度、时间轴和预览。",
   "label_whole_chapter_conversation": "整话共用一段对话",
   "desc_agent_whole_chapter_conversation": "换页时保留前面页面的对话（含图片和工具结果）。每次请求都要重新发送这些内容，10 页的一话 token 约为 2.6 倍。关闭时，每页只带记忆和前两页的译文重新开始。",
+  "label_context_page_images": "附上前几页的图片",
+  "desc_agent_context_page_images": "关闭“整话共用一段对话”时，每页另外附上前几页已翻好页面的图片（长边最多 1024 px），让代理看得出谁是谁、谁在跟谁说话。会用掉更多 token：每张图在这页的每次请求都多约 870 token，一页约多 8k（大多会命中缓存）。0 表示不附，最多 3 张。",
   "Agent Review Empty": "AI Agent 没有处理过这一页。",
   "Agent Review Summary": "AI Agent：{state}",
   "Agent Review Flags": "待确认（{count}）",

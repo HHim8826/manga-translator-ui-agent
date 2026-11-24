@@ -1800,6 +1800,8 @@
   "desc_agent_show_page_on_start": "Al empezar una ejecución de AI Agent, cambia a la página AI Agent para seguir cada página, la cronología y la vista previa.",
   "label_whole_chapter_conversation": "Una conversación por capítulo",
   "desc_agent_whole_chapter_conversation": "Conserva la conversación de las páginas anteriores (imágenes y resultados de herramientas) al pasar a la siguiente. Cada solicitud la reenvía, así que un capítulo de 10 páginas usa unas 2,6 veces los tokens. Desactivado, cada página empieza con la memoria y las traducciones de las dos páginas anteriores.",
+  "label_context_page_images": "Imágenes de páginas anteriores",
+  "desc_agent_context_page_images": "Con Una conversación por capítulo desactivado, cada página recibe también las imágenes de este número de páginas ya traducidas anteriores (como máximo 1024 px), para que el agente vea quién es quién y quién habla con quién. Usa más tokens: cada imagen añade unos 870 tokens a cada solicitud de la página, unos 8k por página (casi todos en caché). 0 no envía ninguna; como máximo 3.",
   "Agent Review Empty": "El AI Agent no ha trabajado en esta página.",
   "Agent Review Summary": "AI Agent: {state}",
   "Agent Review Flags": "Por revisar ({count})",

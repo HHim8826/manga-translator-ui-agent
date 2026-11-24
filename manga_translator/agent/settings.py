@@ -31,6 +31,12 @@ class AgentSettings(BaseModel):
     (``AgentRunner.run_page``): every request resends the conversation, and on 131 pages of real runs
     the carried pages made the translation agent's requests 2.6 times as big (391k tokens a page; about
     150k starting each page afresh)."""
+    context_page_images: int = Field(default=0, ge=0, le=3)
+    """With ``whole_chapter_conversation`` off, each page also gets the images of this many translated
+    pages before it (``AgentRunner.context_images``), so the agent sees who is who and who speaks to
+    whom across pages. Each image is at most ``CONTEXT_IMAGE_SIDE`` px on its longest side: about 870
+    tokens for a 1351x1920 page at high detail, resent with every request of the page (8 to 10), so
+    about 8k tokens a page each, most of them cached."""
     page_image_max_side: int = Field(default=2048, ge=0)
     """Longest side of the whole-page images the translation agent and the recall check get (a zoom's
     crop is not limited); 0 sends them at full size. The message gives the page's own size, and boxes

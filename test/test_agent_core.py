@@ -411,12 +411,44 @@ def test_a_chapter_run_in_parts_sees_the_pages_an_earlier_run_translated(tmp_pat
     runner, client, store, events = _runner(tmp_path, pages[:2], _finish_page() * 2)
     asyncio.run(runner.run())
     events.close()
-    later, client, _, events = _runner(tmp_path, pages[2:], _finish_page())
+    later, client, _, events = _runner(tmp_path, pages[2:], _finish_page(), context_page_images=1)
     asyncio.run(later.run())
     events.close()
     text = client.requests[0][2]["content"][0]["text"]
     assert text.startswith("Pages before this one, already translated: 001, 002.")  # 002 before 010
     assert "Page 001 as translated:\n- #1 text1 → 譯1" in text and "Page 002 as translated:" in text
+    # the image of 002, not in this run's pages, is found in the chapter's folder
+    parts = client.requests[0][2]["content"]
+    assert [p["type"] for p in parts] == ["text", "image_url", "text", "image_url"]
+    assert parts[2]["text"].startswith("Earlier page for context only, oldest first: 002.")
+
+
+def test_earlier_page_images_come_with_each_page_when_asked(tmp_path, monkeypatch):
+    """context_page_images: the last translated pages' images, small, after the page's own image; the
+    page's later requests start the same, so they are cached."""
+    from manga_translator.agent import images
+    from manga_translator.agent.runner import CONTEXT_IMAGE_SIDE
+
+    shown, real = [], images.thumbnail
+    monkeypatch.setattr(images, "thumbnail", lambda path, side=640: shown.append((os.path.basename(path), side))
+                        or real(path, side))
+    pages = [make_page(tmp_path, f"{i:03d}") for i in range(1, 4)]
+    runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 3, context_page_images=2)
+    asyncio.run(runner.run())
+    events.close()
+    parts = lambda request: request[2]["content"]  # noqa: E731  the page's own message
+    count = lambda request: sum(1 for p in parts(request) if p["type"] == "image_url")  # noqa: E731
+    assert [count(client.requests[i]) for i in (0, 2, 4)] == [1, 2, 3]  # the first request of pages 1-3
+    assert parts(client.requests[2])[2]["text"].startswith("Earlier page for context only, oldest first: 001.")
+    assert parts(client.requests[4])[2]["text"].startswith("Earlier pages for context only, oldest first: 001, 002.")
+    assert [s for s in shown if s[1] == CONTEXT_IMAGE_SIDE] == [("001.png", 1024), ("001.png", 1024), ("002.png", 1024)]
+    assert client.requests[5][:3] == client.requests[4][:3]
+    # one conversation per chapter: the earlier pages are in it already
+    whole, client, _, events = _runner(tmp_path / "whole", [make_page(tmp_path / "whole", f"{i:03d}") for i in (1, 2)],
+                                       _finish_page() * 2, context_page_images=2, whole_chapter_conversation=True)
+    asyncio.run(whole.run())
+    events.close()
+    assert sum(1 for p in client.requests[2][-1]["content"] if p["type"] == "image_url") == 1
 
 
 def test_runner_step_limit_and_compaction(tmp_path):

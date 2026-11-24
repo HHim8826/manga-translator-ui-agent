@@ -1811,6 +1811,8 @@
   "desc_agent_show_page_on_start": "When an AI Agent run starts, switch to the AI Agent page to follow each page's progress, the timeline and the preview.",
   "label_whole_chapter_conversation": "One conversation per chapter",
   "desc_agent_whole_chapter_conversation": "Keep the earlier pages' conversation (their images and tool results) when the agent moves to the next page. Every request resends it, so a 10-page chapter takes about 2.6 times the tokens. Off, each page starts from the memory and the last two pages' translations.",
+  "label_context_page_images": "Earlier page images",
+  "desc_agent_context_page_images": "With One conversation per chapter off, each page also gets the images of this many translated pages before it (at most 1024 px), so the agent sees who is who and who speaks to whom. Uses more tokens: each image adds about 870 tokens to every request of the page, about 8k tokens a page (mostly cached). 0 sends none; at most 3.",
   "Agent Review Empty": "The AI Agent has not worked on this page.",
   "Agent Review Summary": "AI Agent: {state}",
   "Agent Review Flags": "To check ({count})",

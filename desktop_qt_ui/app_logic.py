@@ -1336,6 +1336,7 @@ class MainAppLogic(QObject):
                     "share_memory": self._t("label_share_memory"),
                     "show_page_on_start": self._t("label_show_page_on_start"),
                     "whole_chapter_conversation": self._t("label_whole_chapter_conversation"),
+                    "context_page_images": self._t("label_context_page_images"),
                     "memory_dir": self._t("label_memory_dir"),
                     "proofread": self._t("label_proofread"),
                     "fix_missing_glyphs": self._t("label_fix_missing_glyphs"),
