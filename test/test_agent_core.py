@@ -451,6 +451,16 @@ def test_single_saves_get_a_hint_to_save_the_rest_together(tmp_path):
     assert "Save the whole page in one response" in runner.system_prompt()
 
 
+def test_starting_each_page_afresh_asks_for_every_speaker_in_the_character_list(tmp_path):
+    """A later page sees the character list, not the earlier pages: without the speakers' genders
+    in it, a page addressed a woman with 你 where the chapter used 妳."""
+    pages = [make_page(tmp_path, "001")]
+    fresh = _runner(tmp_path, pages, [])[0].system_prompt()
+    whole = _runner(tmp_path, pages, [], whole_chapter_conversation=True)[0].system_prompt()
+    assert "Nor do they see who is who" in fresh and "even when the glossary or the work's names" in fresh
+    assert "who is who" not in whole and "single conversation" in whole
+
+
 def test_on_page_done_gets_each_finished_page(tmp_path):
     pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
     script = [_calls(("set_text", {"id": 1, "source_text": "s", "translation": "t", "category": "dialogue",

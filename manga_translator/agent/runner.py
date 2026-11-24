@@ -122,7 +122,11 @@ FLOW = {
             "settled reaches you through the glossary, character list and story summary below, the translations of "
             "the last pages at the top of the page message, and search_past_translations.",
             "Update the story summary with story_summary_update every few pages and whenever something happens that "
-            "later pages need to know: they see the summary, not this page."),
+            "later pages need to know: they see the summary, not this page. Nor do they see who is who: when someone "
+            "speaks or is spoken to on this page and the character list lacks them, add them with character_upsert, "
+            "even when the glossary or the work's names already have them. Give their gender (it decides gendered "
+            "words such as the pronoun used to address them), how they speak and address others, and in notes what "
+            "they look like, so a later page can tell who is talking to whom. Update them when a page shows more."),
 }
 """The prompt's lines on the conversation, by ``whole_chapter_conversation``."""
 
