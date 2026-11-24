@@ -38,6 +38,7 @@ from .utils import (
     visualize_textblocks,
 )
 from .utils.batch_skip import BatchInputPlan, input_path, plan_batch_inputs, slice_batch_indices
+from .utils.textblock import saved_lines_to_page
 from .utils.onnx_runtime import set_onnx_gpu_disabled
 from .utils.text_filter import match_filter
 
@@ -1613,6 +1614,11 @@ class MangaTranslator:
         region_hook = getattr(self, 'load_text_region_hook', None) if preloaded is None else None
         for region_data in regions_data:
             try:
+                if isinstance(region_data, dict):
+                    # a turned text is saved upright about its center (to_dict, the editor); TextBlock
+                    # takes its lines on the page. Before the hook, which may move the center; on a
+                    # copy, so an editor payload loaded twice is not turned twice.
+                    region_data = saved_lines_to_page(dict(region_data))
                 if region_hook is not None and isinstance(region_data, dict):
                     try:
                         # editor_layout: the page is typeset as the editor exports it (center = the text box's middle)

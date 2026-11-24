@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 import cv2
 import numpy as np
 
+from ..utils.textblock import page_lines_to_saved, saved_lines_to_page
 from .snap import SnapResult
 from .store import write_json_atomic
 from .store import page_stem
@@ -315,7 +316,10 @@ class PageDoc:
         self.regions: Dict[int, Region] = {}
         for index, data in enumerate(page_data.get("regions", []), start=1):
             local = data.get("text") or "".join(data.get("texts") or [])
-            self.regions[index] = Region(id=index, data=copy.deepcopy(data), ocr_local=str(local or ""))
+            # the agent works with the lines as they lie on the page; the JSON keeps a turned text
+            # upright about its center
+            self.regions[index] = Region(id=index, data=saved_lines_to_page(copy.deepcopy(data)),
+                                         ocr_local=str(local or ""))
         self.order: List[int] = list(self.regions)
         self.flags: List[dict] = []
         self.status = "pending"
@@ -818,7 +822,7 @@ class PageDoc:
                         and shown and shown == data.get("translation_raw"):
                     # the agent's text an earlier check wrote without the replacements: drawn as it was
                     data["translation"] = as_rendered(shown, data)
-                out.append(data)
+                out.append(page_lines_to_saved(data))
                 continue
             data = copy.deepcopy(region.data)
             source = region.source_text if region.source_text else region.ocr_local
@@ -835,7 +839,9 @@ class PageDoc:
             side = "" if region.user_edited else layout_alignment(region)
             if side and data.get("alignment") in (None, "", "auto", "center"):
                 data["alignment"] = side  # set as the source lines were
-            out.append(data)
+            # the JSON keeps a turned text upright about its center (the editor draws it so, the
+            # render turns it back): written as it lies on the page, the editor turned it twice
+            out.append(page_lines_to_saved(data))
         return out
 
     def _left(self, region: Region) -> bool:

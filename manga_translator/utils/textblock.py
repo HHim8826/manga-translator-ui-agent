@@ -669,6 +669,68 @@ def rotate_polygons(center, polygons, rotation, new_center=None, to_int=True):
     return rotated
 
 
+def _saved_turn(region: dict, sign: float):
+    """(angle in radians times ``sign``, rotation center) of a saved region, or None when it is not
+    turned. The center is the saved ``center`` (``to_dict`` turns the lines about it); without one, the
+    middle of the lines, as the editor takes it."""
+    if not isinstance(region, dict):
+        return None
+    try:
+        angle = float(region.get("angle") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    lines = region.get("lines")
+    if abs(angle) < 1e-9 or not isinstance(lines, (list, tuple, np.ndarray)) or len(lines) == 0:
+        return None
+    center = region.get("center")
+    try:
+        cx, cy = float(center[0]), float(center[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        try:
+            points = np.asarray(lines, dtype=np.float64).reshape(-1, 2)
+        except (TypeError, ValueError):
+            return None
+        cx = float((points[:, 0].min() + points[:, 0].max()) / 2)
+        cy = float((points[:, 1].min() + points[:, 1].max()) / 2)
+    return sign * np.deg2rad(angle), (cx, cy)
+
+
+def _turn_lines(lines, rad: float, center) -> list:
+    cos_a, sin_a = float(np.cos(rad)), float(np.sin(rad))
+    cx, cy = center
+    return [[[cx + (float(x) - cx) * cos_a - (float(y) - cy) * sin_a,
+              cy + (float(x) - cx) * sin_a + (float(y) - cy) * cos_a] for x, y in (pt[:2] for pt in line)]
+            for line in lines]
+
+
+def saved_lines_to_page(region: dict) -> dict:
+    """A saved region (a translation JSON, the editor) keeps a turned text's lines upright about its
+    ``center`` with the turn in ``angle`` (``to_dict``; the editor draws them so); ``TextBlock`` and the
+    renderer take the lines as they lie on the page. Turns ``region["lines"]`` onto the page, in place,
+    and writes the center it turned about when there was none. Without it a JSON saved after a render
+    came back turned twice: a label written on a 38° slant, 177 x 24 px, became a 156 x 128 box and
+    was drawn at 64 px instead of 15 (ch42 p1, the road labels of the map)."""
+    turn = _saved_turn(region, 1.0)
+    if turn is not None:
+        rad, center = turn
+        region["lines"] = _turn_lines(region["lines"], rad, center)
+        if region.get("center") is None:
+            region["center"] = [center[0], center[1]]
+    return region
+
+
+def page_lines_to_saved(region: dict) -> dict:
+    """``saved_lines_to_page`` the other way: the page lines of a turned region upright about its
+    ``center``, in place, for a translation JSON."""
+    turn = _saved_turn(region, -1.0)
+    if turn is not None:
+        rad, center = turn
+        region["lines"] = _turn_lines(region["lines"], rad, center)
+        if region.get("center") is None:
+            region["center"] = [center[0], center[1]]
+    return region
+
+
 def _simple_sort(regions: List[TextBlock], right_to_left: bool) -> List[TextBlock]:
     """
     A simple fallback sorting logic. Sorts regions from top to bottom,

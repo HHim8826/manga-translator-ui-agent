@@ -15,6 +15,7 @@ import logging
 import os
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
+from ..utils.textblock import saved_lines_to_page
 from . import checks, images, json_guard
 from .events import EventLog
 from .page import BREAK, Region, needs_break, text_length, with_breaks
@@ -90,7 +91,9 @@ class ProofPage:
         self.key = next(iter(raw))
         data = raw[self.key]
         regions = data.get("regions", []) if isinstance(data, dict) else data
-        self.regions = {i: Region(id=i, data=r) for i, r in enumerate(regions, start=1)}
+        # the lines as they lie on the page (a turned text is saved upright about its center); the JSON
+        # is read again from disk to write a translation, so these copies are never saved
+        self.regions = {i: Region(id=i, data=saved_lines_to_page(dict(r))) for i, r in enumerate(regions, start=1)}
         self.categories: Dict[int, str] = {}
         """From the agent's sidecar, matched by box center."""
         self.locked: set = set()

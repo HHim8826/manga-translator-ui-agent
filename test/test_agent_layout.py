@@ -18,6 +18,7 @@ from manga_translator.agent.tools import AgentSession, ToolRegistry
 from manga_translator.config import Config
 from manga_translator.rendering import _calc_region_dst_points_for_font, _resolve_region_layout_center
 from manga_translator.utils import TextBlock
+from manga_translator.utils.textblock import saved_lines_to_page
 from test_agents_page import app  # noqa: F401  (the measuring needs Qt: the session's one QApplication)
 
 
@@ -106,7 +107,9 @@ def test_a_label_on_a_slant_gets_a_slanted_box_and_its_own_font_size(tmp_path):
     assert 16 <= region.font_size <= 28  # the glyphs, not the upright box around the line (about 66 px)
     _translate(tools, 2, "路障")
     session.doc.save()
-    block = TextBlock(**_saved(json_path)[1])
+    saved = _saved(json_path)[1]  # upright about its center, as the editor draws it
+    assert np.ptp(np.asarray(saved["lines"])[..., 1]) <= 30
+    block = TextBlock(**saved_lines_to_page(saved))  # the render takes it back onto the page
     assert abs(block.angle + 30) <= 4
     w, h = block.unrotated_size  # turned back by its angle, the line runs along the x axis
     assert w > 3 * h and h <= 30
