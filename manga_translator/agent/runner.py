@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -52,6 +53,11 @@ except Exception:  # pragma: no cover - keeps the module importable in isolation
 
 RECAP_PAGES = 2
 """A page started afresh sees the translations of this many pages before it."""
+
+
+def _natural(stem: str) -> list:
+    """Sort key of page names: 2 before 10."""
+    return [(0, int(part), "") if part.isdigit() else (1, 0, part) for part in re.split(r"(\d+)", stem or "") if part]
 DROP_PAGES_LEFT = 4
 """Old page images are dropped only while at least this many pages (the current one included) are left
 (``AgentRunner.drop_images``)."""
@@ -372,13 +378,16 @@ class AgentRunner:
         self._build_preamble()
         self.session.last_prompt_tokens = 0
 
-    def recap(self) -> str:
-        """The finished pages of this run, and what the last ``RECAP_PAGES`` of them say."""
-        if not self.done_pages:
+    def recap(self, current: str) -> str:
+        """The translated pages before ``current`` (this run's and an earlier run's: a chapter is often run
+        in parts), and what the last ``RECAP_PAGES`` of them say."""
+        earlier = sorted({p["page"] for p in self.session.past if _natural(p["page"]) < _natural(current)},
+                         key=_natural)
+        if not earlier:
             return ""
-        lines = ["Pages already finished in this run: " + ", ".join(self.done_pages) + ". Their translations "
+        lines = ["Pages before this one, already translated: " + ", ".join(earlier) + ". Their translations "
                  "are saved; use search_past_translations to see how something was translated before."]
-        for stem in self.done_pages[-RECAP_PAGES:]:
+        for stem in earlier[-RECAP_PAGES:]:
             entries = [p for p in self.session.past if p["page"] == stem]
             if entries:
                 lines.append(f"Page {stem} as translated:")
@@ -502,7 +511,7 @@ class AgentRunner:
         page = self.session.page_image
         url, shown = images.page_url(images.draw_marks(page, self.session.marks()), self.settings.page_image_max_side)
         checked = ", checked again: the list gives the current translations" if doc.revise else ""
-        recap = "" if self.settings.whole_chapter_conversation else self.recap()
+        recap = "" if self.settings.whole_chapter_conversation else self.recap(doc.stem)
         text = (f"{recap}Page {index + 1} of {len(self.pages)}: {os.path.basename(doc.image_path)} "
                 f"({page.width}x{page.height} px{', ' + shown if shown else ''}), "
                 f"{len(regions)} candidate region(s){checked}.\n"

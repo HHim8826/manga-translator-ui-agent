@@ -399,11 +399,25 @@ def test_each_page_starts_afresh_with_the_last_pages_translations(tmp_path):
     assert last[:2] == first[:2], "the preamble is the same: cached"
     assert len(last) == 3 and len(first) == 3, "preamble + the page's own message, nothing from earlier pages"
     text = last[2]["content"][0]["text"]
-    assert text.startswith("Pages already finished in this run: 001, 002, 003.")
+    assert text.startswith("Pages before this one, already translated: 001, 002, 003.")
     assert "Page 001 as translated" not in text and RECAP_PAGES == 2
     assert "Page 002 as translated:\n- #1 text1 → 譯1" in text and "Page 003 as translated:" in text
     assert sum(1 for part in last[2]["content"] if part.get("type") == "image_url") == 1  # page 4 only
     assert not any(e["type"] == "compact" for e in read_events(events.path))
+
+
+def test_a_chapter_run_in_parts_sees_the_pages_an_earlier_run_translated(tmp_path):
+    pages = [make_page(tmp_path, f"{i:03d}") for i in (1, 2, 10)]
+    runner, client, store, events = _runner(tmp_path, pages[:2], _finish_page() * 2)
+    asyncio.run(runner.run())
+    events.close()
+    later, client, _, events = _runner(tmp_path, pages[2:], _finish_page())
+    asyncio.run(later.run())
+    events.close()
+    text = client.requests[0][2]["content"][0]["text"]
+    assert text.startswith("Pages before this one, already translated: 001, 002.")  # 002 before 010
+    assert "Page 001 as translated:\n- #1 text1 → 譯1" in text and "Page 002 as translated:" in text
+
 
 def test_runner_step_limit_and_compaction(tmp_path):
     pages = [make_page(tmp_path, "001"), make_page(tmp_path, "002")]
