@@ -379,3 +379,22 @@ def test_review_reports_flat_filled_areas(tmp_path):
     logged = read_events(events.path)
     assert logged[0]["type"] == "inpaint_start" and logged[0]["filled"] == 3 and logged[-1]["filled"] == 3
     assert "Areas on a flat background were already filled" in reviewer.system_prompt()
+
+
+def test_the_review_offers_lama_large_besides_the_configured_inpainter_not_flux(monkeypatch):
+    """flux2-klein drew erased labels back and was 100x slower than lama_large: only when configured."""
+    from types import SimpleNamespace
+
+    import manga_translator.inpainting as inpainting
+    from manga_translator.agent.workflow import PipelineInpaintBackend
+
+    downloaded = SimpleNamespace(_check_downloaded=lambda: True)
+    monkeypatch.setattr(inpainting, "get_inpainter", lambda key, *a, **k: downloaded)
+
+    def offered(configured):
+        config = SimpleNamespace(inpainter=SimpleNamespace(inpainter=configured))
+        return PipelineInpaintBackend(None, config).methods()
+
+    assert offered("lama_mpe") == ["lama_mpe", "lama_large"]
+    assert offered("flux2-klein") == ["flux2-klein", "lama_large"]
+    assert offered("none") == ["lama_large"]

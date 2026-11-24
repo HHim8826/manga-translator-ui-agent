@@ -128,7 +128,11 @@ def editor_box_center(region: dict, editor_layout: bool = True) -> None:
 class PipelineInpaintBackend:
     """The translator's inpainting models and text detector, for the inpaint review."""
 
-    EXTRA_METHODS = ("lama_large", "flux2-klein")
+    EXTRA_METHODS = ("lama_large",)
+    """Offered besides the configured inpainter. Not flux2-klein: on the README's hard page it drew the
+    erased labels back from its reference image, or kept whatever the hole was filled with (white, a
+    blur), never the dashed lines and screentone lama_large restores, and it took 13-100 s a unit to
+    lama's 0.1 s. It is still offered when it is the configured inpainter."""
 
     def __init__(self, translator, config):
         self.translator = translator
