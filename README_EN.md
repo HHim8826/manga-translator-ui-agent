@@ -25,20 +25,24 @@ also merges a few upstream pull requests that aren't merged upstream yet, and fi
 
 Here are the conclusions first; the details follow.
 
-- **Results:** On the same three pages with the same model, the AI Agent splits asides out of narration, keeps
-  paragraphs apart, keeps text in narrow boxes readable, and picks fonts close to the original lettering for signs
-  and handwriting. [See the comparison](#comparison-original-workflow-and-ai-agent)
-- **Cost:** The AI Agent uses about 320,000 prompt tokens per page (over 80% of them cached) and about 4,000 output
-  tokens, roughly 12 times the cost of the original workflow.
-  [See token usage](#token-usage-time-and-cost)
-- **Time:** Real chapters take about 2 to 2.5 minutes per page; the original workflow did the three pages in about
-  77 seconds.
+- **Results:** Three pages compare an easy, a normal, and a hard case. On a simple dialogue page the two workflows
+  are about the same. On a normal page (narration, asides, and signs together), the AI Agent splits asides out of
+  narration, keeps text at a normal size, and picks fonts close to the original lettering for signs and handwriting.
+  On a hard page (a title page with a hand-drawn map), the original workflow misses most of the map labels; the AI
+  Agent translates almost all of them but misplaces two.
+  [See the comparison](#comparison-original-workflow-and-ai-agent)
+- **Cost:** On real chapters the AI Agent uses about 430,000 prompt tokens per page (89% of them cached) and about
+  2,900 output tokens, roughly 12 times the cost of the original workflow. Busier pages use more: about 140,000 for
+  the easy page here and about 1.4 million for the hard one. [See token usage](#token-usage-time-and-cost)
+- **Time:** Real chapters take about 2 to 2.5 minutes per page. Here the easy and normal pages took 4.5 minutes
+  together and the hard page 13.5 minutes; the original workflow did all three in about 2.5 minutes.
 - **Human review:** Anything the agent isn't sure about goes on a review list that you see on the AI Agent page and
   in the editor.
 
 ## Comparison: original workflow and AI Agent
 
-All three images below come from runs with the same version of the app, the same GPT-series vision model on the
+The three images below are an easy, a normal, and a hard page. All three come from runs with the same version of the
+app, the same GPT-series vision model on the
 same OpenAI-compatible API, and the same prompt file for the work (with its glossary). The original workflow uses
 the high-quality translator with one request per page; the AI Agent uses the default settings with proofreading
 turned on. Each image shows, from left to right, the original page, the original workflow, and the AI Agent.
@@ -76,35 +80,54 @@ flowchart TD
 
 ### Whole pages
 
-**Page 2:** In the narrow box at the top right, the original workflow squeezes two sentences into tiny text; the AI
-Agent keeps the source's line breaks in three readable lines. Narration also uses a Mincho font close to the
-original, while dialogue keeps the bold gothic font.
+#### Easy: a dialogue page
 
-![Page 2: original, original workflow, and AI Agent side by side](doc/images/agents/compare-002.jpg)
+Chapter 32, page 9: two speech bubbles and sound effects drawn on the art. Both workflows translate well and lay the
+text out properly, so the original workflow is good enough for pages like this. The difference is the sound effect:
+the original workflow replaces "ぐるん" with "唰" and leaves part of the old strokes; the AI Agent leaves sound
+effects drawn on the art as they are.
 
-**Page 3:** The original workflow merges the narration at the top left with the small aside next to it; the AI Agent
-splits them into two boxes and sets the aside in a smaller handwriting-style font. The signs also get a
-handwriting-style font. One weakness of the AI Agent here: the line at the top right ("But I haven't given up") is
-set small in its tall box.
+![Easy: chapter 32, page 9 — original, original workflow, and AI Agent side by side](doc/images/agents/compare-easy.jpg)
 
-![Page 3: original, original workflow, and AI Agent side by side](doc/images/agents/compare-003.jpg)
+#### Normal: narration, asides, and signs together
 
-**Page 6:** The narration at the bottom left has two paragraphs. The original workflow squeezes the second one into
-a line of small text; the AI Agent keeps both paragraphs at the same size.
+Chapter 32, page 3: the original workflow merges the narration at the top left with the small aside next to it, and
+shrinks the narration in the second panel to tiny text. The AI Agent puts the aside in its own box with a smaller
+handwriting-style font, keeps the second narration at a normal size, and also gives the signs a handwriting-style
+font.
 
-![Page 6: original, original workflow, and AI Agent side by side](doc/images/agents/compare-006.jpg)
+![Normal: chapter 32, page 3 — original, original workflow, and AI Agent side by side](doc/images/agents/compare-normal.jpg)
+
+#### Hard: a title page with a hand-drawn map
+
+Chapter 42, page 1: the top half is the title page (the series logo, the author, and the chapter title); the bottom
+half is a hand-drawn map. Its labels are small, some are written on a slant or over screentone, and one word is drawn
+in two pieces.
+
+- **Original workflow:** Text detection finds only 23 blocks of text. Four "バリケード" (barricade) labels, five
+  "テント屋根" (tent roof) labels, "キッチン？" (kitchen?), and others on the map get no box and stay in Japanese.
+  The logo's "ALL UNKNOWN" and the author line "by 7Liquid" are erased and rewritten as "一切未知 7Liquid 著".
+- **AI Agent:** The recall check and the translation agent add the missing boxes, 37 in all, and every map label is
+  translated; slanted labels keep their angle. The logo and the author stay as drawn; only the chapter title is
+  translated.
+- **AI Agent's weak spots:** A slanted "tent roof" label in the middle is set upright in large type, and the vertical
+  "barricade" label on the left, which detection cut in two, comes out as one large and one small character. The
+  inpaint review also lists 8 spots of screentone and dashed lines to check by hand; the page has 11 review items in
+  all.
+
+![Hard: chapter 42, page 1 — original, original workflow, and AI Agent side by side](doc/images/agents/compare-hard.jpg)
 
 ### Close-ups
 
-These are the same areas, magnified. Both workflows leave the sound effects drawn on the art as they are.
+These are the same areas, magnified.
 
-| Narration and aside kept apart | Two paragraphs kept apart |
+| Easy: sound effects | Normal: narration and aside |
 | :---: | :---: |
-| ![Top left of page 3: the original workflow merges the narration and the aside; the AI Agent uses two boxes](doc/images/agents/detail-aside.jpg) | ![Bottom left of page 6: the original workflow squeezes the second paragraph; the AI Agent keeps both](doc/images/agents/detail-paragraphs.jpg) |
+| ![Bottom right of chapter 32, page 9: the original workflow replaces the sound effect with "唰"; the AI Agent keeps the art](doc/images/agents/detail-easy-sfx.jpg) | ![Left side of chapter 32, page 3: the original workflow merges the narration and the aside and shrinks the second narration; the AI Agent keeps them apart](doc/images/agents/detail-normal-narration.jpg) |
 
-| Text in a narrow box | Fonts on signs |
+| Hard: map labels | Hard: logo and author |
 | :---: | :---: |
-| ![Top right of page 2: the original workflow's text is too small; the AI Agent follows the source's line breaks](doc/images/agents/detail-small-box.jpg) | ![Signs on page 3: the original workflow uses bold gothic; the AI Agent uses a handwriting-style font](doc/images/agents/detail-signs.jpg) |
+| ![The map on chapter 42, page 1: the original workflow leaves most labels in Japanese; the AI Agent translates them, but splits the "barricade" label on the left into two characters](doc/images/agents/detail-hard-map.jpg) | ![The logo on chapter 42, page 1: the original workflow erases "ALL UNKNOWN" and the author and rewrites them; the AI Agent keeps the art](doc/images/agents/detail-hard-logo.jpg) |
 
 ## How the AI Agent works
 
@@ -167,32 +190,38 @@ connections that stay silent too long doesn't cut a long reply.
 All numbers in this section come from real run logs (`manga_translator_work/agent/runs/*.jsonl`) and the usage the
 API reported. "Prompt tokens" include the cached ones, which are usually billed at a lower price.
 
-### The same three pages
+### These three pages
 
-This table is the run behind the comparison images above (3 pages, 33 regions).
+This table is the run behind the comparison images above. The easy and normal pages ran together as one chapter;
+their proofreading and recall check (5 requests in all) are split evenly between the two pages.
 
-| | Original workflow | AI Agent |
-| --- | ---: | ---: |
-| Requests | 3 | 43 |
-| Prompt tokens | 38,264 | 972,725 |
-| Cached | 21,120 (55%) | 805,889 (83%) |
-| Output tokens | 1,201 | 12,290 |
-| Prompt tokens per page | about 12,800 | about 324,000 |
-| Uncached prompt tokens per page | about 5,700 | about 55,600 |
-| Output tokens per page | about 400 | about 4,100 |
-| Time | 77 s (with model loading) | 8.9 min (with preprocessing) |
+| | Easy | Normal | Hard | All three |
+| --- | ---: | ---: | ---: | ---: |
+| Original workflow: requests | 1 | 1 | 1 | 3 |
+| Original workflow: prompt tokens | 7,226 | 12,311 | 7,638 | 27,175 |
+| Original workflow: cached | 5,248 | 0 | 5,248 | 10,496 (39%) |
+| Original workflow: output tokens | 265 | 450 | 961 | 1,676 |
+| AI Agent: requests | 6.5 | 11.5 | 33 | 51 |
+| AI Agent: prompt tokens | 135,097 | 214,305 | 1,399,983 | 1,749,385 |
+| AI Agent: cached | 99,136 (73%) | 155,968 (73%) | 1,170,560 (84%) | 1,425,664 (81%) |
+| AI Agent: uncached prompt tokens | 35,961 | 58,337 | 229,423 | 323,721 |
+| AI Agent: output tokens | 3,224 | 3,754 | 20,625 | 27,603 |
 
-The inpaint review of page 2 first failed because the computer ran low on memory. It was redone afterward, which took
-2 more requests (about 15,000 prompt tokens) that aren't in the table.
+Time: the original workflow took 92 s for the easy and normal pages and 59 s for the hard page (each run includes
+loading the models); the AI Agent took 4.5 min for the easy and normal pages and 13.5 min for the hard page (with
+preprocessing).
 
-The AI Agent's prompt tokens per page, by role:
+The hard page used 10 times the prompt tokens of the easy page: the translation agent made 14 requests to add, fit,
+and lay out boxes, and the inpaint review made 15 requests to redo the screentone and dashed lines on the map.
+
+The AI Agent's prompt tokens per page over these three pages, by role (most of them come from the hard page):
 
 | Role | Prompt tokens per page | Share |
 | --- | ---: | ---: |
-| Translation agent | about 190,600 | 59% |
-| Inpaint review agent | about 103,400 | 32% |
-| Proofreading agent | about 21,600 | 7% |
-| Recall check | about 8,600 | 3% |
+| Translation agent | about 319,000 | 55% |
+| Inpaint review agent | about 228,100 | 39% |
+| Proofreading agent | about 27,400 | 5% |
+| Recall check | about 8,600 | 1% |
 
 ### Real chapters
 
@@ -224,22 +253,25 @@ cost per page = uncached prompt tokens × input price
 The example below uses **assumed prices**: $2 per million input tokens, $0.20 per million cached tokens, and $8 per
 million output tokens. Replace them with the real prices of your model and provider.
 
-| | Original workflow | AI Agent (three pages) | AI Agent (90-page average) |
-| --- | ---: | ---: | ---: |
-| Per page | about $0.016 | about $0.20 | about $0.20 |
-| A 12-page chapter | about $0.19 | about $2.4 | about $2.3 |
+| | Original workflow | AI Agent |
+| --- | ---: | ---: |
+| Easy page | about $0.007 | about $0.12 |
+| Normal page | about $0.028 | about $0.18 |
+| Hard page | about $0.014 | about $0.86 |
+| Real chapters, per page (90 pages) | — | about $0.20 |
+| A 12-page chapter | about $0.20 (average of the three pages above) | about $2.3 (real-chapter average) |
 
 > **Note:** The cost depends heavily on caching. If your API doesn't cache prompts, every AI Agent prompt token is
-> billed at the full price: about $0.68 per page with the assumed prices above.
+> billed at the full price: about $0.88 per page on real chapters with the assumed prices above.
 
 ### Using fewer tokens
 
 You find these settings on the **AI Agent** tab of the **Settings** page:
 
 - **Proofreading** (`proofread`) is off by default; turning it on adds about 4–7% prompt tokens.
-- **Inpaint review** (`inpaint_review`) takes 19–32%. Without it, the app keeps the first inpainting and doesn't
+- **Inpaint review** (`inpaint_review`) takes 19–39%. Without it, the app keeps the first inpainting and doesn't
   check or redo it.
-- **Recall check** (`recall_pass`) takes only 2–3% and adds text the detector missed, so we recommend keeping it.
+- **Recall check** (`recall_pass`) takes only 1–3% and adds text the detector missed, so we recommend keeping it.
 - **Double read** (`double_read`) set to `none` zooms in less often, but small and handwritten text is misread more
   often.
 - **Image detail** (`image_detail`) set to `low` cuts image tokens a lot, but small text becomes hard to read.
