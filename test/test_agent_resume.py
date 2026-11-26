@@ -196,6 +196,37 @@ def test_the_question_is_a_themed_dialog_with_the_rules_folded(tmp_path, monkeyp
     assert notes == ["Agent Rerun Revise Desc", "Agent Rerun Unfinished Desc", "Agent Rerun All Desc"]
 
 
+@pytest.mark.parametrize("room", [600, 768])
+def test_the_question_with_its_details_open_fits_a_small_screen(tmp_path, monkeypatch, app, room):  # noqa: F811
+    """Review 2026-11-26 P2-4: twelve pages with long names, the details open: 600 x 1109, Cancel at
+    y 1085, under the edge of a small screen. The choices and the details scroll; Cancel stays in sight."""
+    from PyQt6.QtCore import QPoint
+    from ui.main_page.pages import agent_rerun
+
+    dialogs = []
+    monkeypatch.setattr(agent_rerun, "_exec", dialogs.append)
+    monkeypatch.setattr(agent_rerun, "_room", lambda dialog: room)
+    name = "第十二話_とても長いページの名前_{:04d}_見開き"
+    states = [PageState(str(tmp_path / f"{name.format(i)}.png"), ("done", "error", "")[i % 3], i % 4 == 1)
+              for i in range(12)]
+    long_t = lambda key, **kw: key + " " + " ".join(f"{k}={v}" * 3 for k, v in sorted(kw.items()))  # noqa: E731
+    agent_rerun.ask_rerun(None, long_t, [s.path for s in states], states)
+    dialog = dialogs[0]
+    folded = dialog.height()
+    dialog.details_button.click()
+    assert dialog.height() <= room and dialog.height() >= folded
+    dialog.show()  # offscreen: laid out as on the screen
+    app.processEvents()
+    bottom = dialog.cancelButton.mapTo(dialog, QPoint(0, dialog.cancelButton.height())).y()
+    assert bottom <= dialog.height()
+    body = dialog.body.layout()
+    wanted = body.totalHeightForWidth(dialog.body_scroll.width() or 552)
+    assert dialog.body_scroll.height() < wanted  # it scrolls
+    agent_rerun._fit(dialog, room=5000)  # a tall screen: as tall as what it shows, nothing to scroll
+    assert dialog.body_scroll.height() >= wanted - 2 and dialog.height() > room
+    dialog.close()
+
+
 def test_no_question_for_pages_the_agent_never_saw(tmp_path, monkeypatch, app):  # noqa: F811
     from ui.main_page.pages import agent_rerun
     from ui.main_page.pages.agent_rerun import ask_rerun

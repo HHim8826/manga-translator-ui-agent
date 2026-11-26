@@ -97,17 +97,51 @@ def _exec(dialog) -> None:
     dialog.exec()
 
 
-def _fit(dialog, width: int = 600) -> None:
-    """The dialog ``width`` wide and as tall as what it shows (it grows when the details open)."""
+SCREEN_MARGIN = 48
+"""Room kept free above and below the dialog on the screen."""
+MIN_BODY = 120
+"""The scrolled part (the choices and the details) is never lower than this."""
+
+
+def _room(dialog) -> int:
+    """The height the dialog may take: its screen's free height (without the taskbar) less a margin."""
+    from PyQt6.QtGui import QGuiApplication
+
+    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    if screen is None:
+        return 16777215
+    return max(200, screen.availableGeometry().height() - SCREEN_MARGIN)
+
+
+def _natural(dialog, width: int) -> int:
+    layout = dialog.layout()
+    if layout is None:
+        return 0
+    layout.activate()
+    height = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else -1
+    return max(height, layout.totalMinimumSize().height())
+
+
+def _fit(dialog, width: int = 600, room: Optional[int] = None) -> None:
+    """The dialog ``width`` wide and as tall as what it shows (it grows when the details open), but
+    no taller than the screen (``room``): then the choices and the details scroll, and Cancel stays
+    in sight at the bottom (review 2026-11-26 P2-4)."""
     dialog.setMinimumSize(0, 0)
     dialog.setMaximumSize(16777215, 16777215)
-    layout = dialog.layout()
-    height = -1
-    if layout is not None:
+    room = _room(dialog) if room is None else room
+    scroll, body = getattr(dialog, "body_scroll", None), getattr(dialog, "body", None)
+    if scroll is not None and body is not None:
+        margins = dialog.textLayout.contentsMargins()
+        inner = width - margins.left() - margins.right()
+        layout = body.layout()
         layout.activate()
-        if layout.hasHeightForWidth():
-            height = layout.totalHeightForWidth(width)
-    dialog.setFixedSize(width, max(height, layout.totalMinimumSize().height() if layout is not None else 0))
+        wanted = layout.totalHeightForWidth(inner) if layout.hasHeightForWidth() else body.sizeHint().height()
+        wanted = max(wanted, layout.totalMinimumSize().height())
+        scroll.setFixedHeight(wanted)
+        over = _natural(dialog, width) - room
+        if over > 0:
+            scroll.setFixedHeight(max(MIN_BODY, wanted - over))
+    dialog.setFixedSize(width, _natural(dialog, width))
 
 
 def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: str = "",
@@ -117,7 +151,8 @@ def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: st
     under it a line on what it does), the long rules folded under a details button, and Cancel.
     ``choices``: (label, what it does, the default). After ``_exec``: ``dialog.chosen`` is the index
     of the choice clicked, None for Cancel (or Esc). ``dialog.choice_buttons`` ends with Cancel."""
-    from qfluentwidgets import CaptionLabel, Dialog, PrimaryPushButton, PushButton, TransparentPushButton
+    from qfluentwidgets import (CaptionLabel, Dialog, PrimaryPushButton, PushButton, SingleDirectionScrollArea,
+                                TransparentPushButton)
 
     dialog = Dialog(title, summary, parent)
     dialog.setTitleBarVisible(False)
@@ -134,8 +169,23 @@ def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: st
         dialog.chosen = index
         dialog.accept()
 
+    # the choices and the details scroll when the dialog would be taller than the screen; the summary
+    # stays above them and Cancel below
+    body = QWidget()
+    body.setObjectName("rerunBody")
+    body_layout = QVBoxLayout(body)
+    body_layout.setContentsMargins(0, 0, 0, 0)
+    body_layout.setSpacing(dialog.textLayout.spacing())
+    scroll = SingleDirectionScrollArea(dialog, Qt.Orientation.Vertical)
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setWidget(body)
+    scroll.enableTransparentBackground()
+    dialog.textLayout.addWidget(scroll)
+    dialog.body, dialog.body_scroll = body, scroll
+
     for index, (label, description, default) in enumerate(choices):
-        row = QWidget(dialog)
+        row = QWidget(body)
         layout = QVBoxLayout(row)
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(4)
@@ -146,7 +196,7 @@ def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: st
             note = CaptionLabel(description, row)
             note.setWordWrap(True)
             layout.addWidget(note)
-        dialog.textLayout.addWidget(row)
+        body_layout.addWidget(row)
         dialog.choice_buttons.append(button)
         if default and dialog.default_button is None:
             dialog.default_button = button
@@ -154,11 +204,11 @@ def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: st
             button.setFocus()
     dialog.details_label = dialog.details_button = None
     if details:
-        label = CaptionLabel(details, dialog)
+        label = CaptionLabel(details, body)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setVisible(False)
-        toggle = TransparentPushButton(t("Agent Rerun Details"), dialog)
+        toggle = TransparentPushButton(t("Agent Rerun Details"), body)
 
         def flip() -> None:
             label.setVisible(label.isHidden())
@@ -166,9 +216,10 @@ def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: st
             _fit(dialog)
 
         toggle.clicked.connect(flip)
-        dialog.textLayout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignLeft)
-        dialog.textLayout.addWidget(label)
+        body_layout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        body_layout.addWidget(label)
         dialog.details_label, dialog.details_button = label, toggle
+    body_layout.addStretch(1)
     dialog.choice_buttons.append(dialog.cancelButton)
     if dialog.default_button is None:
         dialog.default_button = dialog.cancelButton
