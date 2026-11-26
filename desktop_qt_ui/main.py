@@ -180,6 +180,24 @@ def _apply_macos_native_app_icon(icon_path: str):
     return False
 
 
+def delete_windows() -> None:
+    """Delete the top-level windows while the QApplication still exists. Left to the end of
+    ``main()``, the QApplication (its first local) went first and the window after it, and the
+    program often ended with 0xC0000409 (review 2026-11-26: 5 of 6 times in a stand-in with the AI
+    Agent page)."""
+    from PyQt6 import sip
+    from PyQt6.QtWidgets import QApplication
+
+    if QApplication.instance() is None:
+        return
+    for widget in QApplication.topLevelWidgets():
+        try:
+            if not sip.isdeleted(widget):
+                sip.delete(widget)
+        except Exception as e:  # one that will not go: the others still do
+            logging.debug(f"Deleting {type(widget).__name__} at exit failed: {e}")
+
+
 def main():
     """
     应用主入口
@@ -422,6 +440,11 @@ def main():
         shutdown_services()
     except Exception as e:
         logging.error(f"Error shutting down services: {e}", exc_info=True)
+
+    try:
+        delete_windows()
+    except Exception as e:
+        logging.error(f"Error deleting the windows: {e}", exc_info=True)
 
     try:
         faulthandler.disable()

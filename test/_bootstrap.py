@@ -37,4 +37,20 @@ try:
 except ImportError:
     pass
 
+
+def delete_widgets() -> None:
+    """The top-level widgets the tests left are deleted while the QApplication is still there
+    (``conftest.pytest_sessionfinish``): left to the end of the interpreter, they were deleted after
+    it, and Python exited with 0xC0000409 although every test passed (review 2026-11-26). Not at
+    exit: PyQt's own handler there deletes the QApplication first."""
+    widgets = sys.modules.get("PyQt6.QtWidgets")
+    if widgets is None or widgets.QApplication.instance() is None:
+        return
+    from PyQt6 import sip
+
+    for widget in widgets.QApplication.topLevelWidgets():
+        if not sip.isdeleted(widget):
+            sip.delete(widget)
+
+
 __all__ = ["ROOT"]
