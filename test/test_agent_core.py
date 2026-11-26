@@ -423,6 +423,38 @@ def test_a_chapter_run_in_parts_sees_the_pages_an_earlier_run_translated(tmp_pat
     assert parts[2]["text"].startswith("Earlier page for context only, oldest first: 002.")
 
 
+def test_a_later_run_is_told_the_translations_as_corrected_in_the_editor(tmp_path):
+    """Review 2026-11-26 P2-1: a name corrected in the editor after a run (saved to the page's JSON) was
+    still the old one in the next run's recap and search: those read the agent's own record."""
+    from manga_translator.agent.runner import RECAP_NAMES
+
+    pages = [make_page(tmp_path, f"{i:03d}") for i in (1, 2, 10)]
+    runner, client, store, events = _runner(tmp_path, pages[:2], _finish_page() * 2)
+    asyncio.run(runner.run())
+    events.close()
+    with open(pages[1][1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    regions = data[next(iter(data))]["regions"]
+    [named] = [r for r in regions if r["translation"] == "譯1"]
+    named["translation"] = "新名字"  # as the editor saves it
+    with open(pages[1][1], "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    later, client, _, events = _runner(tmp_path, pages[2:], _finish_page())
+    asyncio.run(later.run())
+    events.close()
+    text = client.requests[0][2]["content"][0]["text"]
+    assert "Page 002 as translated:\n- #1 text1 → 新名字" in text and "→ 譯1\n- #2" not in text.split("Page 002")[1]
+    past = [(p["page"], p["id"], p["translation"]) for p in later.session.past if p["page"] in ("001", "002")]
+    assert ("002", 1, "新名字") in past and ("002", 1, "譯1") not in past and ("001", 1, "譯1") in past
+
+    # a long chapter: the pages before are named by the first and the last, not one by one
+    later.session.past += [{"page": f"{i:03d}", "id": 1, "source": "s", "translation": "t", "category": None}
+                           for i in range(11, 11 + RECAP_NAMES)]
+    recap = later.recap(f"{11 + RECAP_NAMES:03d}")
+    assert recap.startswith(f"Pages before this one, already translated: {RECAP_NAMES + 3} pages, 001 to "
+                            f"{10 + RECAP_NAMES:03d}.")
+
+
 def test_earlier_page_images_come_with_each_page_when_asked(tmp_path, monkeypatch):
     """context_page_images: the last translated pages' images, small, after the page's own image; the
     page's later requests start the same, so they are cached."""

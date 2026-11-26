@@ -53,6 +53,9 @@ except Exception:  # pragma: no cover - keeps the module importable in isolation
 
 RECAP_PAGES = 2
 """A page started afresh sees the translations of this many pages before it."""
+RECAP_NAMES = 30
+"""Up to this many earlier pages are named one by one in the recap; more by the first and the last
+(a long chapter resent every name on every page)."""
 CONTEXT_IMAGE_SIDE = 1024
 """Longest side of the earlier pages' images (``context_page_images``): enough to tell the characters
 apart; their text is in the recap."""
@@ -339,20 +342,61 @@ class AgentRunner:
         return font
 
     def _load_past(self) -> None:
-        """Earlier results of this chapter (previous runs) for search_past_translations."""
+        """Earlier results of this chapter (previous runs) for search_past_translations and the recap: the
+        translations as the page's JSON has them now (a name corrected in the editor after that run; review
+        2026-11-26 P2-1: the next page was told the old one), matched to the agent's record by box center
+        for their numbers, sources and categories; the record's own when the page has no JSON."""
         if not os.path.isdir(self.store.pages_dir):
             return
         current = {page_stem(p) for p in self.pages}
+        folder = os.path.dirname(self.pages[0]) if self.pages else ""
         for name in sorted(os.listdir(self.store.pages_dir)):
             stem = name[: -len(".agent.json")] if name.endswith(".agent.json") else None
             if not stem or stem in current:
                 continue
             side = self.store.load_sidecar(stem) or {}
-            for region in side.get("regions", []):
-                if region.get("translation"):
-                    self.session.past.append({"page": stem, "id": region.get("id"),
-                                              "source": region.get("ocr_agent") or region.get("ocr_local") or "",
-                                              "translation": region["translation"], "category": region.get("category")})
+            entries = [r for r in side.get("regions", []) if isinstance(r, dict)]
+            saved = self._saved_regions(stem, folder)
+            if saved is None:
+                for region in entries:
+                    if region.get("translation"):
+                        self.session.past.append({
+                            "page": stem, "id": region.get("id"),
+                            "source": region.get("ocr_agent") or region.get("ocr_local") or "",
+                            "translation": region["translation"], "category": region.get("category")})
+                continue
+            at = {tuple((e.get("match") or {}).get("center") or ()): e for e in entries if not e.get("skipped")}
+            for region in saved:
+                translation = str(region.data.get("translation") or "").strip()
+                if not translation:
+                    continue
+                entry = at.get(tuple(region.center)) or {}
+                source = (entry.get("ocr_agent") or entry.get("ocr_local")
+                          or region.data.get("text") or "".join(region.data.get("texts") or []))
+                self.session.past.append({"page": stem, "id": entry.get("id"), "source": source or "",
+                                          "translation": translation, "category": entry.get("category")})
+
+    def _saved_regions(self, stem: str, folder: str):
+        """The regions of the page called ``stem`` as its JSON has them now (lines as they lie on the page,
+        so their centers are the record's), or None when the page or its JSON is not there."""
+        from ..utils.path_manager import find_json_path
+        from ..utils.textblock import saved_lines_to_page
+        from .page import Region
+
+        image = self._page_image(stem, folder)
+        json_path = find_json_path(image) if image else None
+        if not json_path:
+            return None
+        try:
+            with open(json_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            data = raw[next(iter(raw))]
+            regions = data.get("regions", []) if isinstance(data, dict) else data
+            return [Region(id=i, data=saved_lines_to_page(dict(r)))
+                    for i, r in enumerate(regions, start=1) if isinstance(r, dict)]
+        except Exception:  # unreadable: the agent's record
+            logger.warning("agent: the JSON of page %s could not be read", stem, exc_info=True)
+            return None
 
     def image_pages_from(self, current_page: int) -> int:
         """First page whose images may stay in the conversation. Images are dropped n pages at a time, so
@@ -442,17 +486,26 @@ class AgentRunner:
 
     def recap(self, current: str) -> str:
         """The translated pages before ``current`` (this run's and an earlier run's: a chapter is often run
-        in parts), and what the last ``RECAP_PAGES`` of them say."""
+        in parts), and what the last ``RECAP_PAGES`` of them say. The past is gone through once; a long
+        list of pages is named by its first and last ones."""
         earlier = self._earlier_pages(current)
         if not earlier:
             return ""
-        lines = ["Pages before this one, already translated: " + ", ".join(earlier) + ". Their translations "
+        last = set(earlier[-RECAP_PAGES:])
+        by_page: Dict[str, List[dict]] = {}
+        for p in self.session.past:
+            if p["page"] in last:
+                by_page.setdefault(p["page"], []).append(p)
+        named = (", ".join(earlier) if len(earlier) <= RECAP_NAMES
+                 else f"{len(earlier)} pages, {earlier[0]} to {earlier[-1]}")
+        lines = ["Pages before this one, already translated: " + named + ". Their translations "
                  "are saved; use search_past_translations to see how something was translated before."]
         for stem in earlier[-RECAP_PAGES:]:
-            entries = [p for p in self.session.past if p["page"] == stem]
+            entries = by_page.get(stem)
             if entries:
                 lines.append(f"Page {stem} as translated:")
-                lines += [f"- #{p['id']} {p['source'] or ''} → {p['translation']}" for p in entries]
+                lines += [f"- {'#' + str(p['id']) + ' ' if p['id'] is not None else ''}{p['source'] or ''} → "
+                          f"{p['translation']}" for p in entries]
         return "\n".join(lines) + "\n\n"
 
     def compact(self, reason: str) -> None:
