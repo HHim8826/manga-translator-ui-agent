@@ -26,7 +26,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
-from .notes import NEAR, bracketed, flat_ground, gap, place_in_box, place_note, usual_size
+from .notes import COVERS, NEAR, bracketed, covered_text, flat_ground, gap, place_in_box, place_note, usual_size
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -510,6 +510,18 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     box = _box_arg(s, a)
     if box is not None:
         place = place_in_box(_gray(s), box, direction, source_px, text, page_px)
+        if place is None:
+            raise RegionError(f"at its size the note does not fit on the page in any of 1-4 lines: leave box out, "
+                              f"or translate #{region.id} shorter. The note placed before stays.")
+        # the page's text, the region's own too, but not its notes (the one moved goes)
+        notes = {n.id for n in s.doc.notes_of(region)}
+        over, share = covered_text(place.lines, {r.id: r.polygons for r in s.doc.active_regions()
+                                                 if r.id not in notes})
+        if share > COVERS:
+            whose = "its own text" if over == region.id else f"the text of #{over}"
+            raise RegionError(f"that spot puts the note over {whose} ({int(round(100 * share))}% of it): a note sits "
+                              f"on an empty spot right beside its text. Give such a spot, or leave box out. The "
+                              f"note placed before stays.")
         away, near = gap(place.lines, region.polygons), NEAR * place.font_size
         if away > near:
             raise RegionError(f"that spot puts the note {away:.0f} px from #{region.id}: a note sits right beside "

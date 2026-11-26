@@ -75,6 +75,16 @@ def test_a_note_goes_over_flat_screentone_rather_than_line_art():
     assert place.side == "right" and place.ink > 0.2
 
 
+def test_a_note_in_a_box_stays_on_the_page_or_is_not_placed():
+    """Review 2026-11-26 P2-3: a long note in a wide box took one line longer than the page, from x -288."""
+    gray = np.full((240, 320), 255, np.uint8)
+    long = "（" + "很長很長的翻譯" * 6 + "）"
+    place = place_in_box(gray, (0, 100, 320, 130), "h", 24, long)
+    x1, y1, x2, y2 = place.bbox
+    assert 0 <= x1 and x2 <= 320 and 0 <= y1 and y2 <= 240 and place.text.count("[BR]") >= 1
+    assert place_in_box(gray, (0, 100, 320, 130), "h", 24, "（" + "太長" * 200 + "）") is None
+
+
 def test_text_on_paper_that_an_outline_touches_is_on_flat_ground():
     """ch42 p6, the second real run: an aside written beside a thought bubble touches its outline, which
     made the inpaint's check say no, and the model noted it though it had translated it in its place."""
@@ -210,6 +220,21 @@ def test_note_region_keeps_the_text_and_sets_its_translation_beside_it(tmp_path)
     far = tools.execute("note_region", {**NOTE, "box": [150, 190, 300, 235], "direction": "h"})
     assert not far.ok and "right beside its text" in far.text
     assert len([r for r in doc.regions.values() if r.note_of == 1]) == 1
+    # a spot over text (review 2026-11-26 P2-3: a note moved onto its own label covered all of it, and the
+    # page check did not see it): refused, the note placed before stays
+    before = [r.bbox for r in doc.regions.values() if r.note_of == 1]
+    own = tools.execute("note_region", {**NOTE, "box": [20, 40, 60, 100]})
+    assert not own.ok and "over its own text" in own.text and "note placed before stays" in own.text
+    other = tools.execute("note_region", {**NOTE, "box": [100, 40, 140, 100]})
+    assert not other.ok and "the text of #2" in other.text
+    assert [r.bbox for r in doc.regions.values() if r.note_of == 1] == before
+    note = next(r for r in doc.regions.values() if r.note_of == 1)
+    saved_lines = note.data["lines"]
+    note.data["lines"] = [q.tolist() for q in doc.regions[1].polygons]  # as if it had been put there
+    assert any(i.code == "overlap" and i.region == note.id and i.detail["other"] == 1
+               for i in checks.overlap_issues(session))
+    note.data["lines"] = saved_lines
+    assert not [i for i in checks.overlap_issues(session) if i.region == note.id]
     moved = tools.execute("note_region", {**NOTE, "box": [62, 60, 98, 120]})
     assert moved.ok and "centered on the box you gave" in moved.text
     notes = [r for r in doc.regions.values() if r.note_of == 1]

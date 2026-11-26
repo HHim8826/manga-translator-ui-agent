@@ -431,6 +431,17 @@ def overlap_issues(session: "AgentSession") -> List[Issue]:
                 small, big = (a, b) if a_smaller else (b, a)
                 issues.append(Issue("overlap", small.id, {"other": big.id, "share": int(round(100 * share))},
                                     WEIGHTS["overlap"]))
+    # a note over text kept as drawn (its own, or a sign beside it) hides what it translates (review
+    # 2026-11-26 P2-3: a note moved onto its own text was not seen)
+    kept = [r for r in session.doc.active_regions() if r.skipped]
+    for note in regions:
+        if getattr(note, "note_of", None) is None or note.locked:
+            continue
+        for other in kept:
+            share, _ = _shared(note, other)
+            if share >= OVERLAP_SHARE:
+                issues.append(Issue("overlap", note.id, {"other": other.id, "share": int(round(100 * share))},
+                                    WEIGHTS["overlap"]))
     return issues
 
 

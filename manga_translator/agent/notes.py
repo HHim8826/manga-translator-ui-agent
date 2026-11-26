@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -63,6 +63,9 @@ CROWDED = 0.02
 NEAR = 2.5
 """How far from its text a note placed with a box may be, in the note's font sizes. The program's own
 spots reach 2.2 (a gap of 0.2 and two steps out); on the ch42 map the model moved notes 3.7-4.9 away."""
+COVERS = 0.1
+"""Share of a text's lines a note placed with a box may cover: more hides the text (review 2026-11-26
+P2-3: a note moved onto its own label covered all of it). One right beside it touches an edge."""
 PAPER = 0.85
 """Share of plain paper within half a font size of the text's strokes from which the text is on flat
 ground although a line touches it: 0.98 round the aside beside a thought bubble on ch42 p6, at most
@@ -362,10 +365,11 @@ def place_note(gray: np.ndarray, polygons: Sequence[np.ndarray], direction: str,
 
 
 def place_in_box(gray: np.ndarray, box: Sequence[float], direction: str, source_px: float, text: str,
-                 page_px: Optional[float] = None) -> NotePlace:
+                 page_px: Optional[float] = None) -> Optional[NotePlace]:
     """The note centered on a box the model gave (page pixels, upright) at its own size (``note_font``):
     the box says where, not how big. Of one to four lines, the fewest that fit the box, else the layout
-    that outgrows it least; kept on the page."""
+    that outgrows it least; kept on the page. None when no layout fits on the page (review 2026-11-26
+    P2-3: a long note was placed from x -288)."""
     direction = "v" if direction == "v" else "h"
     x1, y1, x2, y2 = (float(v) for v in box)
     if x2 < x1:
@@ -376,17 +380,22 @@ def place_in_box(gray: np.ndarray, box: Sequence[float], direction: str, source_
     font = note_font(source_px, page_px)
     layouts = [note_lines(text, 1)] if BREAK in text else \
         [note_lines(text, math.ceil(len(text) / count)) for count in range(1, 5)]
+    height, width = gray.shape[:2]
+    page_along, page_across = (height, width) if direction == "v" else (width, height)
     best = None
     for lines in layouts:
         length, thickness = _extent(lines, font, direction)
+        if length > page_along or thickness > page_across:  # off the page whatever the box
+            continue
         over = max(length / max(1.0, length_room), thickness / max(1.0, thickness_room))
         if over <= 1.0:
             best = (over, lines, length, thickness)
             break
         if best is None or over < best[0]:
             best = (over, lines, length, thickness)
+    if best is None:
+        return None
     over, lines, length, thickness = best
-    height, width = gray.shape[:2]
     half_x, half_y = (thickness / 2, length / 2) if direction == "v" else (length / 2, thickness / 2)
     center = np.array([min(max((x1 + x2) / 2, half_x), width - half_x),
                        min(max((y1 + y2) / 2, half_y), height - half_y)])
@@ -394,3 +403,36 @@ def place_in_box(gray: np.ndarray, box: Sequence[float], direction: str, source_
     measured = _under(_box(center, along, across, length, thickness), gray, np.zeros(gray.shape[:2], np.uint8))
     return NotePlace(_line_quads(center, direction, 0.0, length, thickness, len(lines)), font, direction, 0.0,
                      BREAK.join(lines), "box", round(measured[0], 3) if measured else 0.0, outgrows=over > 1.0)
+
+
+def covered_text(lines: Sequence[np.ndarray], texts: Dict[int, Sequence[np.ndarray]]) -> Tuple[Optional[int], float]:
+    """The text a note's ``lines`` cover most, of ``texts`` (id: its lines, page pixels): its id and the
+    share of its lines under the note; (None, 0.0) when it covers none. A note right beside its text
+    touches it at most along an edge."""
+    note = [np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in lines]
+    if not note:
+        return None, 0.0
+    points = np.concatenate(note)
+    nx1, ny1 = points.min(axis=0)
+    nx2, ny2 = points.max(axis=0)
+    best: Tuple[Optional[int], float] = (None, 0.0)
+    for rid, polygons in texts.items():
+        text = [np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in polygons]
+        if not text:
+            continue
+        both = np.concatenate([points] + text)
+        tx1, ty1 = np.concatenate(text).min(axis=0)
+        tx2, ty2 = np.concatenate(text).max(axis=0)
+        if tx2 <= nx1 or nx2 <= tx1 or ty2 <= ny1 or ny2 <= ty1:
+            continue
+        low = np.floor(both.min(axis=0))
+        width, height = (np.ceil(both.max(axis=0)) - low + 2).astype(int)
+        drawn = np.zeros((height, width), np.uint8)
+        cv2.fillPoly(drawn, [np.round(p - low).astype(np.int32).reshape(-1, 1, 2) for p in text], 1)
+        under = np.zeros_like(drawn)
+        cv2.fillPoly(under, [np.round(p - low).astype(np.int32).reshape(-1, 1, 2) for p in note], 1)
+        total = int(drawn.sum())
+        share = float((drawn & under).sum()) / total if total else 0.0
+        if share > best[1]:
+            best = (rid, share)
+    return best
