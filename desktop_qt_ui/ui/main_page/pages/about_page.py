@@ -740,18 +740,26 @@ class UpdateDialog:
         keeps_local_work = bool(getattr(info, "keeps_local_work", False))
         if keeps_local_work:
             # the update (checkout -f -B <branch> origin/<branch>) would switch the program off its
-            # branch, or reset the branch over its own commits: no "Update Now" here
-            key = ("Update Local Work Branch" if getattr(info, "local_branch", "")
-                   else "Update Local Work Commits")
-            warning = BodyLabel(
-                translate(
+            # branch, reset the branch over its own commits, or overwrite uncommitted changes of its
+            # files: no "Update Now" here
+            target = getattr(info, "update_branch", "") or "main"
+            parts = []
+            if getattr(info, "local_branch", "") or getattr(info, "local_commits", 0):
+                key = ("Update Local Work Branch" if getattr(info, "local_branch", "")
+                       else "Update Local Work Commits")
+                parts.append(translate(
                     key,
                     branch=getattr(info, "local_branch", ""),
                     count=getattr(info, "local_commits", 0),
-                    target=getattr(info, "update_branch", "") or "main",
-                ),
-                dialog,
-            )
+                    target=target,
+                ))
+            changes = tuple(getattr(info, "local_changes", ()) or ())
+            if changes:
+                shown = ", ".join(changes[:6]) + (", ..." if len(changes) > 6 else "")
+                parts.append(translate(
+                    "Update Local Work Changes", count=len(changes), files=shown, target=target
+                ))
+            warning = BodyLabel("\n\n".join(parts), dialog)
             warning.setWordWrap(True)
             warning.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             dialog.textLayout.addWidget(warning)

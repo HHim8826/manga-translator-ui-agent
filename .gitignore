@@ -94,6 +94,8 @@ config/rich_text_rules.yaml
 config/batch_edit_schemes.yaml
 config/translation_template.json
 config/config.json
+# files the maintenance tool copied before an update overwrote them
+update_backup/
 config/custom_api_params.json
 dict/ai_ocr_prompt.yaml
 dict/ai_renderer_prompt.yaml

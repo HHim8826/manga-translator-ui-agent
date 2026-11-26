@@ -198,6 +198,10 @@ class LocalWork:
     """Commits of HEAD that origin/<target> does not have. On the target branch itself the update
     resets the branch over them (only the reflog keeps them)."""
     target: str
+    changed: tuple[str, ...] = ()
+    """Tracked files with changes not committed, staged or not (a custom ``dict/pre_dict.txt``): the
+    update writes the files of origin/<target> over them. Deleted ones are not listed: the update
+    only brings them back (the maintenance tool removes ``test`` and ``.gitignore`` after each one)."""
 
 
 def local_work(
@@ -207,8 +211,9 @@ def local_work(
     executable: str | None = None,
 ) -> LocalWork | None:
     """What ``git checkout -f -B <target> origin/<target>`` (the update) would take out of the
-    running program: the branch it runs when that is another named branch, and the commits of HEAD
-    origin/<target> does not have (after a fetch). None when the update takes nothing."""
+    running program: the branch it runs when that is another named branch, the commits of HEAD
+    origin/<target> does not have (after a fetch), and the tracked files changed since HEAD. None
+    when the update takes nothing."""
     branch, detached = current_branch(root, executable=executable)
     other = "" if detached or branch == target else branch
     value = git_output(
@@ -218,9 +223,13 @@ def local_work(
         commits = int(value) if value is not None else 0
     except ValueError:
         commits = 0
-    if not other and commits <= 0:
+    listed = git_output(
+        root, ["diff", "--name-only", "--diff-filter=d", "-z", "HEAD"], executable=executable
+    )
+    changed = tuple(name for name in (listed or "").split("\0") if name.strip())
+    if not other and commits <= 0 and not changed:
         return None
-    return LocalWork(other, max(commits, 0), target)
+    return LocalWork(other, max(commits, 0), target, changed)
 
 
 def commits_behind(

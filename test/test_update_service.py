@@ -251,3 +251,77 @@ def test_the_launcher_does_not_take_the_programs_branch_without_a_typed_yes(monk
     assert maintenance_launch.keeps_local_work("main") is False  # typed yes: the menu may go on
     monkeypatch.setattr(maintenance_launch, "local_work", lambda _root, _branch, **_kw: None)
     assert maintenance_launch.keeps_local_work("main", automatic=True) is False  # nothing to lose
+
+
+# --- review 2026-11-26 P1-5: an uncommitted custom dictionary was overwritten by the update -------
+
+def _repo(tmp_path):
+    """``main`` one commit behind origin/main, nothing of its own: the update would be offered."""
+    import shutil
+    import subprocess
+
+    git = git_update_helpers.git_executable(ROOT)
+    if not shutil.which(git) and not __import__("os").path.exists(git):
+        import pytest
+
+        pytest.skip("no git")
+
+    def run(*args):
+        subprocess.run([git, "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=tmp_path, check=True,
+                       capture_output=True)
+
+    run("init", "-q", "-b", "main")
+    (tmp_path / "dict").mkdir()
+    (tmp_path / "dict" / "pre_dict.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("x\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "one")
+    (tmp_path / "README.md").write_text("new\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "two")
+    run("update-ref", "refs/remotes/origin/main", "HEAD")
+    run("reset", "-q", "--hard", "HEAD~1")
+    return git, run
+
+
+def test_the_update_sees_a_custom_dictionary_not_committed(tmp_path):
+    git, run = _repo(tmp_path)
+    assert git_update_helpers.commits_behind(tmp_path, "main", executable=git) == 1
+    assert git_update_helpers.local_work(tmp_path, "main", executable=git) is None  # clean: offered
+    (tmp_path / ".gitignore").unlink()  # removed by the maintenance tool after each update: not listed
+    assert git_update_helpers.local_work(tmp_path, "main", executable=git) is None
+    (tmp_path / "dict" / "pre_dict.txt").write_text("my words\n", encoding="utf-8")
+    work = git_update_helpers.local_work(tmp_path, "main", executable=git)
+    assert work == git_update_helpers.LocalWork("", 0, "main", ("dict/pre_dict.txt",))
+    run("add", "dict/pre_dict.txt")  # staged: the same
+    assert git_update_helpers.local_work(tmp_path, "main", executable=git).changed == ("dict/pre_dict.txt",)
+    assert UpdateInfo("3.0.4", "3.0.4", "", "", "", commits_behind=1, local_changes=work.changed).keeps_local_work
+
+
+def test_the_desktop_does_not_offer_an_update_over_uncommitted_changes(app):  # noqa: F811
+    from PyQt6.QtWidgets import QPushButton
+    from ui.main_page.pages.about_page import UpdateDialog
+
+    t = lambda key, **kw: " ".join([key] + [f"{k}={v}" for k, v in sorted(kw.items())])  # noqa: E731
+    info = UpdateInfo("3.0.4", "3.0.4", "", "", "", commits_behind=1, update_branch="main",
+                      local_changes=("dict/pre_dict.txt",))
+    dialog = UpdateDialog(info, t, None, on_update=lambda: True)
+    assert "Update Now" not in [b.text() for b in dialog.findChildren(QPushButton)]
+    assert dialog.local_work_label.text() == \
+        "Update Local Work Changes count=1 files=dict/pre_dict.txt target=main"
+    dialog.deleteLater()
+
+
+def test_the_launcher_copies_the_changed_files_before_a_typed_yes_overwrites_them(monkeypatch, tmp_path):
+    (tmp_path / "dict").mkdir()
+    (tmp_path / "dict" / "pre_dict.txt").write_text("my words\n", encoding="utf-8")
+    work = git_update_helpers.LocalWork("", 0, "main", ("dict/pre_dict.txt",))
+    monkeypatch.setattr(maintenance_launch, "local_work", lambda _root, _branch, **_kw: work)
+    monkeypatch.setattr(maintenance_launch, "PATH_ROOT", tmp_path)
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("asked")))
+    assert maintenance_launch.keeps_local_work("main", automatic=True) is True  # the desktop's: no update
+    assert not (tmp_path / "update_backup").exists()
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_kw: "yes")
+    assert maintenance_launch.keeps_local_work("main") is False
+    copies = list((tmp_path / "update_backup").glob("*/dict/pre_dict.txt"))
+    assert len(copies) == 1 and copies[0].read_text(encoding="utf-8") == "my words\n"

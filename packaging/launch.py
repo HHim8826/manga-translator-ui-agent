@@ -2529,6 +2529,14 @@ def keeps_local_work(branch, automatic=False):
     if work is None:
         return False
     print()
+    if work.changed:
+        print(L(f"[警告] 有 {len(work.changed)} 个文件有未提交的修改，强制同步会用 origin/{branch} 的版本覆盖它们：",
+                f"[WARNING] {len(work.changed)} file(s) have uncommitted changes; a force sync writes "
+                f"origin/{branch}'s version over them:"))
+        for name in work.changed[:20]:
+            print(f"  {name}")
+        if len(work.changed) > 20:
+            print("  ...")
     if work.branch:
         print(L(f"[警告] 目前的程序跑的是分支 {work.branch}，有 {work.commits} 个提交不在 origin/{branch}。"
                 f"强制同步会切到 {branch}，这些修改就不在程序里了（提交仍留在分支 {work.branch}，"
@@ -2536,13 +2544,14 @@ def keeps_local_work(branch, automatic=False):
                 f"[WARNING] The program runs branch {work.branch}, with {work.commits} commit(s) "
                 f"origin/{branch} does not have. A force sync switches to {branch} and the program no "
                 f"longer has them (they stay on branch {work.branch}; uncommitted changes are overwritten)."))
-    else:
+    elif work.commits:
         print(L(f"[警告] {branch} 有 {work.commits} 个提交不在 origin/{branch}。强制同步会把分支重设到 "
                 f"origin/{branch}，这些提交只能从 git reflog 找回。",
                 f"[WARNING] {branch} has {work.commits} commit(s) origin/{branch} does not have. A force "
                 f"sync resets the branch to origin/{branch}; only git reflog keeps them."))
-    print(L("要保留它们，请手动 git fetch 后 rebase 或 merge。",
-            "To keep them, git fetch and rebase or merge by hand."))
+    if work.branch or work.commits:
+        print(L("要保留它们，请手动 git fetch 后 rebase 或 merge。",
+                "To keep them, git fetch and rebase or merge by hand."))
     if automatic:
         print(L("[取消] 自动更新不会做这种同步", "[CANCELLED] The automatic update does not do this"))
         return True
@@ -2550,7 +2559,33 @@ def keeps_local_work(branch, automatic=False):
     if confirm != "yes":
         print(L("取消更新", "Update cancelled"))
         return True
+    if work.changed:
+        folder = back_up_changed_files(work.changed)
+        if folder is None:
+            print(L("[取消] 修改过的文件备份失败，不更新", "[CANCELLED] The changed files could not be copied; no update"))
+            return True
+        print(L(f"[OK] 修改过的文件已复制到 {folder}", f"[OK] The changed files were copied to {folder}"))
     return False
+
+
+def back_up_changed_files(names, root=None):
+    """Copy the files a force sync overwrites to ``update_backup/<time>/`` (kept as they are, the
+    update does not touch an untracked folder). The folder, or None when a copy failed."""
+    import time
+
+    root = Path(root or PATH_ROOT)
+    folder = root / "update_backup" / time.strftime("%Y%m%d-%H%M%S")
+    try:
+        for name in names:
+            source = root / name
+            if source.is_file():
+                target = folder / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+    except OSError as e:
+        print(f"[ERROR] {e}")
+        return None
+    return folder
 
 
 def update_code_force(skip_confirm=False, target_branch=None, automatic=False):

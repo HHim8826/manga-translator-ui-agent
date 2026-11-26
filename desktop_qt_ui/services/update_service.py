@@ -37,12 +37,15 @@ class UpdateInfo:
     local_commits: int = 0
     """Commits of the program that origin/<update_branch> does not have."""
     update_branch: str = ""
+    local_changes: tuple[str, ...] = ()
+    """Tracked files with uncommitted changes (a custom dictionary) that updating would overwrite."""
 
     @property
     def keeps_local_work(self) -> bool:
         """Updating here (``checkout -f -B``) would take the program's own branch or commits out of
-        it: the desktop does not start it (git fetch, then rebase or merge by hand)."""
-        return bool(self.local_branch or self.local_commits > 0)
+        it, or overwrite uncommitted changes: the desktop does not start it (git fetch, then rebase
+        or merge by hand; copy or commit the changed files)."""
+        return bool(self.local_branch or self.local_commits > 0 or self.local_changes)
 
     @property
     def is_update_available(self) -> bool:
@@ -127,6 +130,7 @@ def fetch_latest_release(
         local_branch=work.branch if work else "",
         local_commits=work.commits if work else 0,
         update_branch=branch,
+        local_changes=work.changed if work else (),
     )
 
 def launch_update_maintenance(branch: str | None = None) -> bool:
