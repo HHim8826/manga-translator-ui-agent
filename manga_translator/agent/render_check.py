@@ -22,6 +22,8 @@ count, mistook 19 of 27 regions; with it, 3 of 14 (source lines the detector too
 under the source). The angle: 7 of 602, all slanted labels or sound effects drawn upright."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import statistics
 from dataclasses import dataclass
@@ -107,6 +109,20 @@ def _lines(text: str) -> int:
     return text.count("[BR]") + text.count("\n") + 1
 
 
+DRAWN_KEPT = 4096
+"""Drawn sizes kept for a run (``RenderCheck._drawn``); more and the oldest go."""
+
+
+def _plain(value):
+    return value.tolist() if hasattr(value, "tolist") else str(value)
+
+
+def _page_key(page: dict) -> str:
+    """The page's own settings the render follows (its flags), not its regions or its mask."""
+    small = {k: v for k, v in page.items() if k != "regions" and not (isinstance(v, str) and len(v) > 256)}
+    return hashlib.sha1(json.dumps(small, sort_keys=True, default=_plain).encode("utf-8")).hexdigest()
+
+
 def _box(region: "Region") -> tuple:
     """The detected lines' own box, not ``Region.bbox`` rounded outwards: a pixel more takes in a
     stroke beside it, and a slanted label is measured as two upright lines (ch42 p1 #14)."""
@@ -123,6 +139,10 @@ class RenderCheck:
         self._source: Dict[tuple, tuple] = {}
         """(image, box, direction, lines, extent) -> source (size, slant): the strokes do not change
         during a run."""
+        self._drawn: Dict[tuple, Optional[float]] = {}
+        """(image, page settings, the region as the JSON has it) -> drawn size: a region the agent did not change since
+        the last check is not rendered again (each one is rendered alone on a page-sized canvas: 16
+        regions took 350 ms, and a page is checked at each mark_page_done)."""
 
     def source(self, image: np.ndarray, image_path: str, region: "Region") -> tuple:
         """(size px, slant degrees) of the source strokes, each None when not measured."""
@@ -147,20 +167,30 @@ class RenderCheck:
         blocks, image = loaded
         if len(blocks) != len(ids):  # a region failed to load: numbers would not match
             return {}
+        page_key = _page_key(page)
         out: Dict[int, Drawn] = {}
-        for rid, block in zip(ids, blocks):
+        for index, (rid, block) in enumerate(zip(ids, blocks)):  # the JSON's regions are these, in order
             region = doc.regions[rid]
             # a note (note_region) is smaller than the text beside it on purpose, with no source under it
             if not region.translation or region.locked or region.unchanged or region.note_of is not None:
                 continue
-            drawn_image = await self.backend.render_alone(doc.image_path, block)
-            if drawn_image is None:
-                continue
-            direction = "v" if region.direction.startswith("v") else "h"
-            x1, y1, x2, y2 = region.bbox
-            grow_x, grow_y = (x2 - x1) * 0.5 + 10, (y2 - y1) * 0.5 + 10
-            snap = snap_text(drawn_image, (x1 - grow_x, y1 - grow_y, x2 + grow_x, y2 + grow_y), direction, grow=False)
-            drawn = measured_size(snap, _lines(region.translation), direction)
+            saved = page["regions"][index] if index < len(page.get("regions") or []) else region.data
+            key = (doc.image_path, page_key, json.dumps(saved, sort_keys=True, default=_plain))
+            if key in self._drawn:
+                drawn = self._drawn[key]
+            else:
+                drawn_image = await self.backend.render_alone(doc.image_path, block)
+                if drawn_image is None:
+                    continue
+                direction = "v" if region.direction.startswith("v") else "h"
+                x1, y1, x2, y2 = region.bbox
+                grow_x, grow_y = (x2 - x1) * 0.5 + 10, (y2 - y1) * 0.5 + 10
+                snap = snap_text(drawn_image, (x1 - grow_x, y1 - grow_y, x2 + grow_x, y2 + grow_y), direction,
+                                 grow=False)
+                drawn = measured_size(snap, _lines(region.translation), direction)
+                if len(self._drawn) >= DRAWN_KEPT:
+                    self._drawn.pop(next(iter(self._drawn)))
+                self._drawn[key] = drawn
             if drawn is None:
                 continue
             size, slant = self.source(image, doc.image_path, region)

@@ -204,3 +204,32 @@ def test_a_slanted_label_drawn_upright(tmp_path):
     # a region already listed for its size is not listed twice; 85° and -85° are 10° apart
     assert [i.code for i in size_issues(doc, {1: Drawn(54, 25, source_angle=-26, angle=0)})] == ["drawn_large"]
     assert size_issues(doc, {1: Drawn(24, 25, source_angle=85, angle=-85)}) == []
+
+
+def test_a_region_the_agent_did_not_change_is_not_rendered_again(tmp_path):
+    """Review 2026-11-26 (performance): each check rendered every region alone on a page-sized canvas
+    again (16 regions: 350 ms), at every mark_page_done."""
+    from manga_translator.agent.render_check import RenderCheck
+
+    doc = _doc(tmp_path, ["text1", "text2", "text3"])
+    image = np.full((240, 320, 3), 255, np.uint8)
+
+    class Backend:
+        renders = 0
+
+        async def load_page(self, image_path, page):
+            return [object() for _ in page["regions"]], image
+
+        async def render_alone(self, image_path, block):
+            Backend.renders += 1
+            drawn = image.copy()
+            drawn[30:110, 30:50] = 0
+            return drawn
+
+    check = RenderCheck(Backend())
+    first = asyncio.run(check.measure(doc))
+    assert Backend.renders == 3
+    assert asyncio.run(check.measure(doc)) == first and Backend.renders == 3  # nothing changed: none
+    doc.regions[2].translation = "改過的譯文"
+    asyncio.run(check.measure(doc))
+    assert Backend.renders == 4  # only the region changed
