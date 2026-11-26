@@ -137,7 +137,9 @@ def output_file_name(image_path: str, output_format: Optional[str] = None) -> st
         return others == 1 and counts.get(key, 0) == 1 and key not in names
 
     tag, number = f"{own_stem}_{ext.lstrip('.')}", 0
-    while taken(stem.casefold()):
+    # only for an image of the folder: one that is not there (a path given to the CLI) keeps its name,
+    # so ``same_output_paths`` still sees two pages written to one file
+    while base.casefold() in names and taken(stem.casefold()):
         number += 1
         stem = tag if number == 1 else f"{tag}_{number}"
     return f"{stem}.{fmt}"
