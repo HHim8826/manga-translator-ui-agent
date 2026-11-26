@@ -26,7 +26,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
-from .notes import bracketed, flat_ground, place_in_box, place_note, usual_size
+from .notes import NEAR, bracketed, flat_ground, gap, place_in_box, place_note, usual_size
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -482,20 +482,21 @@ def skip_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 def _on_flat_ground(s: AgentSession, region: Region) -> bool:
     """``notes.flat_ground`` of the region's lines, or of its strokes snapped as fit_region would: the
     detector's loose box round 「北」 on the ch42 map takes in the circle round it."""
-    if flat_ground(s.page_array, region.polygons):
+    if flat_ground(s.page_array, region.polygons, font_size=region.font_size):
         return True
     snap = snap_text(s.page_array, region.bbox, _direction({}, region, region.bbox),
                      exclude=s.doc.occupied(s.page_array.shape, but=region.id), grow=False)
-    return snap is not None and flat_ground(s.page_array, [np.asarray(q, dtype=np.float64) for q in snap.lines])
+    return snap is not None and flat_ground(s.page_array, [np.asarray(q, dtype=np.float64) for q in snap.lines],
+                                            font_size=snap.font_size)
 
 
 def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     region = s.doc.get(a["id"])
     text = bracketed(a.get("translation", ""))
     if _on_flat_ground(s, region):
-        raise RegionError(f"#{region.id} is on flat ground (plain paper or one flat color, as in a bubble, a box "
-                          f"or a circle, with no art line running into it): erasing it leaves the drawing whole, "
-                          f"so translate it in its place with set_text. note_region is only for text over art "
+        raise RegionError(f"#{region.id} is on flat ground (plain paper or one flat color round it, as in a "
+                          f"bubble, a box or a circle; an outline that only touches it is drawn again): erasing it "
+                          f"leaves the drawing whole, so translate it in its place with set_text. note_region is only for text over art "
                           f"that erasing would break: lines that run under or into it, hatching, detailed drawing.")
     x1, y1, x2, y2 = region.bbox
     own = region.direction[:1] if region.direction[:1] in ("v", "h") else ("v" if y2 - y1 > x2 - x1 else "h")
@@ -509,6 +510,12 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     box = _box_arg(s, a)
     if box is not None:
         place = place_in_box(_gray(s), box, direction, source_px, text, page_px)
+        away, near = gap(place.lines, region.polygons), NEAR * place.font_size
+        if away > near:
+            raise RegionError(f"that spot puts the note {away:.0f} px from #{region.id}: a note sits right beside "
+                              f"its text, within {near:.0f} px, so the reader sees which text it belongs to. Give a "
+                              f"spot that close, or leave box out: lines, screentone or a panel border under the "
+                              f"note are fine.")
     else:
         try:
             angle = float(region.data.get("angle") or 0.0)
@@ -539,9 +546,10 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     return ToolResult(
         text=(f"#{region.id} stays as drawn (green); its translation 「{place.text}」 is #{note.id}, {place.direction}, "
               f"{lines} line(s), font {place.font_size}px at [{nx1}, {ny1}, {nx2}, {ny2}], {where} (orange box), "
-              f"over {int(round(100 * place.ink))}% ink.{warning} If it covers something that matters (a face, "
-              f"other text, a panel border), note_region #{region.id} again with box: an empty spot near it in page "
-              f"pixels, or cells of your last zoom. undo takes the note back."),
+              f"over {int(round(100 * place.ink))}% ink.{warning} Lines, screentone and panel borders under it are "
+              f"fine. Only if it covers a face or other text, note_region #{region.id} again with box: an empty spot "
+              f"right beside the text (within {NEAR * place.font_size:.0f} px of it), in page pixels or cells of "
+              f"your last zoom. undo takes the note back."),
         images=[images.data_url(preview)], summary=f"#{region.id} → #{note.id}: {_short(place.text, 30)}")
 
 
@@ -839,11 +847,12 @@ TOOLS: List[Tool] = [
     Tool("note_region", "Keep a region's text as drawn and set its translation beside it in brackets, smaller: "
          "for text written over detailed art (a map's labels on screentone between dashed lines, words across "
          "hatching, hair or an object), where erasing it would break the drawing; text on flat ground (paper, one "
-         "flat color, its own box or circle) is refused. Leave box out: the program sizes the note to be read "
+         "flat color, its own box or circle, also when an outline touches it) is refused. Leave box out: the program sizes the note to be read "
          "on the page and puts it on the spot next to the text that covers the least art and no other text, and "
-         "shows it. Only when that image shows the note covering something that matters, call it again with box "
-         "(page pixels or cells of your last zoom): the empty spot to center it on; its size stays. set_text the "
-         "region to translate it in its place instead.",
+         "shows it; lines, screentone and panel borders under a note are fine. Only when that image shows the "
+         "note covering a face or other text, call it again with box (page pixels or cells of your last zoom): "
+         "an empty spot right beside the text to center it on (a spot further away is refused); its size stays. "
+         "set_text the region to translate it in its place instead.",
          _obj({"id": ID,
                "source_text": {"type": "string", "description": "Exact transcription of the original text"},
                "translation": {"type": "string", "description": "The translation, without brackets (the program "
@@ -851,7 +860,7 @@ TOOLS: List[Tool] = [
                "category": {"type": "string", "enum": list(CATEGORIES)},
                "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
                "box": {**BOX, "description": "Only to move a note already placed: [x1, y1, x2, y2] page pixels "
-                                             "of the empty spot to center it on"},
+                                             "of the empty spot right beside the text to center it on"},
                "cells": {"type": "string", "description": "Only to move a note already placed: grid cells of the "
                                                           "last zoom to center it on, like C4 or B3:D5"},
                "direction": {"type": "string", "enum": ["v", "h"], "description": "Optional: v = vertical, "

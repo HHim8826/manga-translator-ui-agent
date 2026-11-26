@@ -8,7 +8,7 @@ import pytest
 
 from manga_translator.agent import checks
 from manga_translator.agent.inpaint_review import with_kept
-from manga_translator.agent.notes import (MIN_NOTE_PX, bracketed, flat_ground, note_font, note_lines, place_in_box,
+from manga_translator.agent.notes import (MIN_NOTE_PX, bracketed, flat_ground, gap, note_font, note_lines, place_in_box,
                                          place_note, usual_size)
 from manga_translator.agent.page import NOTED, PageDoc, RegionError
 from manga_translator.agent.proofread import ProofPage, ProofSession, _execute
@@ -75,6 +75,24 @@ def test_a_note_goes_over_flat_screentone_rather_than_line_art():
     assert place.side == "right" and place.ink > 0.2
 
 
+def test_text_on_paper_that_an_outline_touches_is_on_flat_ground():
+    """ch42 p6, the second real run: an aside written beside a thought bubble touches its outline, which
+    made the inpaint's check say no, and the model noted it though it had translated it in its place."""
+    image = np.full((200, 200, 3), 255, np.uint8)
+    for y in range(40, 150, 24):
+        cv2.putText(image, "X", (90, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    lines = [np.array([[86, 38], [114, 38], [114, 160], [86, 160]], np.float64)]
+    cv2.ellipse(image, (40, 100), (72, 90), 0, 0, 360, (0, 0, 0), 2)  # the bubble beside it, touching
+    assert flat_ground(image, lines)
+    tone = image.copy()  # the same on screentone
+    tone[(np.indices(tone.shape[:2]) % 4 < 2).all(axis=0)] = 0
+    assert not flat_ground(tone, lines)
+    hatched = image.copy()  # lines running under it, like a map's dashed outlines
+    for y in range(0, 200, 12):
+        cv2.line(hatched, (60, y), (140, y + 30), (0, 0, 0), 1)
+    assert not flat_ground(hatched, lines)
+
+
 def test_a_note_beside_a_slanted_label_runs_along_the_same_slant():
     gray = np.full((400, 400), 255, np.uint8)
     angle = -30.0
@@ -131,7 +149,7 @@ def _session(tmp_path):
     image[151:180, 201:280] = 255
     for x in range(210, 262, 18):
         cv2.putText(image, "X", (x, 172), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-    cv2.ellipse(image, (240, 165), (46, 26), 0, 0, 360, (0, 0, 0), 2)
+    cv2.ellipse(image, (240, 165), (46, 26), 0, 0, 360, (0, 0, 0), 4)  # thick, as round 「北」
     cv2.imwrite(image_path, image)
     session = AgentSession(AgentSettings(), AgentMemory(str(tmp_path / "mem")), [image_path])
     session.start_page(0, PageDoc.load(image_path, json_path))
@@ -187,11 +205,16 @@ def test_note_region_keeps_the_text_and_sets_its_translation_beside_it(tmp_path)
     assert "skip_region #1" in tools.execute("skip_region", {"id": 4, "category": "other", "reason": "r"}).text
     assert "undo the note_region" in tools.execute("merge_regions", {"ids": [1, 2], "reason": "r"}).text
     assert "undo the note_region" in tools.execute("fit_region", {"id": 1, "reason": "r"}).text
-    # again with a box: the old note goes
-    moved = tools.execute("note_region", {**NOTE, "box": [150, 190, 300, 235], "direction": "h"})
+    # again with a box: a spot away from the text is refused (ch42 p1, the second real run: notes moved
+    # 90-118 px from their labels); one beside it is taken and the old note goes
+    far = tools.execute("note_region", {**NOTE, "box": [150, 190, 300, 235], "direction": "h"})
+    assert not far.ok and "right beside its text" in far.text
+    assert len([r for r in doc.regions.values() if r.note_of == 1]) == 1
+    moved = tools.execute("note_region", {**NOTE, "box": [62, 60, 98, 120]})
     assert moved.ok and "centered on the box you gave" in moved.text
     notes = [r for r in doc.regions.values() if r.note_of == 1]
-    assert len(notes) == 1 and notes[0].direction == "h" and notes[0].bbox[1] >= 190
+    assert len(notes) == 1 and notes[0].direction == "v" and 60 <= notes[0].bbox[0] and notes[0].bbox[2] <= 100
+    assert gap(notes[0].polygons, doc.regions[1].polygons) < 5
     # translated in its place after all: the note goes; undo brings it back
     tools.execute("set_text", {"id": 1, "source_text": "バリケード", "translation": "路障", "category": "handwritten",
                                "confidence": 0.9})

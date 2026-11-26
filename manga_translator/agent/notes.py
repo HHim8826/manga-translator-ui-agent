@@ -25,7 +25,11 @@ with every call, which made notes of 12-17 px, and seven calls were refused as t
 Only text over art gets a note: ``flat_ground`` refuses text whose ground the inpaint fills with one
 color (``inpaint.background``: plain paper or a flat color, no art line running into the text). On the
 ch42 map that is 「今ここ」 in its box and 「北」 and 「井戸」 in their circles, which the user would
-erase; the labels on the roads between dashed lines and in the buildings are not flat."""
+erase; the labels on the roads between dashed lines and in the buildings are not flat. Text on plain paper
+that an outline only touches is on flat ground too (``PAPER``): in the second real run the model noted
+an aside written beside a thought bubble on ch42 p6, whose outline touches it, though it had translated
+it in its place the run before. A note the model moves with a box stays beside its text (``NEAR``): in
+that run it moved notes 90-118 px from their labels on the map, where they no longer read as theirs."""
 from __future__ import annotations
 
 import math
@@ -56,6 +60,13 @@ DARK, ART = 0.3, 2.0
 """Weights of a spot's darkness (mean) and of its art (spread of the blurred page) in its cost."""
 CROWDED = 0.02
 """A spot whose box covers more than this share of other text (or the text itself) is not free."""
+NEAR = 2.5
+"""How far from its text a note placed with a box may be, in the note's font sizes. The program's own
+spots reach 2.2 (a gap of 0.2 and two steps out); on the ch42 map the model moved notes 3.7-4.9 away."""
+PAPER = 0.85
+"""Share of plain paper within half a font size of the text's strokes from which the text is on flat
+ground although a line touches it: 0.98 round the aside beside a thought bubble on ch42 p6, at most
+0.54 round the map labels that need a note."""
 _OPENERS = "（(【［[〔︵"
 _CLOSERS = "）)】］]〕︶"
 _NO_LINE_START = _CLOSERS + "、。，．・…‥！？!?ー"
@@ -198,12 +209,15 @@ def _smooth(gray: np.ndarray, font: int) -> np.ndarray:
     return cv2.GaussianBlur(gray, (0, 0), max(2.0, font / 10.0))
 
 
-def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40) -> bool:
+def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40,
+                font_size: Optional[float] = None) -> bool:
     """Whether the ground under and around the text in ``polygons`` (its lines, page pixels) is flat in
-    the inpaint's sense, so erasing it leaves the drawing whole. Judged on the text's own strokes (the
-    ink inside its lines, 3 px wider), not on what erasing takes: a fit's erase area reaches the circle
-    round 「北」 on the ch42 map, and that line running into it made the ground look busy."""
-    from .inpaint import _kernel, background, ink
+    the inpaint's sense, so erasing it leaves the drawing whole, or plain paper that a line only touches
+    (``PAPER``; ``font_size`` sets how far round the strokes, else the lines' thickness). Judged on the
+    text's own strokes (the ink inside its lines, 3 px wider), not on what erasing takes: a fit's erase
+    area reaches the circle round 「北」 on the ch42 map, and that line running into it made the ground
+    look busy."""
+    from .inpaint import FLAT_SPECKS, _kernel, background, ink
 
     height, width = image.shape[:2]
     points = np.concatenate([np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in polygons])
@@ -222,7 +236,37 @@ def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40
     strokes = ink(crop, inside) & inside
     if not strokes.any():
         return False
-    return background(crop, cv2.dilate(strokes.astype(np.uint8), _kernel(3)) > 0).flat
+    near = cv2.dilate(strokes.astype(np.uint8), _kernel(3)) > 0
+    ground = background(crop, near)
+    if ground.flat:
+        return True
+    if ground.specks > FLAT_SPECKS:  # screentone
+        return False
+    if not font_size:
+        font_size = float(np.median([min(cv2.minAreaRect(np.asarray(p, np.float32).reshape(-1, 2))[1])
+                                     for p in polygons]))
+    reach = max(6, int(round(0.5 * font_size)))
+    ring = (cv2.dilate(strokes.astype(np.uint8), _kernel(reach)) > 0) & ~near
+    if not ring.any():
+        return False
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    paper = cv2.GaussianBlur(gray, (0, 0), 1.5) >= float(np.percentile(gray, 95)) - 30
+    return float(paper[ring].mean()) >= PAPER
+
+
+def gap(lines: Sequence[np.ndarray], polygons: Sequence[np.ndarray]) -> float:
+    """Shortest distance in pixels between a note's lines and its text's (0 where they touch)."""
+    note = [np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in lines]
+    text = [np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in polygons]
+    points = np.concatenate(note + text)
+    low = np.floor(points.min(axis=0)) - 2
+    width, height = (np.ceil(points.max(axis=0)) - low + 3).astype(int)
+    free = np.full((height, width), 255, np.uint8)
+    cv2.fillPoly(free, [np.round(p - low).astype(np.int32).reshape(-1, 1, 2) for p in text], 0)
+    distance = cv2.distanceTransform(free, cv2.DIST_L2, 3)
+    covered = np.zeros_like(free)
+    cv2.fillPoly(covered, [np.round(p - low).astype(np.int32).reshape(-1, 1, 2) for p in note], 1)
+    return float(distance[covered > 0].min()) if covered.any() else math.inf
 
 
 def usual_size(reading: Sequence[float], every: Sequence[float]) -> Optional[float]:
