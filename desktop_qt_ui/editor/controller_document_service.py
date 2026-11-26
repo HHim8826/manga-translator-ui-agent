@@ -327,23 +327,37 @@ class EditorControllerDocumentService:
         blocking = purpose != "leave"
         auto_export = self._auto_export_on_switch_enabled()
         auto_save = self._auto_save_on_switch_enabled()
-        if auto_export and self.controller.export_image(automatic=True) is None:
-            self.logger.warning(f"Auto-export rejected ({purpose})")
-            if purpose == "switch":  # closing or removing still saves; the toast says why
-                return False
+        changed = getattr(export_service, "json_changed_elsewhere", None)
+        source_path = self.controller.model.get_source_image_path() if callable(changed) else None
+        conflict = bool(source_path and changed(source_path))
+        save_failed = False
+        if dirty and auto_save:
+            # saved before the export is queued: when another program changed the page's JSON the
+            # save asks first, and its 取消 or 重新载入 leaves no export of these edits behind
+            if self.controller.save_editor_state():
+                dirty = conflict = False
+            else:
+                self.logger.warning(f"Auto-save rejected ({purpose})")
+                if purpose == "switch" or not blocking:
+                    return purpose != "switch"
+                if not export_service.has_unsaved_changes():  # reloaded the newer files: stay there
+                    return False
+                save_failed = True  # closing or removing: asked below, so "不保存" still lets it go
+        exported = False
+        if auto_export and conflict:
+            # the output image would show this page as it was before another program wrote it
+            self.logger.info(f"Auto-export skipped ({purpose}): the page's JSON was changed elsewhere")
+        elif auto_export:
+            exported = self.controller.export_image(automatic=True) is not None
+            if not exported:
+                self.logger.warning(f"Auto-export rejected ({purpose})")
+                if purpose == "switch":
+                    return False
         if not dirty:
             return True
-        if auto_save:
-            if self.controller.save_editor_state():
-                return True
-            self.logger.warning(f"Auto-save rejected ({purpose})")
-            if purpose == "switch" or not blocking:
-                return purpose != "switch"
-            if not export_service.has_unsaved_changes():  # reloaded the newer files: stay there
-                return False
-            # closing or removing after a failed save: ask, so "不保存" still lets it go
-        elif auto_export or not blocking or self._suppress_unsaved_warning_enabled():
-            return True
+        if not save_failed and (exported or not blocking or self._suppress_unsaved_warning_enabled()):
+            return True  # the edits are in the export (切图时自动导出 without 自动保存), or not asked
+        # the edits are in no saved project and no export: save, discard or stay
         action = self._ask_unsaved_action(purpose)
         if action == "cancel":
             return False

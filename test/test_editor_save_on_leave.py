@@ -99,6 +99,52 @@ def test_an_export_that_cannot_be_made_does_not_keep_the_window_open(monkeypatch
     assert _settle(controller, "switch", monkeypatch)[0] is False  # as before
 
 
+@pytest.mark.parametrize("purpose", ["close", "remove"])
+def test_edits_in_no_export_and_no_save_are_not_let_go_without_asking(monkeypatch, purpose):
+    """Review 2026-11-26 P1-1: 切图时自动导出 on, 自动保存 off, the export refused: closing the window
+    or removing the page went on with no save and no question, and the edits were gone."""
+    controller = _Controller(auto_save=False, auto_export=True)
+    controller.export_image = lambda automatic=False: None
+    assert _settle(controller, purpose, monkeypatch, answer="cancel") == (False, [purpose])
+    assert _settle(controller, purpose, monkeypatch, answer="save") == (True, [purpose])
+    assert controller.saved == 1
+    assert _settle(controller, purpose, monkeypatch, answer="discard") == (True, [purpose])
+    assert _settle(controller, "switch", monkeypatch) == (False, [])  # as before: the switch stops
+    exporting = _Controller(auto_save=False, auto_export=True)  # the export took the edits: no question
+    assert _settle(exporting, purpose, monkeypatch) == (True, []) and exporting.exported == [True]
+
+
+def _changed_elsewhere(controller):
+    controller.model = SimpleNamespace(get_source_image_path=lambda: "001.png")
+    controller.export_service.json_changed_elsewhere = lambda path: path == "001.png"
+    return controller
+
+
+def test_cancelling_the_changed_on_disk_question_queues_no_export(monkeypatch):
+    """Review 2026-11-26 P1-4: the export was queued before the save asked 覆盖保存/重新载入/取消, so
+    after 取消 the page stayed with the other program's JSON but its output image was drawn over
+    with the unsaved edits."""
+    controller = _changed_elsewhere(_Controller(auto_save=True, auto_export=True, save_ok=False))
+    assert _settle(controller, "switch", monkeypatch) == (False, [])
+    assert controller.saved == 1 and controller.exported == []
+    assert _settle(controller, "close", monkeypatch, answer="cancel") == (False, ["close"])
+    assert controller.exported == []
+    reloaded = _changed_elsewhere(_Controller(auto_save=True, auto_export=True))
+    reloaded.save_editor_state = lambda: setattr(reloaded.export_service, "dirty", False) or False
+    assert _settle(reloaded, "switch", monkeypatch) == (False, []) and reloaded.exported == []
+    overwritten = _changed_elsewhere(_Controller(auto_save=True, auto_export=True))
+    assert _settle(overwritten, "switch", monkeypatch) == (True, [])
+    assert overwritten.saved == 1 and overwritten.exported == [True]  # saved first, then exported
+
+
+def test_no_export_over_a_page_another_program_changed_without_a_save(monkeypatch):
+    unsaved = _changed_elsewhere(_Controller(auto_save=False, auto_export=True))
+    assert _settle(unsaved, "close", monkeypatch, answer="cancel") == (False, ["close"])
+    assert unsaved.exported == []
+    clean = _changed_elsewhere(_Controller(auto_save=True, auto_export=True, dirty=False, stale=True))
+    assert _settle(clean, "switch", monkeypatch) == (True, []) and clean.exported == []
+
+
 @pytest.mark.parametrize("purpose", ["switch", "close", "remove"])
 def test_without_auto_save_it_asks_before_the_page_is_left(monkeypatch, purpose):
     controller = _Controller(auto_save=False, auto_export=False)
