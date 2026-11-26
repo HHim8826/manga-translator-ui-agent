@@ -1,6 +1,7 @@
 """Translations set beside text kept as drawn (note_region): placement, the page, the tool and the later stages."""
 import json
 import math
+import re
 
 import cv2
 import numpy as np
@@ -8,8 +9,8 @@ import pytest
 
 from manga_translator.agent import checks
 from manga_translator.agent.inpaint_review import with_kept
-from manga_translator.agent.notes import (MIN_NOTE_PX, bracketed, flat_ground, gap, note_font, note_lines, place_in_box,
-                                         place_note, usual_size)
+from manga_translator.agent.notes import (COVERS, MIN_NOTE_PX, NEAR, bracketed, covered_text, flat_ground, free_boxes,
+                                         gap, note_font, note_lines, place_in_box, place_note, usual_size)
 from manga_translator.agent.page import NOTED, PageDoc, RegionError
 from manga_translator.agent.proofread import ProofPage, ProofSession, _execute
 from manga_translator.agent.revise import load_page
@@ -228,6 +229,19 @@ def test_note_region_keeps_the_text_and_sets_its_translation_beside_it(tmp_path)
     other = tools.execute("note_region", {**NOTE, "box": [100, 40, 140, 100]})
     assert not other.ok and "the text of #2" in other.text
     assert [r.bbox for r in doc.regions.values() if r.note_of == 1] == before
+    # the refusal names the nearest boxes that keep off text (the real run of 2026-11-27: the model left
+    # the note over the drawing it wanted to clear, not knowing the spot past the label was free)
+    spots = re.findall(r"(\[[-\d, ]+\]) \((\d+) px (left|right|up|down)\)", own.text)
+    assert spots and [int(m) for _, m, _ in spots] == sorted(int(m) for _, m, _ in spots)
+    for spot, _moved, _way in spots:
+        taken = tools.execute("note_region", {**NOTE, "box": json.loads(spot)})
+        assert taken.ok, (spot, taken.text)
+        note = next(r for r in doc.regions.values() if r.note_of == 1)
+        assert covered_text(note.polygons, {r.id: r.polygons for r in doc.active_regions()
+                                            if r.id != note.id})[1] <= COVERS
+        assert gap(note.polygons, doc.regions[1].polygons) <= NEAR * note.font_size
+        tools.execute("undo", {})
+    assert [r.bbox for r in doc.regions.values() if r.note_of == 1] == before
     note = next(r for r in doc.regions.values() if r.note_of == 1)
     saved_lines = note.data["lines"]
     note.data["lines"] = [q.tolist() for q in doc.regions[1].polygons]  # as if it had been put there
@@ -281,3 +295,27 @@ def test_a_page_checked_again_keeps_its_notes_and_the_later_stages_know_them(tmp
     assert "revised" in text
     saved = next(iter(json.load(open(json_path, encoding="utf-8")).values()))
     assert saved["regions"][0]["translation"] == "（柵欄）"
+
+
+def test_free_boxes_are_the_nearest_moves_off_text_and_stay_beside_it():
+    """A note asked for over its own label: the nearest box each way that keeps off every text and stays
+    right beside the label; none past a page edge."""
+    gray = np.full((300, 400), 255, np.uint8)
+    label = [np.array([[180, 100], [220, 100], [220, 200], [180, 200]], np.float64)]  # vertical, 40 wide
+    other = [np.array([[110, 100], [170, 100], [170, 200], [110, 200]], np.float64)]  # another text 10 px to its left
+    texts = {1: label, 2: other}
+    box = [185, 110, 215, 190]  # right on the label
+    spots = free_boxes(gray, box, "v", 30, "（路障）", None, texts, label, NEAR * note_font(30))
+    ways = {way: (moved, moved_box) for way, moved, moved_box in spots}
+    assert [moved for _, moved, _ in spots] == sorted(moved for _, moved, _ in spots)
+    assert "right" in ways and "left" not in ways  # left of the label is #2, and past it too far
+    for way, moved, moved_box in spots:
+        place = place_in_box(gray, moved_box, "v", 30, "（路障）")
+        assert covered_text(place.lines, texts)[1] <= COVERS
+        assert gap(place.lines, label) <= NEAR * place.font_size
+    # one step less on the right still covers the label
+    moved, moved_box = ways["right"]
+    step = max(2, int(round(note_font(30) / 4)))
+    closer = place_in_box(gray, [moved_box[0] - step, moved_box[1], moved_box[2] - step, moved_box[3]], "v", 30,
+                          "（路障）")
+    assert covered_text(closer.lines, texts)[1] > COVERS

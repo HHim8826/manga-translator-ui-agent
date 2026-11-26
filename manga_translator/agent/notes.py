@@ -405,6 +405,38 @@ def place_in_box(gray: np.ndarray, box: Sequence[float], direction: str, source_
                      BREAK.join(lines), "box", round(measured[0], 3) if measured else 0.0, outgrows=over > 1.0)
 
 
+WAYS = (("left", -1, 0), ("right", 1, 0), ("up", 0, -1), ("down", 0, 1))
+
+
+def free_boxes(gray: np.ndarray, box: Sequence[float], direction: str, source_px: float, text: str,
+               page_px: Optional[float], texts: Dict[int, Sequence[np.ndarray]], own: Sequence[np.ndarray],
+               near: float) -> List[Tuple[str, int, List[int]]]:
+    """The spots nearest a box the model gave (page pixels) whose note covers text: for each way (left,
+    right, up, down), the shortest move of ``box`` after which its note (``place_in_box``) covers at
+    most ``COVERS`` of every text in ``texts`` (id: its lines) and stays within ``near`` px of its own
+    text (``own``). (way, pixels moved, the moved box), nearest first. The real run of 2026-11-27 (ch42
+    p1): a box was refused for covering the note's own label, and the model left the note over the
+    drawing it had wanted to clear, not knowing the spot past the label was free."""
+    x1, y1, x2, y2 = (float(v) for v in box)
+    step = max(2, int(round(note_font(source_px, page_px) / 4)))
+    points = np.concatenate([np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in own])
+    reach = 2 * near + max(x2 - x1, y2 - y1, *(points.max(axis=0) - points.min(axis=0)))
+    found = []
+    for way, ux, uy in WAYS:
+        moved, last = step, None
+        while moved <= reach:
+            moved_box = [x1 + ux * moved, y1 + uy * moved, x2 + ux * moved, y2 + uy * moved]
+            place = place_in_box(gray, moved_box, direction, source_px, text, page_px)
+            if place is None or place.bbox == last:  # held at the page's edge
+                break
+            last = place.bbox
+            if gap(place.lines, own) <= near and covered_text(place.lines, texts)[1] <= COVERS:
+                found.append((way, moved, [int(round(v)) for v in moved_box]))
+                break
+            moved += step
+    return sorted(found, key=lambda spot: spot[1])
+
+
 def covered_text(lines: Sequence[np.ndarray], texts: Dict[int, Sequence[np.ndarray]]) -> Tuple[Optional[int], float]:
     """The text a note's ``lines`` cover most, of ``texts`` (id: its lines, page pixels): its id and the
     share of its lines under the note; (None, 0.0) when it covers none. A note right beside its text

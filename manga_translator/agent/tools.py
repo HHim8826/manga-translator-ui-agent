@@ -26,7 +26,8 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
-from .notes import COVERS, NEAR, bracketed, covered_text, flat_ground, gap, place_in_box, place_note, usual_size
+from .notes import (COVERS, NEAR, bracketed, covered_text, flat_ground, free_boxes, gap, place_in_box, place_note,
+                    usual_size)
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -515,13 +516,21 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
                               f"or translate #{region.id} shorter. The note placed before stays.")
         # the page's text, the region's own too, but not its notes (the one moved goes)
         notes = {n.id for n in s.doc.notes_of(region)}
-        over, share = covered_text(place.lines, {r.id: r.polygons for r in s.doc.active_regions()
-                                                 if r.id not in notes})
+        texts = {r.id: r.polygons for r in s.doc.active_regions() if r.id not in notes}
+        over, share = covered_text(place.lines, texts)
         if share > COVERS:
             whose = "its own text" if over == region.id else f"the text of #{over}"
+            spots = free_boxes(_gray(s), box, direction, source_px, text, page_px, texts, region.polygons,
+                               NEAR * place.font_size)
+            if spots:
+                hint = ("The nearest boxes that keep it off text, in page pixels: "
+                        + ", ".join(f"{b} ({moved} px {way})" for way, moved, b in spots)
+                        + ". Give one of them, another empty spot right beside the text, or leave box out.")
+            else:
+                hint = "No box near it keeps the note off text: give an empty spot on another side of the text, " \
+                       "or leave box out."
             raise RegionError(f"that spot puts the note over {whose} ({int(round(100 * share))}% of it): a note sits "
-                              f"on an empty spot right beside its text. Give such a spot, or leave box out. The "
-                              f"note placed before stays.")
+                              f"on an empty spot right beside its text. {hint} The note placed before stays.")
         away, near = gap(place.lines, region.polygons), NEAR * place.font_size
         if away > near:
             raise RegionError(f"that spot puts the note {away:.0f} px from #{region.id}: a note sits right beside "
