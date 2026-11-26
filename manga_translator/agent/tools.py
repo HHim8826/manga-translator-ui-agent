@@ -1,7 +1,8 @@
 """Tools the agent calls, M2 subset.
 
 Reading: get_candidates, zoom, get_neighbors, local_ocr, measure_bubble
-Structure: add_region, merge_regions, split_region, fit_region, skip_region, set_reading_order, link_regions
+Structure: add_region, merge_regions, split_region, fit_region, skip_region, note_region, set_reading_order,
+           link_regions
 Text: set_text, set_line_breaks, set_font_style
 Memory: glossary_search, glossary_upsert, character_get, character_upsert,
         story_summary_get, story_summary_update, search_past_translations
@@ -25,6 +26,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
+from .notes import bracketed, place_in_box, place_note
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -135,6 +137,8 @@ class AgentSession:
                 source = "added by you with add_region"
             elif region.origin == "cut":
                 source = "cut out of a detected line with split_region"
+            elif region.note_of is not None:
+                source = f"the translation of #{region.note_of} set beside it (note_region)"
             else:
                 source = f"local OCR (weak hint): 「{local}」"
             count = ""
@@ -142,6 +146,9 @@ class AgentSession:
                 room, rows = checks.room_counts(region)
                 count = f"{region.line_count} source line(s), fits about {room} characters per line and {rows} line(s), "
             status = region.status()
+            notes = self.doc.notes_of(region)
+            if notes:
+                status += f", translated beside it in #{notes[0].id}"
             if revise and region.translation and not region.skipped:
                 status += f" 「{region.translation}」"
                 if region.style:
@@ -400,7 +407,7 @@ def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if box is None:
         raise RegionError("give box ([x1, y1, x2, y2] page pixels) or cells (grid of your last zoom) around the "
                           "lines of the new region, or around the strokes of a part inside a line")
-    region = s.doc.get(a["id"])
+    region = s.doc._plain(s.doc.get(a["id"]), "split")
     inside = s.doc.lines_in(region.id, box)
     if 0 < len(inside) < region.line_count:  # whole lines move
         new = s.doc.split(region.id, box, a.get("reason", ""))
@@ -437,7 +444,7 @@ def split_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 
 def fit_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
-    region = s.doc.get(a["id"])
+    region = s.doc._plain(s.doc.get(a["id"]), "fit")
     box = _box_arg(s, a) or region.bbox
     direction = _direction(a, region, box)
     exclude = s.doc.occupied(s.page_array.shape, but=region.id)
@@ -470,6 +477,55 @@ def skip_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     region = s.doc.skip(a["id"], category, a.get("reason", ""))
     return ToolResult(text=f"#{region.id} skipped ({category}): it stays as in the original and is not erased.",
                       summary=f"#{region.id} ({category})")
+
+
+def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
+    region = s.doc.get(a["id"])
+    text = bracketed(a.get("translation", ""))
+    x1, y1, x2, y2 = region.bbox
+    own = region.direction[:1] if region.direction[:1] in ("v", "h") else ("v" if y2 - y1 > x2 - x1 else "h")
+    direction = str(a.get("direction") or "").lower()[:1] or own
+    if direction not in ("v", "h"):
+        raise RegionError("direction must be v (vertical) or h (horizontal)")
+    source_px = region.font_size or min(x2 - x1, y2 - y1)
+    sizes = sorted(r.font_size for r in s.doc.regions.values()
+                   if r.font_size and r.merged_into is None and r.note_of is None)
+    page_px = sizes[len(sizes) // 2] if sizes else None  # the page's usual text size
+    box = _box_arg(s, a)
+    if box is not None:
+        place = place_in_box(_gray(s), box, direction, source_px, text, page_px)
+    else:
+        try:
+            angle = float(region.data.get("angle") or 0.0)
+        except (TypeError, ValueError):
+            angle = 0.0
+        # the region's own earlier note goes, so its place is free
+        blocked = s.doc.occupied(s.page_array.shape, dilate=3,
+                                 but={region.id, *(n.id for n in s.doc.notes_of(region))})
+        place = place_note(_gray(s), region.polygons, direction, angle if direction == own else 0.0, source_px,
+                           text, blocked, page_px)
+        if place is None:
+            raise RegionError(f"there is no room on the page beside #{region.id}: give box, an empty spot near it "
+                              f"in page pixels, or cells of your last zoom")
+    note = s.doc.add_note(region.id, place, a.get("source_text", ""), a.get("category") or "other",
+                      a.get("confidence"), a.get("reason", ""))
+    others = [poly.tolist() for r in s.doc.active_regions() if r.id not in (region.id, note.id) for poly in r.polygons]
+    preview = images.note_preview(s.page_image, [p.tolist() for p in region.polygons], place.lines, place.text,
+                                  place.font_size, others)
+    nx1, ny1, nx2, ny2 = place.bbox
+    where = "in the box you gave" if place.side == "box" else f"{place.side} of the text"
+    lines = place.text.count(BREAK) + 1
+    warning = ""
+    if place.crowded:
+        warning = (" Warning: there is no free spot beside it, so the note covers other text: give box, an empty "
+                   "spot near it.")
+    return ToolResult(
+        text=(f"#{region.id} stays as drawn (green); its translation 「{place.text}」 is #{note.id}, {place.direction}, "
+              f"{lines} line(s), font {place.font_size}px at [{nx1}, {ny1}, {nx2}, {ny2}], {where} (orange box), "
+              f"over {int(round(100 * place.ink))}% ink.{warning} If it covers something that matters (a face, "
+              f"other text, a panel border), note_region #{region.id} again with box: an empty spot near it in page "
+              f"pixels, or cells of your last zoom. undo takes the note back."),
+        images=[images.data_url(preview)], summary=f"#{region.id} → #{note.id}: {_short(place.text, 30)}")
 
 
 def set_reading_order(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
@@ -763,6 +819,24 @@ TOOLS: List[Tool] = [
          + ", ".join(SKIP_CATEGORIES) + ". Use not_text for detections that contain no text.",
          _obj({"id": ID, "category": {"type": "string", "enum": list(SKIP_CATEGORIES)}, "reason": REASON},
               ["id", "category", "reason"]), skip_region, writes=True),
+    Tool("note_region", "Keep a region's text as drawn and set its translation beside it in brackets, smaller: "
+         "for text written over detailed art (a map's labels on screentone between dashed lines, words across "
+         "hatching, hair or an object), where erasing it would break the drawing. The program puts the note on "
+         "the spot next to the text that covers the least art and no other text, and shows it; give box (page "
+         "pixels or cells of your last zoom) to put it in an empty spot of your choice. Call it again to change or "
+         "move the note; set_text the region to translate it in its place instead.",
+         _obj({"id": ID,
+               "source_text": {"type": "string", "description": "Exact transcription of the original text"},
+               "translation": {"type": "string", "description": "The translation, without brackets (the program "
+                               "adds them); [BR] marks a line break"},
+               "category": {"type": "string", "enum": list(CATEGORIES)},
+               "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
+               "box": BOX, "cells": {"type": "string", "description": "Optional: grid cells of the last zoom for "
+                                                                       "the note, like C4 or B3:D5"},
+               "direction": {"type": "string", "enum": ["v", "h"], "description": "Optional: v = vertical, "
+                             "h = horizontal note (default: as the text)"},
+               "reason": REASON},
+              ["id", "source_text", "translation", "category", "confidence", "reason"]), note_region, writes=True),
     Tool("set_reading_order", "Reading order of the regions on this page (right-to-left manga order by default).",
          _obj({"ids": IDS}, ["ids"]), set_reading_order, writes=True),
     Tool("link_regions", "Mark regions as parts of one sentence that spans several bubbles.",

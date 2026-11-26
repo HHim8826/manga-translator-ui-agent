@@ -13,7 +13,7 @@ from typing import Callable, Optional, Tuple
 
 Translate = Callable[..., str]
 
-SKIP_KINDS = ("sign", "sfx", "credit", "not_text", "duplicate", "other")
+SKIP_KINDS = ("sign", "sfx", "credit", "not_text", "duplicate", "other", "noted")
 FLAG_KINDS = ("uncertain_ocr", "uncertain_translation", "layout", "inpaint", "missing_text", "low_confidence",
               "step_limit", "error", "other", "conflict")
 ISSUES = ("residual_text", "broken_lines")
@@ -27,7 +27,7 @@ editor's AI Agent tab. The translator's own numbers (#4) are the preview's boxes
 # the first word of a translator undo label (page.py _checkpoint) → the tool it undid
 _UNDO_TOOLS = {"set_text": "set_text", "skip": "skip_region", "merge": "merge_regions", "split": "split_region",
                "set_reading_order": "set_reading_order", "link": "link_regions", "line_breaks": "set_line_breaks",
-               "flag": "flag_for_review", "add_region": "add_region"}
+               "flag": "flag_for_review", "add_region": "add_region", "note": "note_region"}
 
 _ID = r"(#\d+)"
 

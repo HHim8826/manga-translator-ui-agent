@@ -236,6 +236,11 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
         doc.regions[rid] = region
         doc.order.append(rid)
         entry_rid[entry.get("id")] = rid
+    # a note (note_region) still belongs to the text it was set beside, while that stays as drawn
+    for rid, entry in matched.items():
+        target = entry_rid.get(entry.get("note_of")) if entry.get("note_of") is not None else None
+        if target is not None and doc.regions[target].skipped:
+            doc.regions[rid].note_of = target
     _order_like(doc, side.get("order") or [e.get("id") for e in entries], entry_rid)
 
     # the inpaint review is not run again: its flags stay until the user deals with them, old ones too

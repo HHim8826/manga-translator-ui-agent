@@ -147,6 +147,51 @@ def snap_preview(page: Image.Image, bbox: Sequence[int], lines: Sequence[Sequenc
     return out
 
 
+NOTE_COLOR = (255, 140, 0)
+
+
+def note_preview(page: Image.Image, kept: Sequence[Sequence[Sequence[float]]],
+                 note: Sequence[Sequence[Sequence[float]]], text: str, font_size: int,
+                 others: Sequence[Sequence[Tuple[float, float]]] = (), pad: int = 40,
+                 max_side: int = 1400) -> Image.Image:
+    """Crop around text kept as drawn and its note (``note_region``): the kept lines in green, the
+    note's lines in orange with its text written in (upright), other regions' boxes in gray."""
+    points = np.concatenate([np.asarray(q, dtype=np.float64).reshape(-1, 2) for q in (*kept, *note)])
+    left, top = max(0, int(points[:, 0].min()) - pad), max(0, int(points[:, 1].min()) - pad)
+    right, bottom = min(page.width, int(points[:, 0].max()) + pad), min(page.height, int(points[:, 1].max()) + pad)
+    out = page.crop((left, top, right, bottom))
+    scale = max(1.0, min(3.0, max_side / max(1, max(out.size))))
+    out = out.resize((max(1, int(out.width * scale)), max(1, int(out.height * scale))), Image.LANCZOS)
+    draw = ImageDraw.Draw(out)
+
+    def at(px, py):
+        return (px - left) * scale, (py - top) * scale
+
+    for poly in others:
+        draw.polygon([at(px, py) for px, py in poly], outline=SKIP_COLOR)
+    for quad in kept:
+        draw.polygon([at(px, py) for px, py in quad], outline=DONE_COLOR, width=2)
+    font = _font(max(8, int(font_size * scale)))
+    for quad, line in zip(note, str(text).split("[BR]")):
+        draw.polygon([at(px, py) for px, py in quad], outline=NOTE_COLOR, width=2)
+        q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+        tl, tr, br, bl = q
+        width, height = np.linalg.norm(tr - tl), np.linalg.norm(bl - tl)
+        start, end = ((tl + tr) / 2, (bl + br) / 2) if height > width else ((tl + bl) / 2, (tr + br) / 2)
+        chars = [ch for ch in line if not ch.isspace()]
+        span = np.linalg.norm(end - start)
+        step = (end - start) / max(span, 1.0) * font_size
+        first = (start + end) / 2 - step * (len(chars) - 1) / 2
+        for i, ch in enumerate(chars):
+            x, y = at(*(first + step * i))
+            try:
+                draw.text((x, y), ch, fill=(0, 0, 0), font=font, anchor="mm", stroke_width=2,
+                          stroke_fill=(255, 255, 255))
+            except ValueError:  # a bitmap font (no font file found) takes no anchor
+                draw.text((x - 3, y - 5), ch, fill=(0, 0, 0), font=font)
+    return out
+
+
 def thumbnail(path: str, max_side: int = 640) -> Image.Image:
     image = open_page(path)
     image.thumbnail((max_side, max_side), Image.LANCZOS)

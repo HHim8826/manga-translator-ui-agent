@@ -18,7 +18,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from ..utils.textblock import saved_lines_to_page
 from . import checks, images, json_guard
 from .events import EventLog
-from .page import BREAK, Region, needs_break, text_length, with_breaks
+from .notes import bracketed
+from .page import BREAK, NOTED, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
 from .store import AgentMemory, AgentStore, normalize, write_json_atomic
 from .store import page_stem
@@ -100,6 +101,9 @@ class ProofPage:
         """Regions the user changed in the editor (a chapter checked again): not revised."""
         self.skipped: List[tuple] = []
         """(source, skip category) of the text the translator left as drawn: not in the JSON."""
+        self.notes: set = set()
+        """Regions that are notes (``note_region``): a translation in brackets set beside text kept as
+        drawn. A revision keeps the brackets."""
         self.on_list: List[tuple] = []
         """(region number or None, flag type, reason) already on the human review list from the
         translator (or an earlier proofreading): not flagged again."""
@@ -118,8 +122,11 @@ class ProofPage:
                 self.categories[rid] = str(entry["category"])
             if entry and entry.get("locked") and not entry.get("skipped"):
                 self.locked.add(rid)
+            if entry and entry.get("note_of") is not None and not entry.get("skipped"):
+                self.notes.add(rid)
         for entry in entries:
-            if entry.get("skipped") and not entry.get("merged_into"):
+            # text kept as drawn with a note beside it is in the listing as that note
+            if entry.get("skipped") and not entry.get("merged_into") and entry.get("skip_category") != NOTED:
                 text = _one_line(entry.get("ocr_agent") or self.source(Region(id=0, data=entry.get("json") or {})))
                 if text:
                     self.skipped.append((text, str(entry.get("skip_category") or "")))
@@ -174,8 +181,9 @@ class ProofPage:
                 room, rows = checks.room_counts(region)
                 count = f", {region.line_count} line(s), ~{room} chars per line, ~{rows} lines fit"
             locked = ", LOCKED: the user's own text, do not revise" if rid in self.locked else ""
+            note = ", a note beside the original, which stays drawn" if rid in self.notes else ""
             lines.append(f"#{rid} [{category + ', ' if category else ''}~{checks._capacity(region)} chars{count}"
-                         f"{locked}] 「{_one_line(self.source(region))}」 → 「{with_breaks(translation)}」")
+                         f"{locked}{note}] 「{_one_line(self.source(region))}」 → 「{with_breaks(translation)}」")
         return lines
 
     def write(self, rid: int, translation: str) -> None:
@@ -269,6 +277,8 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
         reason = str(args.get("reason") or "").strip()
         if not new.strip():
             raise ProofError("translation is empty")
+        if region.id in page.notes:  # a note keeps its brackets
+            new = bracketed(new)
         if not reason:
             raise ProofError("reason is required")
         if s.line_breaks and needs_break(region.line_count, new):

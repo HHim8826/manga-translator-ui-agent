@@ -13,7 +13,10 @@ On save:
 * merged regions are written as one region whose lines are the union;
 * regions added by the agent or the recall check (text the detector missed)
   are written like detector regions, and their strokes are added to the mask
-  so the render step erases them.
+  so the render step erases them;
+* a note (``add_note``: text over detailed art kept as drawn, its translation set
+  beside it in brackets) is written like a region with nothing to erase under
+  it, and the text it belongs to is skipped (``noted``).
 """
 from __future__ import annotations
 
@@ -40,10 +43,13 @@ BREAK = "[BR]"
 _BREAK_MARKS = re.compile(r"\s*(?:\[BR\]|【BR】|<br\s*/?>|\r?\n)\s*", re.IGNORECASE)
 MIN_BREAK_CHARS = 4
 """Translations shorter than this (letters and digits) need no line break even for a multi-line source."""
-KEEP_DRAWN = ("sign", "sfx", "credit", "other")
+NOTED = "noted"
+"""Skip category of text kept as drawn whose translation is set beside it (``PageDoc.add_note``)."""
+KEEP_DRAWN = ("sign", "sfx", "credit", "other", NOTED)
 """Skip categories whose text stays drawn on purpose (signs, sound effects, credits, invented script
-and its readings, logos): no mask, inpaint attempt or mask edit may erase it. ``duplicate`` (text
-that belongs to another region, erased with it) and ``not_text`` are not kept."""
+and its readings, logos, text over detailed art with a note beside it): no mask, inpaint attempt or
+mask edit may erase it. ``duplicate`` (text that belongs to another region, erased with it) and
+``not_text`` are not kept."""
 KEEP_PAD = 3
 """Pixels around the lines of kept text that no erasing may touch either (antialiased edges)."""
 
@@ -212,7 +218,11 @@ class Region:
     link_group: Optional[int] = None
     reasons: List[str] = field(default_factory=list)
     origin: str = "detector"
-    """``detector``, ``agent`` (add_region) or ``recall`` (the recall check)."""
+    """``detector``, ``agent`` (add_region), ``recall`` (the recall check), ``cut`` (split_region) or
+    ``note`` (note_region)."""
+    note_of: Optional[int] = None
+    """A note (``PageDoc.add_note``): the translation of region ``note_of``, which stays as drawn, set
+    beside it. Nothing is erased under a note."""
     origin_kind: str = ""
     """What the recall check thought the text was (dialogue, sfx, ...)."""
     erase: Optional[tuple] = None
@@ -425,15 +435,45 @@ class PageDoc:
         """The agent changed the region (the lock is off): it is no longer the user's version."""
         region.user_edited = False
 
+    def notes_of(self, region: Region) -> List[Region]:
+        """The notes that set the translation of ``region`` beside it."""
+        return [r for r in self.regions.values() if r.note_of == region.id and r.active]
+
+    def _drop_notes(self, region: Region) -> None:
+        for note in self.notes_of(region):
+            del self.regions[note.id]
+            if note.id in self.order:
+                self.order.remove(note.id)
+
+    @staticmethod
+    def _not_a_note(region: Region) -> Region:
+        if region.note_of is not None:
+            raise RegionError(f"#{region.id} is the translation set beside #{region.note_of}: to change or move "
+                              f"it, note_region #{region.note_of} again; to translate #{region.note_of} in its "
+                              f"place instead, set_text #{region.note_of}")
+        return region
+
+    def _plain(self, region: Region, action: str) -> Region:
+        """A region that is neither a note nor kept as drawn with one: ``action`` would leave the note
+        beside text that moved."""
+        self._not_a_note(region)
+        notes = self.notes_of(region)
+        if notes:
+            raise RegionError(f"#{region.id} stays as drawn with its translation beside it (#{notes[0].id}): undo "
+                              f"the note_region before you {action} it, or set_text #{region.id} to translate it "
+                              f"in its place")
+        return region
+
     def set_text(self, rid, source_text: str, translation: str, category: str = "dialogue",
                  confidence: Optional[float] = None, ruby: str = "", reason: str = "") -> Region:
-        region = self._unlocked(self.get(rid))
+        region = self._not_a_note(self._unlocked(self.get(rid)))
         translation = with_breaks(translation)
         if not translation.strip():
             raise RegionError(f"#{region.id}: translation is empty; use skip_region for text that stays as it is")
         if category and category not in CATEGORIES:
             raise RegionError(f"category must be one of {', '.join(CATEGORIES)}")
         self._checkpoint(f"set_text #{region.id}")
+        self._drop_notes(region)  # translated in its place now
         self._agents(region)
         region.source_text = (source_text or "").strip()
         region.translation = translation
@@ -448,9 +488,13 @@ class PageDoc:
 
     def skip(self, rid, category: str, reason: str) -> Region:
         region = self._unlocked(self.get(rid))
+        if region.note_of is not None:
+            raise RegionError(f"#{region.id} is the translation set beside #{region.note_of}: to keep "
+                              f"#{region.note_of} as drawn without it, skip_region #{region.note_of}")
         if not reason:
             raise RegionError("reason is required")
         self._checkpoint(f"skip #{region.id}")
+        self._drop_notes(region)
         self._agents(region)
         region.skipped = True
         region.skip_category = category or "other"
@@ -458,8 +502,43 @@ class PageDoc:
         region.reasons.append(reason)
         return region
 
+    def add_note(self, rid, place, source_text: str, category: str = "other", confidence: Optional[float] = None,
+             reason: str = "") -> Region:
+        """Keep region ``rid`` as drawn and set its translation beside it: ``place`` (``notes.NotePlace``)
+        gives the note's lines, size and text. The region is skipped (``NOTED``: its strokes stay out of
+        the mask) and a new region right after it in reading order holds the translation; an earlier
+        note of it goes. Returns the note."""
+        region = self._not_a_note(self._unlocked(self.get(rid)))
+        if not reason:
+            raise RegionError("reason is required")
+        if category and category not in CATEGORIES:
+            raise RegionError(f"category must be one of {', '.join(CATEGORIES)}")
+        self._checkpoint(f"note #{region.id}")
+        self._drop_notes(region)
+        self._agents(region)
+        region.skipped = True
+        region.skip_category = NOTED
+        region.translation = None
+        region.source_text = (source_text or "").strip() or region.source_text
+        region.category = category or region.category or "other"
+        region.reasons.append(reason)
+        source = region.source_text or region.ocr_local
+        data = {k: copy.deepcopy(region.data[k]) for k in STYLE_KEYS if k in region.data}
+        data.update({"lines": place.lines, "texts": [source], "text": source, "translation": "",
+                     "angle": place.angle, "font_size": place.font_size, "fg_colors": [0, 0, 0],
+                     "bg_colors": [255, 255, 255], "direction": place.direction, "alignment": "center",
+                     "stroke_width": place.stroke})
+        note = Region(id=max(self.regions, default=0) + 1, data=data, source_text=source or None,
+                      translation=place.text, category=region.category, origin="note", note_of=region.id,
+                      confidence=None if confidence is None else max(0.0, min(1.0, float(confidence))),
+                      reasons=[reason])
+        data["center"] = note.center
+        self.regions[note.id] = note
+        self.order.insert(self.order.index(region.id) + 1, note.id)
+        return note
+
     def merge(self, ids, reason: str) -> Region:
-        regions = [self._unlocked(self.get(i)) for i in ids]
+        regions = [self._plain(self._unlocked(self.get(i)), "merge") for i in ids]
         unique = {r.id: r for r in regions}
         if len(unique) < 2:
             raise RegionError("merge_regions needs at least two different ids")
@@ -500,7 +579,7 @@ class PageDoc:
         one detected box that holds two separate texts (a small aside beside the main text, a subtitle
         printed in a logo above a chapter title). Both parts are then translated or skipped on their own;
         the new region comes right after the old one in reading order."""
-        region = self._unlocked(self.get(rid))
+        region = self._plain(self._unlocked(self.get(rid)), "split")
         if not reason:
             raise RegionError("reason is required")
         x1, y1, x2, y2 = box
@@ -562,7 +641,7 @@ class PageDoc:
         return self.order
 
     def link(self, ids, reason: str) -> int:
-        regions = [self.get(i) for i in ids]
+        regions = [self._plain(self.get(i), "link") for i in ids]
         if len({r.id for r in regions}) < 2:
             raise RegionError("link_regions needs at least two different ids")
         self._checkpoint("link " + "+".join(f"#{r.id}" for r in regions))
@@ -575,7 +654,7 @@ class PageDoc:
         return group
 
     def set_line_breaks(self, rid, text: str, reason: str = "") -> Region:
-        region = self._unlocked(self.get(rid))
+        region = self._not_a_note(self._unlocked(self.get(rid)))
         if not region.translation:
             raise RegionError(f"#{region.id} has no translation yet; call set_text first")
         text = with_breaks(text)
@@ -596,12 +675,13 @@ class PageDoc:
         self.flags.append(entry)
         return entry
 
-    def occupied(self, shape, dilate: int = 2, but: Optional[int] = None) -> np.ndarray:
-        """0/1 array of pixels covered by the active regions (kept or skipped) other than ``but``,
-        so snapping a new region does not take their strokes."""
+    def occupied(self, shape, dilate: int = 2, but=None) -> np.ndarray:
+        """0/1 array of pixels covered by the active regions (kept or skipped) other than ``but`` (an id
+        or several), so snapping a new region does not take their strokes."""
+        left_out = set(but) if isinstance(but, (set, list, tuple)) else {but}
         canvas = np.zeros(shape[:2], np.uint8)
-        polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in self.active_regions() if r.id != but
-                 for p in r.polygons]
+        polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in self.active_regions()
+                 if r.id not in left_out for p in r.polygons]
         if polys:
             cv2.fillPoly(canvas, polys, 1)
         if dilate > 0:
@@ -682,7 +762,7 @@ class PageDoc:
         ink lies beside it; otherwise they stay as they are and each stroke goes with the smaller
         region (``keep_mask``). Both parts then need set_text or skip_region; the new region comes
         right after the old one in reading order."""
-        region = self._unlocked(self.get(rid))
+        region = self._plain(self._unlocked(self.get(rid)), "split")
         if not reason:
             raise RegionError("reason is required")
         direction = (direction or "").lower()[:1]
@@ -784,7 +864,7 @@ class PageDoc:
     def fit(self, rid, snap: SnapResult, reason: str, direction: str = "") -> Region:
         """Put a region's lines and font size on the strokes ``snap`` found: for a detected box that
         took in some of the art (so the font size was read too large) or read two lines as one."""
-        region = self._unlocked(self.get(rid))
+        region = self._plain(self._unlocked(self.get(rid)), "fit")
         if not reason:
             raise RegionError("reason is required")
         self._checkpoint(f"fit #{region.id}")
@@ -836,7 +916,7 @@ class PageDoc:
             data["center"] = region.center
             if region.font:
                 data["font_family"] = region.font
-            side = "" if region.user_edited else layout_alignment(region)
+            side = "" if region.user_edited or region.note_of is not None else layout_alignment(region)
             if side and data.get("alignment") in (None, "", "auto", "center"):
                 data["alignment"] = side  # set as the source lines were
             # the JSON keeps a turned text upright about its center (the editor draws it so, the
@@ -853,7 +933,8 @@ class PageDoc:
         return self.status == "incomplete" and not region.translation and not region.unchanged
 
     def _erased(self, region: Region) -> bool:
-        return not region.skipped and not self._left(region)
+        """Its text is erased: a note has none of its own under it."""
+        return not region.skipped and not self._left(region) and region.note_of is None
 
     def kept_drawn(self) -> List[Region]:
         """Skipped regions whose text stays drawn on purpose (``KEEP_DRAWN``)."""
@@ -1066,6 +1147,7 @@ class PageDoc:
                     # a skipped region is not in the JSON: the editor can put it back as it was
                     **({"json": r.data} if r.skipped else {}),
                     # the user's changes, for the next check of the page and the later stages
+                    **({"note_of": r.note_of} if r.note_of is not None else {}),
                     **({"user_edited": True} if r.user_edited else {}),
                     **({"user_font": True} if r.user_font else {}),
                     **({"locked": True} if r.locked else {}),

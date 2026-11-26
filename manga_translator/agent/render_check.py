@@ -150,7 +150,8 @@ class RenderCheck:
         out: Dict[int, Drawn] = {}
         for rid, block in zip(ids, blocks):
             region = doc.regions[rid]
-            if not region.translation or region.locked or region.unchanged:
+            # a note (note_region) is smaller than the text beside it on purpose, with no source under it
+            if not region.translation or region.locked or region.unchanged or region.note_of is not None:
                 continue
             drawn_image = await self.backend.render_alone(doc.image_path, block)
             if drawn_image is None:

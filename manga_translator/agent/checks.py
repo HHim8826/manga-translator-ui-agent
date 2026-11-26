@@ -367,7 +367,10 @@ def region_issues(session: "AgentSession", region: "Region") -> List[Issue]:
 
     mode = session.settings.double_read
     # a translation kept from the earlier run had its reads then (a page checked again)
-    if mode != "none" and not region.unchanged and not session.was_zoomed(region):
+    # a note is read where its text is drawn
+    note_of = getattr(region, "note_of", None)
+    read = session.doc.regions.get(note_of, region) if note_of is not None else region
+    if mode != "none" and not region.unchanged and not session.was_zoomed(read):
         why: List[str] = []
         if mode == "all":
             why.append("unsure")

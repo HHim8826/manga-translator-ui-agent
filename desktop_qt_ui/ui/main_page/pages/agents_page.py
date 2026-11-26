@@ -55,6 +55,7 @@ TOOL_KEYS = {
     "split_region": "Agent Tool split_region",
     "fit_region": "Agent Tool fit_region",
     "skip_region": "Agent Tool skip_region",
+    "note_region": "Agent Tool note_region",
     "set_reading_order": "Agent Tool set_reading_order",
     "link_regions": "Agent Tool link_regions",
     "set_text": "Agent Tool set_text",

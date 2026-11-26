@@ -80,10 +80,20 @@ def _human(lang: str, key: str, **fields) -> str:
 
 def with_kept(doc: PageDoc, side: Optional[dict]) -> List[Region]:
     """Put the text the translator kept as drawn back into ``doc`` from the sidecar (a page loaded
-    from its JSON has no skipped regions: they are left out of it), so ``doc.keep_mask`` sees it.
-    Returns those regions."""
+    from its JSON has no skipped regions: they are left out of it), so ``doc.keep_mask`` sees it, and
+    mark the notes set beside such text (``note_region``, found by their place): nothing is erased
+    under them. Returns the kept regions."""
+    entries = [e for e in (side or {}).get("regions", []) if isinstance(e, dict)]
+    notes = [((e.get("match") or {}).get("center"), e["note_of"]) for e in entries
+             if e.get("note_of") is not None and not e.get("skipped")]
+    for region in doc.regions.values():
+        cx, cy = region.center
+        for center, of in notes:
+            if isinstance(center, (list, tuple)) and len(center) == 2 and \
+                    abs(cx - float(center[0])) <= 2 and abs(cy - float(center[1])) <= 2:
+                region.note_of = int(of)  # the translator's id of the text it belongs to
     next_id = max(doc.regions, default=0) + 1
-    for entry in (side or {}).get("regions", []):
+    for entry in entries:
         data = entry.get("json")
         if not entry.get("skipped") or entry.get("merged_into") is not None or not isinstance(data, dict) \
                 or not data.get("lines"):
@@ -546,9 +556,11 @@ class InpaintReviewer:
         methods = list(self.backend.methods())
         if mask is None or not methods:
             return {"page": stem, "status": "skipped", "reason": "no mask" if mask is None else "no inpainter"}
-        regions = [(r.id, r.polygons, tuple(r.bbox)) for r in doc.active_regions() if not r.skipped]
-        page_image = images.open_page(image_path)
         kept = with_kept(doc, self.store.load_sidecar(stem))
+        # a note has nothing of its own to erase under it
+        regions = [(r.id, r.polygons, tuple(r.bbox)) for r in doc.active_regions()
+                   if not r.skipped and r.note_of is None]
+        page_image = images.open_page(image_path)
         array = np.asarray(page_image)
         page = InpaintPage(array, mask, regions, self.backend, stem, keep=doc.keep_mask(array.shape),
                            kept_boxes=[tuple(r.bbox) for r in kept])
