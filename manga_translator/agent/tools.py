@@ -26,7 +26,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
-from .notes import bracketed, place_in_box, place_note
+from .notes import bracketed, flat_ground, place_in_box, place_note
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -479,9 +479,24 @@ def skip_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
                       summary=f"#{region.id} ({category})")
 
 
+def _on_flat_ground(s: AgentSession, region: Region) -> bool:
+    """``notes.flat_ground`` of the region's lines, or of its strokes snapped as fit_region would: the
+    detector's loose box round 「北」 on the ch42 map takes in the circle round it."""
+    if flat_ground(s.page_array, region.polygons):
+        return True
+    snap = snap_text(s.page_array, region.bbox, _direction({}, region, region.bbox),
+                     exclude=s.doc.occupied(s.page_array.shape, but=region.id), grow=False)
+    return snap is not None and flat_ground(s.page_array, [np.asarray(q, dtype=np.float64) for q in snap.lines])
+
+
 def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     region = s.doc.get(a["id"])
     text = bracketed(a.get("translation", ""))
+    if _on_flat_ground(s, region):
+        raise RegionError(f"#{region.id} is on flat ground (plain paper or one flat color, as in a bubble, a box "
+                          f"or a circle, with no art line running into it): erasing it leaves the drawing whole, "
+                          f"so translate it in its place with set_text. note_region is only for text over art "
+                          f"that erasing would break: lines that run under or into it, hatching, detailed drawing.")
     x1, y1, x2, y2 = region.bbox
     own = region.direction[:1] if region.direction[:1] in ("v", "h") else ("v" if y2 - y1 > x2 - x1 else "h")
     direction = str(a.get("direction") or "").lower()[:1] or own
@@ -821,7 +836,8 @@ TOOLS: List[Tool] = [
               ["id", "category", "reason"]), skip_region, writes=True),
     Tool("note_region", "Keep a region's text as drawn and set its translation beside it in brackets, smaller: "
          "for text written over detailed art (a map's labels on screentone between dashed lines, words across "
-         "hatching, hair or an object), where erasing it would break the drawing. The program puts the note on "
+         "hatching, hair or an object), where erasing it would break the drawing; text on flat ground (paper, one "
+         "flat color, its own box or circle) is refused. The program puts the note on "
          "the spot next to the text that covers the least art and no other text, and shows it; give box (page "
          "pixels or cells of your last zoom) to put it in an empty spot of your choice. Call it again to change or "
          "move the note; set_text the region to translate it in its place instead.",

@@ -18,7 +18,12 @@ a slant gets a note along the same slant.
 Its size is 0.8 of the source text's, kept between 0.6 and 0.8 of the page's usual text size: on the
 ch42 map the labels' own sizes ran from 9 to 109 px (the detector's boxes of slanted labels, white
 outlined lettering), and notes at 12-16 px over screentone could not be read, at 60-80 px they covered
-the map."""
+the map.
+
+Only text over art gets a note: ``flat_ground`` refuses text whose ground the inpaint fills with one
+color (``inpaint.background``: plain paper or a flat color, no art line running into the text). On the
+ch42 map that is 「今ここ」 in its box and 「北」 and 「井戸」 in their circles, which the user would
+erase; the labels on the roads between dashed lines and in the buildings are not flat."""
 from __future__ import annotations
 
 import math
@@ -187,6 +192,33 @@ def _under(quad: np.ndarray, gray: np.ndarray, blocked: np.ndarray,
 def _smooth(gray: np.ndarray, font: int) -> np.ndarray:
     """``gray`` blurred enough that screentone dots run together."""
     return cv2.GaussianBlur(gray, (0, 0), max(2.0, font / 10.0))
+
+
+def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40) -> bool:
+    """Whether the ground under and around the text in ``polygons`` (its lines, page pixels) is flat in
+    the inpaint's sense, so erasing it leaves the drawing whole. Judged on the text's own strokes (the
+    ink inside its lines, 3 px wider), not on what erasing takes: a fit's erase area reaches the circle
+    round 「北」 on the ch42 map, and that line running into it made the ground look busy."""
+    from .inpaint import _kernel, background, ink
+
+    height, width = image.shape[:2]
+    points = np.concatenate([np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in polygons])
+    x1, y1 = (max(0, int(math.floor(v)) - pad) for v in points.min(axis=0))
+    x2, y2 = int(math.ceil(points[:, 0].max())) + pad + 1, int(math.ceil(points[:, 1].max())) + pad + 1
+    x2, y2 = min(width, x2), min(height, y2)
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return False
+    crop = np.ascontiguousarray(image[y1:y2, x1:x2])
+    if crop.ndim == 2:
+        crop = np.repeat(crop[:, :, None], 3, axis=2)
+    crop = crop[:, :, :3]
+    lines = np.zeros(crop.shape[:2], np.uint8)
+    cv2.fillPoly(lines, [np.round(np.asarray(p) - (x1, y1)).astype(np.int32).reshape(-1, 1, 2) for p in polygons], 1)
+    inside = lines > 0
+    strokes = ink(crop, inside) & inside
+    if not strokes.any():
+        return False
+    return background(crop, cv2.dilate(strokes.astype(np.uint8), _kernel(3)) > 0).flat
 
 
 def note_font(source_px: float, page_px: Optional[float] = None) -> int:

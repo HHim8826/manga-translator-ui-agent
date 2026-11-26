@@ -8,7 +8,8 @@ import pytest
 
 from manga_translator.agent import checks
 from manga_translator.agent.inpaint_review import with_kept
-from manga_translator.agent.notes import MIN_NOTE_PX, bracketed, note_font, note_lines, place_in_box, place_note
+from manga_translator.agent.notes import (MIN_NOTE_PX, bracketed, flat_ground, note_font, note_lines, place_in_box,
+                                         place_note)
 from manga_translator.agent.page import NOTED, PageDoc, RegionError
 from manga_translator.agent.proofread import ProofPage, ProofSession, _execute
 from manga_translator.agent.revise import load_page
@@ -112,6 +113,15 @@ NOTE = {"id": 1, "source_text": "バリケード", "translation": "路障", "cat
 
 def _session(tmp_path):
     image_path, json_path = make_page(tmp_path)
+    image = cv2.imread(image_path)
+    for y in range(0, 130, 14):  # lines running under #1 (20-60 x 20-120), like a map's dashed outlines
+        cv2.line(image, (0, y), (88, y + 34), (0, 0, 0), 1)
+    # #3 (200-280 x 150-180): letters in a circle its box cuts into
+    image[151:180, 201:280] = 255
+    for x in range(210, 262, 18):
+        cv2.putText(image, "X", (x, 172), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+    cv2.ellipse(image, (240, 165), (46, 26), 0, 0, 360, (0, 0, 0), 2)
+    cv2.imwrite(image_path, image)
     session = AgentSession(AgentSettings(), AgentMemory(str(tmp_path / "mem")), [image_path])
     session.start_page(0, PageDoc.load(image_path, json_path))
     return session, ToolRegistry(session), json_path
@@ -151,6 +161,13 @@ def test_note_region_keeps_the_text_and_sets_its_translation_beside_it(tmp_path)
     assert mask[60, 40] == 0 and not mask[y1:y2, x1:x2].any()
     entries = {e["id"]: e for e in doc.sidecar()["regions"]}
     assert entries[4]["note_of"] == 1 and entries[1]["skip_category"] == NOTED and "note_of" not in entries[2]
+
+    # text on flat ground (#3 in a circle on white paper) is translated in its place: erasing it breaks
+    # nothing. Its box takes in the circle, a line running into it; its strokes alone are on flat ground
+    assert not flat_ground(session.page_array, doc.regions[3].polygons)
+    flat = tools.execute("note_region", {**NOTE, "id": 3})
+    assert not flat.ok and "flat ground" in flat.text and "set_text" in flat.text
+    assert not doc.regions[3].skipped and not [r for r in doc.regions.values() if r.note_of == 3]
 
     # the note changes through the text it belongs to
     refused = tools.execute("set_text", {"id": 4, "source_text": "x", "translation": "y", "category": "dialogue",
