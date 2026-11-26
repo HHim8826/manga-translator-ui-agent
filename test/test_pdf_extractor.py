@@ -104,3 +104,37 @@ def test_a_pdf_an_older_version_extracted_keeps_its_pages_and_says_so(tmp_path):
     assert "extracts some PDF pages otherwise" in notes[0]
     with open(meta_path, encoding="utf-8") as fh:
         assert json.load(fh)["extractor_version"] == EXTRACTOR_VERSION
+
+
+def _marked(size=(120, 80)):  # a scan with a red block at its top left
+    image = Image.new("RGB", size, "white")
+    image.paste((255, 0, 0), (0, 0, size[0] // 4, size[1] // 4))
+    data = io.BytesIO()
+    image.save(data, format="PNG")
+    return data.getvalue()
+
+
+def test_a_page_turned_or_cut_by_the_pdf_is_taken_as_the_reader_shows_it(tmp_path):
+    """Review 2026-11-26 P2-2: a scan on a page with /Rotate 180 came out upside down (its embedded
+    image as stored), and one with a smaller CropBox came out whole."""
+    doc = fitz.open()
+    turned = doc.new_page(width=120, height=80)
+    turned.insert_image(turned.rect, stream=_marked())
+    turned.set_rotation(180)
+    cut = doc.new_page(width=120, height=80)
+    cut.insert_image(cut.rect, stream=_marked())
+    cut.set_cropbox(fitz.Rect(0, 0, 90, 60))
+    plain = doc.new_page(width=120, height=80)
+    plain.insert_image(plain.rect, stream=_marked())
+    doc.save(str(tmp_path / "book.pdf"))
+    doc.close()
+    images = [Image.open(p).convert("RGB") for p in extract_images_from_pdf(str(tmp_path / "book.pdf"),
+                                                                            str(tmp_path / "out"))]
+    assert len(images) == 3
+    width, height = images[0].size
+    assert images[0].getpixel((2, 2)) == (255, 255, 255)  # the red block is at the bottom right now
+    assert images[0].getpixel((width - 3, height - 3)) == (255, 0, 0)
+    width, height = images[1].size
+    assert abs(width / height - 1.5) < 0.02 and width < 2 * 120  # 90 x 60, rendered
+    assert images[1].size != (120, 80)
+    assert images[2].size == (120, 80) and images[2].getpixel((2, 2)) == (255, 0, 0)  # as before

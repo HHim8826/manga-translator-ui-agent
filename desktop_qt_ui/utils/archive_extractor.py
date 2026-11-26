@@ -203,9 +203,13 @@ def _pdf_visible_text(page) -> bool:
 def _pdf_page_image(doc, page) -> Optional[dict]:
     """The page's embedded image when it is the whole page (``doc.extract_image``); None when the
     page must be rendered: text or vector drawings on it, several images, or one that is turned,
-    masked or does not cover the page."""
+    masked or does not cover the page; a page the reader shows turned (its /Rotate) or cut (its
+    CropBox smaller than the image: review 2026-11-26 P2-2 got a page upside down, and one with
+    what the crop leaves out)."""
     import fitz
 
+    if page.rotation % 360:
+        return None
     images = page.get_images(full=True)
     if len(images) != 1 or images[0][1]:  # several images, or one with a soft mask
         return None
@@ -219,8 +223,11 @@ def _pdf_page_image(doc, page) -> Optional[dict]:
     a, b, c, d = (infos[0].get("transform") or (0, 0, 0, 0))[:4]
     if abs(b) > 1e-6 or abs(c) > 1e-6 or a <= 0 or d <= 0:  # turned, slanted or mirrored
         return None
-    shown = fitz.Rect(infos[0]["bbox"]) & page.rect
+    placed = fitz.Rect(infos[0]["bbox"])
+    shown = placed & page.rect
     if shown.is_empty or shown.get_area() < PDF_PAGE_COVER * page.rect.get_area():
+        return None
+    if placed.get_area() > shown.get_area() / PDF_PAGE_COVER:  # partly outside the page: cut off there
         return None
     if _pdf_visible_text(page):
         return None
