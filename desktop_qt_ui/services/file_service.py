@@ -77,14 +77,19 @@ class FileService:
                 name = os.path.basename(image_key).casefold()
                 same = [key for key in data if os.path.basename(str(key).replace("\\", "/")).casefold() == name]
                 stem = os.path.splitext(os.path.basename(image_key))[0]
+                folder = os.path.dirname(image_key)
+                present = [key for key in data
+                           if os.path.isfile(os.path.join(folder, os.path.basename(str(key).replace("\\", "/"))))]
                 if same:  # the folder moved: the entry of the image with this file name
                     image_data = data[same[0]]
-                elif data and page_name(image_path) == stem:
+                elif data and page_name(image_path) == stem and not present:
+                    # the image it is of is gone (converted to this format): its entry
                     first_key = next(iter(data))
                     self.logger.warning(f"Exact image path '{image_key}' not found in JSON. Using first available key '{first_key}'.")
                     image_data = data[first_key]
                 else:
-                    # another image of the folder has the same stem: an entry of another file name is its own
+                    # another image of the folder has the same stem, or the image the entry is of is
+                    # still there: an entry of another file name is its own
                     if data:
                         self.logger.warning(f"No entry for '{image_key}' in {os.path.basename(json_path)}; "
                                             f"its entries are of another image with the same name")

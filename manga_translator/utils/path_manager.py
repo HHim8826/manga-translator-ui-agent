@@ -38,51 +38,69 @@ WORK_DIR_RESERVED_NAMES = {
 }
 
 
-_SHARED_STEMS: Dict[str, Tuple[int, frozenset]] = {}
+_SHARED_STEMS: Dict[str, Tuple[int, frozenset, Dict[str, int]]] = {}
 SETTLED_NS = 2_000_000_000
 """A folder's time moves in coarse steps (about 15 ms on Windows): files added or removed within one
 step leave it as it was, so a scan is only kept when the folder had not changed for this long."""
 _OWNERS: Dict[Tuple[str, int, int], frozenset] = {}
 
 
-def _shared_stems(folder: str) -> frozenset:
-    """Stems (case folded) that more than one image of ``folder`` has, as ``001.jpg`` and ``001.png``.
+def _images(folder: str) -> Tuple[frozenset, Dict[str, int]]:
+    """The images of ``folder``: their file names and how many have each stem (both case folded).
     Kept until the folder changes (its time changes when a file is added, removed or renamed), and
     only when it had not changed for ``SETTLED_NS`` before the scan: a change within the same step of
     the folder's time would not be seen."""
     try:
         stamp = os.stat(folder).st_mtime_ns
     except OSError:
-        return frozenset()
+        return frozenset(), {}
     key = os.path.normcase(os.path.abspath(folder))
     cached = _SHARED_STEMS.get(key)
     if cached is not None and cached[0] == stamp:
-        return cached[1]
-    counts: Dict[str, int] = {}
+        return cached[1], cached[2]
+    names, counts = set(), {}
     try:
         with os.scandir(folder) as entries:
             for entry in entries:
                 stem, ext = os.path.splitext(entry.name)
                 if ext.lower() in SUPPORTED_IMAGE_EXTENSIONS and entry.is_file():
+                    names.add(entry.name.casefold())
                     counts[stem.casefold()] = counts.get(stem.casefold(), 0) + 1
     except OSError:
         pass
-    shared = frozenset(stem for stem, count in counts.items() if count > 1)
     if time.time_ns() - stamp > SETTLED_NS:
-        _SHARED_STEMS[key] = (stamp, shared)
+        _SHARED_STEMS[key] = (stamp, frozenset(names), counts)
     else:
         _SHARED_STEMS.pop(key, None)
-    return shared
+    return frozenset(names), counts
+
+
+def _shared_stems(folder: str) -> frozenset:
+    """Stems (case folded) whose images of ``folder`` go by their file names: a stem more than one
+    image has (``001.jpg`` and ``001.png``), and a stem that is another image's file name
+    (``001.jpg.png`` beside ``001.jpg``, which goes by ``001.jpg`` when a ``001.png`` is there too)."""
+    names, counts = _images(folder)
+    return frozenset(stem for stem, count in counts.items() if count > 1 or stem in names)
+
+
+def _went_by_file_name(original: str) -> bool:
+    """The page's JSON is under its file name (``001.png_translations.json``, saved while another
+    ``001`` was beside it): it keeps that name when the other one is moved or renamed, and does not
+    take up the JSON of the stem, which is the other image's."""
+    folder, base = os.path.split(original)
+    json_path = os.path.join(folder, WORK_DIR_NAME, JSON_SUBDIR, f"{base}_translations.json")
+    return os.path.exists(json_path) and json_is_for(json_path, original)
 
 
 def page_name(image_path: str) -> str:
     """The name a page's work files go by: its stem (``001``), or its file name (``001.png``) when
-    another image of its folder has the same stem (``001.jpg``): the two would share one JSON, one
-    text export and one AI Agent record otherwise."""
+    another image of its folder has the same stem (``001.jpg``) or has its stem as its name
+    (``001.jpg.png`` beside ``001.jpg``), or when its work files already go by its file name: the
+    pages would share one JSON, one text export and one AI Agent record otherwise."""
     original = resolve_original_image_path(image_path)
     base = os.path.basename(original)
     stem, ext = os.path.splitext(base)
-    if ext and stem.casefold() in _shared_stems(os.path.dirname(original)):
+    if ext and (stem.casefold() in _shared_stems(os.path.dirname(original)) or _went_by_file_name(original)):
         return base
     return stem
 
@@ -102,9 +120,27 @@ def output_file_name(image_path: str, output_format: Optional[str] = None) -> st
     if fmt.lower() in NO_OUTPUT_FORMATS:
         return base
     stem, ext = os.path.splitext(base)
-    if ext.lower().lstrip(".") != fmt.lower().lstrip(".") and page_name(image_path) != stem:
+    fmt = fmt.lstrip(".")
+    if ext.lower().lstrip(".") == fmt.lower():
+        return f"{stem}.{fmt}"
+    own_stem = stem
+    if page_name(image_path) != stem:
         stem = base
-    return f"{stem}.{fmt.lstrip('.')}"
+    # another image of the folder is already called so and keeps that name (``001.jpg.png``, so
+    # ``001.jpg`` as PNG is not ``001.jpg.png``), or goes by that stem as its own output: another name
+    names, counts = _images(os.path.dirname(resolve_original_image_path(image_path)))
+
+    def taken(key: str) -> bool:
+        if f"{key}.{fmt}".casefold() in names:
+            return True
+        others = counts.get(key, 0) - (key == own_stem.casefold())
+        return others == 1 and counts.get(key, 0) == 1 and key not in names
+
+    tag, number = f"{own_stem}_{ext.lstrip('.')}", 0
+    while taken(stem.casefold()):
+        number += 1
+        stem = tag if number == 1 else f"{tag}_{number}"
+    return f"{stem}.{fmt}"
 
 
 def _json_names(json_path: str) -> frozenset:
@@ -485,11 +521,13 @@ def find_json_path(image_path: str) -> Optional[str]:
 
     # 1. 优先查找新位置
     new_json_path = get_json_path(original_path, create_dir=False)
-    if os.path.exists(new_json_path):
-        return new_json_path
-    
     stem = os.path.splitext(os.path.basename(original_path))[0]
     shared = page_name(original_path) != stem
+    # a page that goes by its file name: the JSON under that name only when it is of this image (an
+    # older version named ``001.jpg.png``'s JSON ``001.jpg``, the name of the image ``001.jpg``)
+    if os.path.exists(new_json_path) and (not shared or json_is_for(new_json_path, original_path)):
+        return new_json_path
+
     candidates = []
     if shared:
         # 同目录有同名不同扩展名的图（001.jpg / 001.png）：旧的共用名称只在它记的就是这张图时沿用

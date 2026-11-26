@@ -90,6 +90,67 @@ def test_the_reader_uses_another_images_entry_only_when_no_other_image_has_the_s
     assert _load(png) == ["轉檔前"]  # as before: the only 001 of the folder
 
 
+def test_a_page_keeps_its_own_json_when_the_other_001_is_moved_away(tmp_path):
+    """Review 2026-11-26 P1-2: with 001.jpg renamed, 001.png went by ``001`` again and opened the
+    JPEG's old ``001_translations.json`` (or nothing, when both were saved under their file names)."""
+    from services.export_service import ExportService
+
+    jpg = _image(tmp_path / "001.jpg", "red")
+    ExportService().save_editor_project(jpg, [_region("FIRST-JPG")], None, None)  # alone: ``001``
+    png = _image(tmp_path / "001.png", "blue")
+    ExportService().save_editor_project(png, [_region("LATEST-PNG")], None, None)
+    assert _load(png) == ["LATEST-PNG"] and _load(jpg) == ["FIRST-JPG"]
+    os.rename(jpg, tmp_path / "001_old.jpg")
+    assert page_name(png) == "001.png" and _load(png) == ["LATEST-PNG"]
+    ExportService().save_editor_project(png, [_region("PNG-AGAIN")], None, None)
+    assert os.path.basename(find_json_path(png)) == "001.png_translations.json"
+    os.rename(tmp_path / "001_old.jpg", jpg)  # back again: neither took the other's JSON
+    assert _load(jpg) == ["FIRST-JPG"] and _load(png) == ["PNG-AGAIN"]
+
+    both = tmp_path / "both"
+    both.mkdir()
+    jpg, png = _image(both / "001.jpg", "red"), _image(both / "001.png", "blue")
+    ExportService().save_editor_project(jpg, [_region("JPG")], None, None)
+    ExportService().save_editor_project(png, [_region("PNG")], None, None)
+    os.remove(jpg)
+    assert _load(png) == ["PNG"]  # was empty: its own JSON was not looked for
+
+
+def test_an_image_named_after_another_images_file_name_is_a_page_of_its_own(tmp_path):
+    """Review 2026-11-26 P1-3: 001.jpg (beside 001.png) and 001.jpg.png both went by ``001.jpg``: one
+    JSON for the two, and 001.jpg as PNG was exported to 001.jpg.png, the other page's output."""
+    from services.export_service import ExportService
+    from manga_translator.utils.path_manager import output_file_name
+
+    pages = [_image(tmp_path / name, color) for name, color in
+             (("001.jpg", "red"), ("001.png", "blue"), ("001.jpg.png", "green"))]
+    assert len({get_json_path(page, create_dir=False) for page in pages}) == 3
+    for page, text in reversed(list(zip(pages, ("JPG", "PNG", "JPG-PNG")))):
+        ExportService().save_editor_project(page, [_region(text)], None, None)
+    assert [_load(page) for page in reversed(pages)] == [["JPG-PNG"], ["PNG"], ["JPG"]]
+    as_png = [output_file_name(page, "png") for page in pages]
+    assert as_png == ["001_jpg.png", "001.png", "001.jpg.png"] and len(set(as_png)) == 3
+    as_webp = [output_file_name(page, "webp") for page in pages]
+    assert as_webp == ["001.jpg.webp", "001.png.webp", "001.jpg.png.webp"]
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert output_file_name(_image(plain / "002.jpg", "red"), "png") == "002.png"  # as before
+
+
+def test_an_old_json_of_the_other_image_is_not_read_while_that_image_is_there(tmp_path):
+    """An older version wrote 001.jpg.png's JSON as ``001.jpg``: 001.jpg (beside 001.png) does not
+    open it, and 001.jpg.png still does."""
+    jpg = _image(tmp_path / "001.jpg", "red")
+    _image(tmp_path / "001.png", "blue")
+    other = _image(tmp_path / "001.jpg.png", "green")
+    old = tmp_path / "manga_translator_work" / "json" / "001.jpg_translations.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({os.path.abspath(other): {"regions": [_region("舊版")]}}, ensure_ascii=False),
+                   encoding="utf-8")
+    assert find_json_path(jpg) is None and _load(jpg) == []
+    assert find_json_path(other) == str(old) and _load(other) == ["舊版"]
+
+
 def test_the_agent_tells_the_two_pages_apart(app):  # noqa: F811
     from test_agents_page import _t
     from ui.main_page.pages.agents_page import AgentsPage
