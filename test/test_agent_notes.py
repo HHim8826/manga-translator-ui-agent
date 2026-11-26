@@ -9,7 +9,7 @@ import pytest
 from manga_translator.agent import checks
 from manga_translator.agent.inpaint_review import with_kept
 from manga_translator.agent.notes import (MIN_NOTE_PX, bracketed, flat_ground, note_font, note_lines, place_in_box,
-                                         place_note)
+                                         place_note, usual_size)
 from manga_translator.agent.page import NOTED, PageDoc, RegionError
 from manga_translator.agent.proofread import ProofPage, ProofSession, _execute
 from manga_translator.agent.revise import load_page
@@ -92,18 +92,29 @@ def test_a_note_beside_a_slanted_label_runs_along_the_same_slant():
     assert abs(float((middle - c) @ along)) < 1 and float((middle - c) @ across) > 24
 
 
-def test_a_note_in_a_given_box_takes_the_largest_size_up_to_its_own():
+def test_a_box_only_says_where_the_note_goes():
+    """ch42 p1, the first real run: the model gave a box the size of each label, which made notes of
+    12-17 px, and seven calls were refused as too small."""
     gray = np.full((300, 300), 255, np.uint8)
-    place = place_in_box(gray, (10, 10, 200, 40), "h", 24, "（物資存放處？）")
-    assert place.side == "box" and place.font_size == 18 and "[BR]" not in place.text
-    x1, y1, x2, y2 = place.bbox
-    assert 10 <= x1 and x2 <= 200 and 10 <= y1 and y2 <= 40
-    # never above the size it takes beside the text: 0.8 of the text's, within 0.6-0.8 of the page's
-    assert place_in_box(gray, (10, 10, 300, 100), "h", 24, "（路障）").font_size == 19
-    assert place_in_box(gray, (10, 10, 300, 100), "h", 80, "（路障）", page_px=30).font_size == 24
+    # the size it takes beside the text: 0.8 of the text's, within 0.6-0.8 of the page's usual size
     assert note_font(10, 30) == 18 and note_font(80, 30) == 24 and note_font(10) == MIN_NOTE_PX
-    with pytest.raises(RegionError, match="too small"):
-        place_in_box(gray, (10, 10, 40, 20), "h", 24, "（物資存放處？）")
+    place = place_in_box(gray, (10, 10, 300, 100), "h", 80, "（路障）", page_px=30)
+    assert place.side == "box" and place.font_size == 24 and not place.outgrows
+    x1, y1, x2, y2 = place.bbox
+    assert abs((x1 + x2) / 2 - 155) <= 1 and abs((y1 + y2) / 2 - 55) <= 1  # centered on the box
+    # a box too small for it: the note keeps its size, on one line here, centered on the box and on the page
+    small = place_in_box(gray, (10, 10, 40, 20), "h", 24, "（物資存放處？）")
+    assert small.font_size == 19 and small.outgrows and small.bbox[0] >= 0 and small.bbox[1] >= 0
+    # the fewest lines that fit the box
+    tall = place_in_box(gray, (100, 100, 200, 200), "h", 24, "（物資存放處？）")
+    assert tall.font_size == 19 and tall.text.count("[BR]") == 1 and not tall.outgrows
+
+
+def test_the_pages_usual_size_is_its_reading_text():
+    # a map page: many small labels, a few bubbles
+    assert usual_size([30, 35, 33], [12, 13, 15, 17, 17, 20, 21, 30, 33, 35]) == 33
+    assert usual_size([30], [12, 13, 15, 17, 30, 33, 35, 40]) == pytest.approx(33.5)
+    assert usual_size([], []) is None
 
 
 # --- the page and the tool ------------------------------------------------------------
@@ -178,7 +189,7 @@ def test_note_region_keeps_the_text_and_sets_its_translation_beside_it(tmp_path)
     assert "undo the note_region" in tools.execute("fit_region", {"id": 1, "reason": "r"}).text
     # again with a box: the old note goes
     moved = tools.execute("note_region", {**NOTE, "box": [150, 190, 300, 235], "direction": "h"})
-    assert moved.ok and "in the box you gave" in moved.text
+    assert moved.ok and "centered on the box you gave" in moved.text
     notes = [r for r in doc.regions.values() if r.note_of == 1]
     assert len(notes) == 1 and notes[0].direction == "h" and notes[0].bbox[1] >= 190
     # translated in its place after all: the note goes; undo brings it back

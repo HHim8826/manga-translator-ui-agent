@@ -26,7 +26,7 @@ import numpy as np
 
 from . import checks, images
 from .page import BREAK, CATEGORIES, FLAG_TYPES, PageDoc, Region, RegionError, line_groups, needs_break
-from .notes import bracketed, flat_ground, place_in_box, place_note
+from .notes import bracketed, flat_ground, place_in_box, place_note, usual_size
 from .revise import unskip_erase
 from .settings import AgentSettings
 from .snap import snap_text
@@ -503,9 +503,9 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if direction not in ("v", "h"):
         raise RegionError("direction must be v (vertical) or h (horizontal)")
     source_px = region.font_size or min(x2 - x1, y2 - y1)
-    sizes = sorted(r.font_size for r in s.doc.regions.values()
-                   if r.font_size and r.merged_into is None and r.note_of is None)
-    page_px = sizes[len(sizes) // 2] if sizes else None  # the page's usual text size
+    sized = [r for r in s.doc.regions.values() if r.font_size and r.merged_into is None and r.note_of is None]
+    page_px = usual_size([r.font_size for r in sized if r.category in ("dialogue", "narration")],
+                         [r.font_size for r in sized])
     box = _box_arg(s, a)
     if box is not None:
         place = place_in_box(_gray(s), box, direction, source_px, text, page_px)
@@ -528,7 +528,9 @@ def note_region(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     preview = images.note_preview(s.page_image, [p.tolist() for p in region.polygons], place.lines, place.text,
                                   place.font_size, others)
     nx1, ny1, nx2, ny2 = place.bbox
-    where = "in the box you gave" if place.side == "box" else f"{place.side} of the text"
+    where = "centered on the box you gave" if place.side == "box" else f"{place.side} of the text"
+    if place.outgrows:
+        where += f" (larger than the box: {nx2 - nx1}x{ny2 - ny1} px is what it needs to be read)"
     lines = place.text.count(BREAK) + 1
     warning = ""
     if place.crowded:
@@ -837,18 +839,21 @@ TOOLS: List[Tool] = [
     Tool("note_region", "Keep a region's text as drawn and set its translation beside it in brackets, smaller: "
          "for text written over detailed art (a map's labels on screentone between dashed lines, words across "
          "hatching, hair or an object), where erasing it would break the drawing; text on flat ground (paper, one "
-         "flat color, its own box or circle) is refused. The program puts the note on "
-         "the spot next to the text that covers the least art and no other text, and shows it; give box (page "
-         "pixels or cells of your last zoom) to put it in an empty spot of your choice. Call it again to change or "
-         "move the note; set_text the region to translate it in its place instead.",
+         "flat color, its own box or circle) is refused. Leave box out: the program sizes the note to be read "
+         "on the page and puts it on the spot next to the text that covers the least art and no other text, and "
+         "shows it. Only when that image shows the note covering something that matters, call it again with box "
+         "(page pixels or cells of your last zoom): the empty spot to center it on; its size stays. set_text the "
+         "region to translate it in its place instead.",
          _obj({"id": ID,
                "source_text": {"type": "string", "description": "Exact transcription of the original text"},
                "translation": {"type": "string", "description": "The translation, without brackets (the program "
                                "adds them); [BR] marks a line break"},
                "category": {"type": "string", "enum": list(CATEGORIES)},
                "confidence": {"type": "number", "description": "0-1: how sure you are of reading and translation"},
-               "box": BOX, "cells": {"type": "string", "description": "Optional: grid cells of the last zoom for "
-                                                                       "the note, like C4 or B3:D5"},
+               "box": {**BOX, "description": "Only to move a note already placed: [x1, y1, x2, y2] page pixels "
+                                             "of the empty spot to center it on"},
+               "cells": {"type": "string", "description": "Only to move a note already placed: grid cells of the "
+                                                          "last zoom to center it on, like C4 or B3:D5"},
                "direction": {"type": "string", "enum": ["v", "h"], "description": "Optional: v = vertical, "
                              "h = horizontal note (default: as the text)"},
                "reason": REASON},

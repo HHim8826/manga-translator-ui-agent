@@ -15,10 +15,12 @@ and the outlined note reads on it, line art does not (on the ch42 map the note o
 the drawn faces beside it, which have fewer dark pixels than the tone around them). A label written on
 a slant gets a note along the same slant.
 
-Its size is 0.8 of the source text's, kept between 0.6 and 0.8 of the page's usual text size: on the
-ch42 map the labels' own sizes ran from 9 to 109 px (the detector's boxes of slanted labels, white
-outlined lettering), and notes at 12-16 px over screentone could not be read, at 60-80 px they covered
-the map.
+Its size is 0.8 of the source text's, kept between 0.6 and 0.8 of the page's usual text size (``usual_size``:
+the dialogue and narration, else the upper quarter of all sizes): on the ch42 map the labels' own sizes
+ran from 9 to 109 px (the detector's boxes of slanted labels, white outlined lettering), and notes at
+12-16 px over screentone could not be read, at 60-80 px they covered the map. A box the model gives only
+says where the note goes: in the first real run on that map the model gave a box the size of each label
+with every call, which made notes of 12-17 px, and seven calls were refused as too small.
 
 Only text over art gets a note: ``flat_ground`` refuses text whose ground the inpaint fills with one
 color (``inpaint.background``: plain paper or a flat color, no art line running into the text). On the
@@ -135,6 +137,8 @@ class NotePlace:
     crowded: bool = False
     """No free spot: the note covers other text."""
     stroke: float = NOTE_STROKE
+    outgrows: bool = False
+    """Larger than the box it was given (``place_in_box``)."""
 
     @property
     def bbox(self) -> List[int]:
@@ -221,6 +225,17 @@ def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40
     return background(crop, cv2.dilate(strokes.astype(np.uint8), _kernel(3)) > 0).flat
 
 
+def usual_size(reading: Sequence[float], every: Sequence[float]) -> Optional[float]:
+    """The page's usual text size: the median of its dialogue and narration (``reading``) when there are
+    two or more, else the upper quarter of all its sizes, which many small labels do not pull down (on the
+    ch42 map the median of all was 21 px, the bubbles 30-35 px)."""
+    reading = sorted(float(v) for v in reading if v)
+    if len(reading) >= 2:
+        return float(np.median(reading))
+    every = sorted(float(v) for v in every if v)
+    return float(np.percentile(every, 75)) if every else None
+
+
 def note_font(source_px: float, page_px: Optional[float] = None) -> int:
     """The note's font size for source text of ``source_px``, on a page whose usual text size is
     ``page_px`` (see the module doc)."""
@@ -304,28 +319,34 @@ def place_note(gray: np.ndarray, polygons: Sequence[np.ndarray], direction: str,
 
 def place_in_box(gray: np.ndarray, box: Sequence[float], direction: str, source_px: float, text: str,
                  page_px: Optional[float] = None) -> NotePlace:
-    """The note in a box the model gave (page pixels, upright): the largest size up to the note's own
-    (``note_font``) at which it fits, on one to four lines."""
+    """The note centered on a box the model gave (page pixels, upright) at its own size (``note_font``):
+    the box says where, not how big. Of one to four lines, the fewest that fit the box, else the layout
+    that outgrows it least; kept on the page."""
     direction = "v" if direction == "v" else "h"
     x1, y1, x2, y2 = (float(v) for v in box)
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
     length_room, thickness_room = (y2 - y1, x2 - x1) if direction == "v" else (x2 - x1, y2 - y1)
+    font = note_font(source_px, page_px)
     layouts = [note_lines(text, 1)] if BREAK in text else \
         [note_lines(text, math.ceil(len(text) / count)) for count in range(1, 5)]
     best = None
     for lines in layouts:
-        length_one, thickness_one = _extent(lines, 1.0, direction)
-        size = min(length_room / length_one, thickness_room / thickness_one)
-        if best is None or size > best[0]:
-            best = (size, lines)
-    size, lines = best
-    size = min(size, float(note_font(source_px, page_px)))
-    font = int(size)
-    if font < MIN_NOTE_PX:
-        raise RegionError(f"the box is too small for 「{text.replace(BREAK, '')}」 at a readable size "
-                          f"({MIN_NOTE_PX} px): give a bigger box")
-    length, thickness = _extent(lines, font, direction)
-    center = np.array([(x1 + x2) / 2, (y1 + y2) / 2])
+        length, thickness = _extent(lines, font, direction)
+        over = max(length / max(1.0, length_room), thickness / max(1.0, thickness_room))
+        if over <= 1.0:
+            best = (over, lines, length, thickness)
+            break
+        if best is None or over < best[0]:
+            best = (over, lines, length, thickness)
+    over, lines, length, thickness = best
+    height, width = gray.shape[:2]
+    half_x, half_y = (thickness / 2, length / 2) if direction == "v" else (length / 2, thickness / 2)
+    center = np.array([min(max((x1 + x2) / 2, half_x), width - half_x),
+                       min(max((y1 + y2) / 2, half_y), height - half_y)])
     along, across = _axes(direction, 0.0)
     measured = _under(_box(center, along, across, length, thickness), gray, np.zeros(gray.shape[:2], np.uint8))
     return NotePlace(_line_quads(center, direction, 0.0, length, thickness, len(lines)), font, direction, 0.0,
-                     BREAK.join(lines), "box", round(measured[0], 3) if measured else 0.0)
+                     BREAK.join(lines), "box", round(measured[0], 3) if measured else 0.0, outgrows=over > 1.0)
