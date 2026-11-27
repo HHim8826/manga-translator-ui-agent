@@ -77,6 +77,11 @@ class ChapterBusy(RuntimeError):
     """Another run is working on the chapter: a second one would change the same pages."""
 
 
+class PagesNotRestored(ChapterBusy):
+    """Pages of a run that was killed cannot be put back yet (a file is in use): a new run would
+    replace the journal that keeps their copies."""
+
+
 def _process_start(pid: int) -> Optional[float]:
     try:
         import psutil
@@ -599,6 +604,15 @@ class RunGuard:
                     raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
                                       f"wait for it to end, or stop it")
             recover(paths)  # a run that was killed: its pages are put back first
+            for work_dir in guard.locks:
+                # pages recover could not put back (a file in use) keep their entries in the journal:
+                # this run's journal would replace it and lose their copies (review 2026-11-28 B4)
+                left = _read_journal(AgentStore(work_dir))
+                if left is not None:
+                    pages = ", ".join(sorted(str(stem) for stem in (left.get("pages") or {})))
+                    raise PagesNotRestored(f"pages of an earlier AI Agent run on {os.path.dirname(work_dir)} cannot "
+                                           f"be put back as they were, a file is in use ({pages}): close the "
+                                           f"program that has them open and start again")
             guard.owner = _new_owner()
             guard._begin(paths, revise)
         except BaseException:

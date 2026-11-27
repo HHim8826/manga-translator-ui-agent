@@ -507,3 +507,32 @@ def test_a_page_that_cannot_be_put_back_keeps_its_copies_for_the_next_run(tmp_pa
     assert {stem: _json(folder, stem).read_bytes() for stem in ("001", "002")} == before
     assert (_agent_dir(folder) / "pages" / "002.agent.json").read_bytes() == sidecar_before
     assert not (_agent_dir(folder) / "run_journal.json").exists()
+
+
+def test_a_run_does_not_start_while_a_page_of_a_killed_run_cannot_be_put_back(tmp_path, monkeypatch):
+    """Review 2026-11-28 B4: recover keeps the entry of a page it cannot put back (its JSON in use) in
+    the journal, but the new run wrote its own journal over it and the page's copies were lost."""
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png")]
+    _run(tmp_path, paths, _finish_page() * 2)
+    before = _json(folder, "002").read_bytes()
+    guard = resume.RunGuard.begin(paths)
+    make_page(tmp_path, "002")  # the preprocess of the run that is killed now
+    resume._ACTIVE.discard(guard.owner["token"])  # the process ended: its journal stays
+    guard.release()
+    real_copy = resume.shutil.copy2
+
+    def locked(source, target, *args, **kwargs):
+        if str(target).endswith("002_translations.json"):
+            raise PermissionError(13, "in use", str(target))
+        return real_copy(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(resume.shutil, "copy2", locked)
+    with pytest.raises(resume.PagesNotRestored, match="002"):
+        resume.RunGuard.begin(paths)
+    journal = json.loads((_agent_dir(folder) / "run_journal.json").read_text(encoding="utf-8"))
+    assert list(journal["pages"]) == ["002"] and os.path.exists(journal["pages"]["002"]["json_copy"])
+    monkeypatch.setattr(resume.shutil, "copy2", real_copy)  # the file is free again
+    resume.RunGuard.begin(paths).finish()
+    assert _json(folder, "002").read_bytes() == before
