@@ -43,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import cv2
 import numpy as np
 
-from .page import PageDoc, Region, custom_frame
+from .page import Centers, PageDoc, Region, custom_frame
 from .review import RegionBoxes, flag_agent, region_bbox
 from .store import AgentStore, _read_json
 
@@ -453,18 +453,22 @@ def clear_pending(store: AgentStore, stem: str) -> None:
         pass
 
 
-def locked_centers(side: Optional[dict], key: str = "locked") -> set:
+def locked_centers(side: Optional[dict], key: str = "locked") -> Centers:
     """``match`` centers of the sidecar regions with ``key`` set (``locked``, ``user_font``), for the
-    stages that read the JSON (the proofreader and the font check match regions by center)."""
-    out = set()
+    stages that read the JSON (the proofreader and the font check match regions by center, within
+    ``CENTER_SLACK``)."""
+    out = []
     for entry in (side or {}).get("regions") or []:
-        if isinstance(entry, dict) and entry.get(key) and not entry.get("skipped"):
+        if isinstance(entry, dict) and entry.get(key) and not entry.get("skipped")                 and entry.get("merged_into") is None:
             center = (entry.get("match") or {}).get("center")
             if center:
-                out.add(tuple(float(v) for v in center))
-    return out
+                out.append((center, True))
+    return Centers(out)
 
 
 def json_center(region: dict) -> tuple:
-    """A JSON region's center the way the sidecar's ``match`` has it."""
-    return tuple(float(v) for v in Region(id=0, data=region).center)
+    """A JSON region's center the way the sidecar's ``match`` has it: a turned text's lines are saved
+    upright, the sidecar has them as they lie on the page (review 2026-11-28 B8)."""
+    from ..utils.textblock import saved_lines_to_page
+
+    return tuple(float(v) for v in Region(id=0, data=saved_lines_to_page(dict(region))).center)

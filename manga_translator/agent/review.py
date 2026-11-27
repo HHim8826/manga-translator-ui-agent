@@ -187,15 +187,33 @@ def load(image_path: str) -> Optional[PageReview]:
 
 
 # --- the editor's regions -----------------------------------------------------------
-def region_bbox(region: dict) -> Optional[Box]:
-    """The box around an editor (JSON) region's lines."""
+def region_bbox(region: dict, upright: bool = False) -> Optional[Box]:
+    """The box around a region's lines. ``upright``: an editor (JSON) region, whose turned lines are
+    saved upright about its ``center`` with the turn in ``angle``: the box of the lines as they lie on
+    the page, where the agent's boxes are (review 2026-11-28 B8). The agent's own regions have them
+    on the page already."""
     points = [p for polygon in (region.get("lines") or region.get("polygons") or []) for p in polygon or []]
     try:
         xs = [float(p[0]) for p in points]
         ys = [float(p[1]) for p in points]
     except (TypeError, ValueError, IndexError):
         return None
-    return [min(xs), min(ys), max(xs), max(ys)] if xs else None
+    if not xs:
+        return None
+    if upright:
+        try:
+            angle = float(region.get("angle") or 0.0)
+        except (TypeError, ValueError):
+            angle = 0.0
+        if abs(angle) > 1e-9 and all(math.isfinite(v) for v in xs + ys):
+            try:  # about the saved center, as the editor and textblock.saved_lines_to_page turn them
+                cx, cy = float(region["center"][0]), float(region["center"][1])
+            except (KeyError, TypeError, ValueError, IndexError):
+                cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+            cos_a, sin_a = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            xs, ys = ([cx + (x - cx) * cos_a - (y - cy) * sin_a for x, y in zip(xs, ys)],
+                      [cy + (x - cx) * sin_a + (y - cy) * cos_a for x, y in zip(xs, ys)])
+    return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def _overlap(a: Box, b: Box) -> float:
@@ -213,7 +231,7 @@ def match_region(center: Optional[Sequence[float]], bbox: Optional[Box], regions
     the agent's center. None when no region is there (deleted or moved in the editor)."""
     if bbox is None:
         return None
-    return _best_box(center, bbox, [region_bbox(region) for region in regions])
+    return _best_box(center, bbox, [region_bbox(region, upright=True) for region in regions])
 
 
 def _best_box(center, bbox: Box, boxes: Sequence[Optional[Box]]) -> Optional[int]:
@@ -292,8 +310,18 @@ NEW_BOX = {"font_family": "", "font_color": "#000000", "bg_colors": [255, 255, 2
 def restore_data(item: Skipped, regions: Sequence[dict]) -> dict:
     """An editor region for a skipped one: as it was in the JSON when the sidecar kept it, otherwise
     a box at its place with its text, styled like the nearest region of the page."""
+    turned = False
     if item.data:
         data = copy.deepcopy(item.data)
+        # the sidecar keeps the lines as they lie on the page; the editor turns a region's lines by its
+        # angle about its center: upright first, or the box came back turned twice (review 2026-11-28 B8)
+        from ..utils.textblock import page_lines_to_saved
+
+        page_lines_to_saved(data)
+        try:
+            turned = abs(float(data.get("angle") or 0.0)) > 1e-9
+        except (TypeError, ValueError):
+            turned = False
     else:
         x1, y1, x2, y2 = item.bbox
         quad = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
@@ -301,7 +329,7 @@ def restore_data(item: Skipped, regions: Sequence[dict]) -> dict:
                 "direction": "v" if (y2 - y1) > (x2 - x1) else "h"}
         nearest = None
         for region in regions:
-            box = region_bbox(region)
+            box = region_bbox(region, upright=True)
             if box is None:
                 continue
             d = ((box[0] + box[2]) / 2 - item.center[0]) ** 2 + ((box[1] + box[3]) / 2 - item.center[1]) ** 2
@@ -311,8 +339,9 @@ def restore_data(item: Skipped, regions: Sequence[dict]) -> dict:
             data.update({k: copy.deepcopy(nearest[1][k]) for k in STYLE_KEYS if k in nearest[1]})
         for key, value in NEW_BOX.items():  # what the editor gives a box drawn by hand
             data.setdefault(key, copy.deepcopy(value))
-    data.update({"text": item.text, "texts": [item.text], "translation": "", "translation_raw": "",
-                 "center": list(item.center)})
+    data.update({"text": item.text, "texts": [item.text], "translation": "", "translation_raw": ""})
+    if not (turned and data.get("center") is not None):  # a turned box keeps the center it turns about
+        data["center"] = list(item.center)
     data.pop("translation_rich", None)
     return data
 

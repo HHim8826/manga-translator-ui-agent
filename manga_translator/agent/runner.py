@@ -365,12 +365,14 @@ class AgentRunner:
                             "source": region.get("ocr_agent") or region.get("ocr_local") or "",
                             "translation": region["translation"], "category": region.get("category")})
                 continue
-            at = {tuple((e.get("match") or {}).get("center") or ()): e for e in entries if not e.get("skipped")}
+            from .page import Centers
+
+            at = Centers(((e.get("match") or {}).get("center"), e) for e in entries if not e.get("skipped"))
             for region in saved:
                 translation = str(region.data.get("translation") or "").strip()
                 if not translation:
                     continue
-                entry = at.get(tuple(region.center)) or {}
+                entry = at.get(region.center) or {}
                 source = (entry.get("ocr_agent") or entry.get("ocr_local")
                           or region.data.get("text") or "".join(region.data.get("texts") or []))
                 self.session.past.append({"page": stem, "id": entry.get("id"), "source": source or "",

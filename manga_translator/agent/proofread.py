@@ -19,7 +19,7 @@ from ..utils.textblock import saved_lines_to_page
 from . import checks, images, json_guard
 from .events import EventLog
 from .notes import bracketed
-from .page import BREAK, NOTED, Region, needs_break, text_length, with_breaks
+from .page import BREAK, NOTED, Centers, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
 from .store import AgentMemory, AgentStore, normalize, write_json_atomic
 from .store import page_stem
@@ -113,11 +113,12 @@ class ProofPage:
 
         side = side if isinstance(side, dict) else {}
         entries = [e for e in side.get("regions") or [] if isinstance(e, dict)]
-        by_center = {tuple((e.get("match") or {}).get("center") or ()): e for e in entries}
-        rid_at = {}
+        # the regions of the JSON: text kept as drawn and boxes merged into others are not in it
+        by_center = Centers(((e.get("match") or {}).get("center"), e) for e in entries
+                            if not e.get("skipped") and e.get("merged_into") is None)
+        rid_at = Centers((region.center, rid) for rid, region in self.regions.items())
         for rid, region in self.regions.items():
-            rid_at[tuple(region.center)] = rid
-            entry = by_center.get(tuple(region.center))
+            entry = by_center.get(region.center)
             if entry and entry.get("category"):
                 self.categories[rid] = str(entry["category"])
             if entry and entry.get("locked") and not entry.get("skipped"):
@@ -140,7 +141,7 @@ class ProofPage:
                 center = (entry.get("match") or {}).get("center") if entry else None
             else:  # an earlier proofreading's flag keeps where its box was
                 center = flag.get("center")
-            rid = rid_at.get(tuple(center)) if center else None
+            rid = rid_at.get(center) if center else None
             self.on_list.append((rid, str(flag.get("type") or ""), _one_line(flag.get("reason") or "")))
 
     def listed(self, rid: int) -> str:

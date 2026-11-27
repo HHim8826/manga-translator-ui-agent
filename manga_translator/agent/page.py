@@ -25,7 +25,7 @@ import copy
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -186,6 +186,57 @@ def layout_alignment(region: "Region") -> str:
     if right_spread <= edge and left_spread >= ragged:
         return "right"
     return ""
+
+
+CENTER_SLACK = 2.0
+"""px: how far a region's center may be from the sidecar's ``match`` center and still be that region."""
+
+
+def _center_key(center: Any) -> Optional[Tuple[float, float]]:
+    try:
+        return float(center[0]), float(center[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+class Centers:
+    """Values by a region's ``match`` center, found within ``CENTER_SLACK``: a turned text's lines are
+    saved upright and turned back onto the page when read, and the float error of the two turns moved
+    the floor or ceil of its box by a pixel, its center by half of one: a locked box, a note or the
+    user's font was then not found (half the turned boxes of a test page) (review 2026-11-28 B8). The
+    same center: the last value, as a dict; otherwise the nearest."""
+
+    def __init__(self, items: Iterable[Tuple[Any, Any]] = ()):
+        self._exact: Dict[Tuple[float, float], Any] = {}
+        for center, value in items:
+            key = _center_key(center)
+            if key is not None:
+                self._exact[key] = value
+
+    def get(self, center: Any, default: Any = None) -> Any:
+        key = _center_key(center)
+        if key is None:
+            return default
+        if key in self._exact:
+            return self._exact[key]
+        best, gap = default, CENTER_SLACK
+        for (x, y), value in self._exact.items():
+            off = max(abs(x - key[0]), abs(y - key[1]))
+            if off <= gap:
+                best, gap = value, off
+        return best
+
+    def __contains__(self, center: Any) -> bool:
+        return self.get(center, _NONE) is not _NONE
+
+    def __bool__(self) -> bool:
+        return bool(self._exact)
+
+    def __len__(self) -> int:
+        return len(self._exact)
+
+
+_NONE = object()
 
 
 def drop_boxes(data: dict) -> None:

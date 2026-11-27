@@ -244,7 +244,7 @@ class AgentReviewPanel(QWidget):
             index = agent_review.flag_region(flag, self.regions)
             if index is not None:
                 self.region_selected.emit(index)
-                box = agent_review.region_bbox(self.regions[index])
+                box = agent_review.region_bbox(self.regions[index], upright=True)
                 if box is not None:
                     self.area_requested.emit(box)
             elif flag.bbox is not None:
