@@ -203,10 +203,16 @@ def seed_chapter(chapter: AgentMemory, work_dir: str, name: str = "", folder: st
     seed_path = os.path.join(chapter.dir, SEED)
     if not _empty(chapter):
         if not os.path.exists(seed_path):
-            # a chapter from before the seeds were kept: what was shared already is in base.json
-            meta = _read_json(os.path.join(work_dir, META), {})
-            shared = name in (meta.get("chapters") or {}) if isinstance(meta, dict) else False
-            (_Layer.of(chapter) if shared else _Layer()).write(seed_path)
+            if name and os.path.exists(_layer_path(work_dir, name, _where(folder))):
+                # put into the work by ``bootstrap``, which keeps no seed: all of it is its own. Taken
+                # for shared (as below), a rerun saved only its changes over its own layer, and the
+                # chapter's terms and characters were gone from the work (review 2026-11-28 B2)
+                _Layer().write(seed_path)
+            else:
+                # a chapter from before the seeds were kept: what was shared already is in base.json
+                meta = _read_json(os.path.join(work_dir, META), {})
+                shared = name in (meta.get("chapters") or {}) if isinstance(meta, dict) else False
+                (_Layer.of(chapter) if shared else _Layer()).write(seed_path)
         return {}
     _migrate(work_dir)
     work, _ = _built(work_dir, before=(name, _where(folder)) if name else None) \

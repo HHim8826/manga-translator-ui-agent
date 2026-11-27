@@ -200,3 +200,31 @@ def test_a_work_memory_from_before_the_chapters_were_kept_apart(tmp_path):
     assert {e["source"]: e["target"] for e in merged.glossary} == {"魔剣": "魔劍2", "王都": "皇都"}
     assert merged.story == "第2話的劇情"
     assert (work / "base.json").exists()
+
+
+def test_rerunning_a_chapter_the_bootstrap_brought_in_keeps_its_terms(tmp_path):
+    """Review 2026-11-28 B2: chapters put into the work by ``bootstrap`` keep no seed; a rerun took
+    their memory for one the work had given them, saved only its changes over their layer, and their
+    terms and characters were gone from the work."""
+    parent = tmp_path / "作品"
+    for name, term in (("第1話", "勇者"), ("第2話", "魔王")):
+        work_dir = parent / name / "manga_translator_work"
+        runs = work_dir / "agent" / "runs"
+        runs.mkdir(parents=True)
+        start = {"type": "run_start", "run": "r1", "work_prompt": {"name": "作品.yaml", "terms": 0}}
+        (runs / "r1.jsonl").write_text(json.dumps(start) + "\n", encoding="utf-8")
+        memory = AgentMemory(str(work_dir / "agent" / "memory"))
+        memory.glossary_upsert(term, term, "", "001", "Person")
+        memory.character_upsert(term, {"target_name": term}, "001")
+    work = str(tmp_path / "dict" / "agent" / "作品.memory")
+    this = parent / "第3話" / "manga_translator_work"
+    assert bootstrap(work, str(this), "作品.yaml") == ["第1話", "第2話"]
+
+    second = parent / "第2話"
+    memory = AgentMemory(str(second / "manga_translator_work" / "agent" / "memory"))
+    assert seed_chapter(memory, work, "第2話", str(second)) == {}  # it has its own memory
+    memory.glossary_upsert("王都", "王都", "", "002", "Location")  # what the rerun adds
+    save_chapter(memory, work, "第2話", str(second))
+    merged = AgentMemory(work)
+    assert sorted(e["source"] for e in merged.glossary) == ["勇者", "王都", "魔王"]
+    assert set(merged.characters) == {"勇者", "魔王"}
