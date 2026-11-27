@@ -416,22 +416,31 @@ def free_boxes(gray: np.ndarray, box: Sequence[float], direction: str, source_px
     most ``COVERS`` of every text in ``texts`` (id: its lines) and stays within ``near`` px of its own
     text (``own``). (way, pixels moved, the moved box), nearest first. The real run of 2026-11-27 (ch42
     p1): a box was refused for covering the note's own label, and the model left the note over the
-    drawing it had wanted to clear, not knowing the spot past the label was free."""
+    drawing it had wanted to clear, not knowing the spot past the label was free.
+
+    A moved box is cut to the page and rounded before it is tried, as ``note_region`` takes it back
+    (``tools._page_box``): tried as it was, a box partly off the page put the note elsewhere when the
+    model gave it (review 2026-11-28 B14). A cut box moves its middle half as far as the move, so the
+    search goes on until the box is off the page or out of reach."""
     x1, y1, x2, y2 = (float(v) for v in box)
+    height, width = gray.shape[:2]
     step = max(2, int(round(note_font(source_px, page_px) / 4)))
     points = np.concatenate([np.asarray(p, dtype=np.float64).reshape(-1, 2) for p in own])
     reach = 2 * near + max(x2 - x1, y2 - y1, *(points.max(axis=0) - points.min(axis=0)))
     found = []
     for way, ux, uy in WAYS:
-        moved, last = step, None
+        moved = step
         while moved <= reach:
-            moved_box = [x1 + ux * moved, y1 + uy * moved, x2 + ux * moved, y2 + uy * moved]
-            place = place_in_box(gray, moved_box, direction, source_px, text, page_px)
-            if place is None or place.bbox == last:  # held at the page's edge
+            moved_box = [int(round(v)) for v in (max(0.0, x1 + ux * moved), max(0.0, y1 + uy * moved),
+                                                  min(float(width), x2 + ux * moved),
+                                                  min(float(height), y2 + uy * moved))]
+            if moved_box[2] - moved_box[0] < 4 or moved_box[3] - moved_box[1] < 4:  # off the page
                 break
-            last = place.bbox
+            place = place_in_box(gray, moved_box, direction, source_px, text, page_px)
+            if place is None:
+                break
             if gap(place.lines, own) <= near and covered_text(place.lines, texts)[1] <= COVERS:
-                found.append((way, moved, [int(round(v)) for v in moved_box]))
+                found.append((way, moved, moved_box))
                 break
             moved += step
     return sorted(found, key=lambda spot: spot[1])

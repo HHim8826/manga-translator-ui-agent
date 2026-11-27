@@ -319,3 +319,20 @@ def test_free_boxes_are_the_nearest_moves_off_text_and_stay_beside_it():
     closer = place_in_box(gray, [moved_box[0] - step, moved_box[1], moved_box[2] - step, moved_box[3]], "v", 30,
                           "（路障）")
     assert covered_text(closer.lines, texts)[1] > COVERS
+
+
+def test_free_boxes_near_the_page_edge_are_cut_to_the_page_as_note_region_takes_them():
+    """Review 2026-11-28 B14: a moved box partly off the page was tried as it was, but note_region
+    cuts a box to the page, so the note the model asked for landed elsewhere."""
+    gray = np.full((300, 400), 255, np.uint8)
+    label = [np.array([[70, 100], [90, 100], [90, 200], [70, 200]], np.float64)]  # near the left edge
+    texts = {1: label}
+    box = [0, 90, 160, 210]  # centered on the label, much wider than it
+    spots = free_boxes(gray, box, "v", 30, "（路障）", None, texts, label, NEAR * note_font(30))
+    assert "left" in [way for way, _, _ in spots]
+    for _way, _moved, moved_box in spots:
+        x1, y1, x2, y2 = moved_box
+        assert 0 <= x1 < x2 <= 400 and 0 <= y1 < y2 <= 300
+        place = place_in_box(gray, moved_box, "v", 30, "（路障）")  # the box as the model gives it back
+        assert covered_text(place.lines, texts)[1] <= COVERS
+        assert gap(place.lines, label) <= NEAR * place.font_size
