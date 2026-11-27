@@ -1104,3 +1104,50 @@ def test_whole_page_images_are_sent_at_most_the_set_size(tmp_path):
         result = tools.execute("get_candidates", "{}")
         assert "(320x240 px)" in result.text and _image_size(result.images[0]) == (320, 240)
     assert AgentSettings().page_image_max_side == 2048
+
+
+def test_skipped_text_leaves_a_mask_saved_at_another_size(tmp_path):
+    """Review 2026-11-28 B10: the skipped regions were drawn in page pixels onto a mask saved at half
+    the size, so the wrong part of it was cleared."""
+    image_path, json_path = make_page(tmp_path)
+    raw = json.load(open(json_path, encoding="utf-8"))
+    page = next(iter(raw.values()))
+    full = _decode(page["mask_raw"])
+    full[135:205, 180:300] = 255  # the sign's mask reaches well past its lines (and the kept-text pad)
+    page["mask_raw"] = _mask_b64(cv2.resize(full, (160, 120), interpolation=cv2.INTER_NEAREST))
+    open(json_path, "w", encoding="utf-8").write(json.dumps(raw))
+    doc = PageDoc.load(image_path, json_path)
+    doc.skip(3, "sign", "background sign stays")  # 200-280 x 150-180 on the page
+    out = _decode(doc.output_mask())
+    assert out.shape == (120, 160)
+    assert not out[67:103, 90:150].any(), "the sign's text is kept, with all of its mask"
+    assert out[10:60, 10:30].all() and out[10:60, 50:70].all(), "the other texts are still erased"
+
+
+def test_the_preprocess_does_not_upscale_for_the_agent(tmp_path):
+    """Review 2026-11-28 B10: with upscaling on, the preprocess wrote boxes and the mask at twice the
+    page's size; the agent, the inpaint review and the render work on the page as it is."""
+    from types import SimpleNamespace
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png")]
+    upscale = SimpleNamespace(upscale_ratio=2)
+
+    class Cfg:
+        class translator:
+            target_lang = "CHT"
+
+    Cfg.upscale = upscale
+    seen = []
+
+    class Recording(FakeTranslator):
+        async def translate_batch(self, images_with_configs, save_info=None):
+            seen.append((self.template, upscale.upscale_ratio))
+            return await super().translate_batch(images_with_configs, save_info)
+
+    logs = []
+    asyncio.run(run_agent_workflow(Recording(tmp_path), [(p, Cfg) for p in paths], {}, client=ScriptedClient(_finish_page()),
+                                   log=logs.append, agent_settings={"inpaint_review": False}))
+    assert seen == [(True, None), (False, 2)] and upscale.upscale_ratio == 2  # put back after the preprocess
+    assert any("Upscaling (x2) is off" in m for m in logs)

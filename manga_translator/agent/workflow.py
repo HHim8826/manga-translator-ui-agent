@@ -79,6 +79,26 @@ def _overwriting(save_info: Optional[dict]) -> Optional[dict]:
     return None if save_info is None else {**save_info, "overwrite": True}
 
 
+def _without_upscaling(images_with_configs: List[tuple]) -> List[tuple]:
+    """Turns upscaling off in the pages' configs for the preprocess; returns (config.upscale, ratio)
+    to put back. The preprocess detected on the upscaled page and wrote its boxes and mask at that
+    size with the page's own size, and the agent, the inpaint review and the render work on the page
+    as it is: every box, crop and mask was off by the ratio (review 2026-11-28 B10). The render
+    (``load_text``) never upscales."""
+    changed, seen = [], set()
+    for _image, cfg in images_with_configs:
+        upscale = getattr(cfg, "upscale", None)
+        if upscale is None or id(upscale) in seen or not getattr(upscale, "upscale_ratio", None):
+            continue
+        seen.add(id(upscale))
+        changed.append((upscale, upscale.upscale_ratio))
+        try:
+            upscale.upscale_ratio = None
+        except Exception:  # a frozen config: left as it is
+            changed.pop()
+    return changed
+
+
 def _has_output(translator, path: str, save_info: dict) -> bool:
     try:
         target = translator._calculate_output_path(path, save_info)
@@ -879,9 +899,18 @@ async def run_agent_workflow(
             batch_progress.stage = "preprocess"
             _report(progress, "preprocess", 0, len(paths))
             broadcast("workflow_stage", stage="preprocess", pages=len(paths))
-            # every page's JSON and TXT are written again (copies first): with overwrite off an older
-            # TXT made the page skipped, and taken as failed
-            preprocessed = await translator.translate_batch(images_with_configs, save_info=_overwriting(save_info))
+            upscaled = _without_upscaling(images_with_configs)
+            if upscaled:
+                log(f"[Agent] Upscaling (x{upscaled[0][1]}) is off for the AI Agent: it works on the pages as "
+                    "they are")
+            try:
+                # every page's JSON and TXT are written again (copies first): with overwrite off an older
+                # TXT made the page skipped, and taken as failed
+                preprocessed = await translator.translate_batch(images_with_configs,
+                                                                save_info=_overwriting(save_info))
+            finally:
+                for upscale, ratio in upscaled:
+                    upscale.upscale_ratio = ratio
             batch_progress.stage = None
             preprocess_failed = guard.preprocess_failures(preprocessed)
             from ..utils.path_manager import find_json_path as _find_json

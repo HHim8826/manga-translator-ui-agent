@@ -381,8 +381,19 @@ def use_attempt(review: PageReview, unit_id: str, n: int) -> str:
         raise FileNotFoundError("the page has no inpainted image")
     old, new = unit.attempts[unit.chosen - 1] if 1 <= unit.chosen <= len(unit.attempts) else None, unit.attempts[n - 1]
     x1, y1, x2, y2 = unit.box
-    original = _read_rgb(review.image_path)
-    image = _read_rgb(target)
+    from .revise import _read_rgba, base_image_path
+
+    json_path = find_json_path(review.image_path)
+    data = None
+    if json_path and os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    page = next((e for e in (data or {}).values() if isinstance(e, dict)), {}) if isinstance(data, dict) else {}
+    # the image the page was inpainted from (the colorized or upscaled base when there is one), and
+    # an alpha channel stays (review 2026-11-28 B10): the original's black-and-white pixels went
+    # into a colorized page, and a transparent PNG lost its alpha
+    original, _alpha = _read_rgba(base_image_path(review.image_path, page))
+    image, alpha = _read_rgba(target)
     if image.shape != original.shape:
         raise ValueError("the inpainted image does not match the page")
     patch = _read_rgb(new.file)
@@ -396,11 +407,7 @@ def use_attempt(review: PageReview, unit_id: str, n: int) -> str:
 
     # everything is worked out first; then the image, the JSON mask and the sidecar's choice are
     # replaced together, and put back as they were when one of them cannot be written
-    json_path = find_json_path(review.image_path)
-    data = None
-    if json_path and os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+    if data is not None:
         for entry in data.values():
             if isinstance(entry, dict) and isinstance(entry.get("mask_raw"), str):
                 mask = decode_mask(entry["mask_raw"])
@@ -417,7 +424,7 @@ def use_attempt(review: PageReview, unit_id: str, n: int) -> str:
 
     staged: List[tuple] = []  # (temporary file, target)
     try:
-        staged.append((_stage_image(target, image), target))
+        staged.append((_stage_image(target, image if alpha is None else np.dstack([image, alpha])), target))
         if data is not None:
             staged.append((_stage_json(json_path, data), json_path))
         staged.append((_stage_json(review.sidecar_path, side), review.sidecar_path))

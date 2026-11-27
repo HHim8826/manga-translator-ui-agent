@@ -463,3 +463,29 @@ def test_matching_many_boxes_at_once_finds_what_one_at_a_time_finds():
     odd = review.RegionBoxes([region(0, 0, 10, 10), {"lines": [[[0, 0], [float("inf"), 5]]]}])
     assert odd.match(None, [0, 0, 10, 10]) == review.match_region(None, [0, 0, 10, 10], [region(0, 0, 10, 10)])
     assert review.RegionBoxes([]).match([1, 1], [0, 0, 2, 2]) is None
+
+
+def test_another_attempt_on_a_colorized_page_with_alpha(tmp_path):
+    """Review 2026-11-28 B10: the attempt switch took the pixels it puts back from the black-and-white
+    original (the page was inpainted from the colorized base) and dropped the image's alpha."""
+    from manga_translator.utils.path_manager import get_work_image_path
+
+    image_path, json_path, store, _ = _agent_page(tmp_path)
+    first, second = _write_attempts(store)
+    raw = json.load(open(json_path, encoding="utf-8"))
+    next(iter(raw.values()))["colorizer"] = "mc2"
+    open(json_path, "w", encoding="utf-8").write(json.dumps(raw))
+    colored = np.zeros((240, 320, 3), np.uint8)
+    colored[:] = (30, 60, 220)  # BGR: a red page
+    cv2.imwrite(get_work_image_path(image_path, create_dir=True), colored)
+    x1, y1, x2, y2 = BOX
+    inpainted = np.dstack([_gray(128, (240, 320)), np.full((240, 320), 77, np.uint8)])
+    inpainted[y1:y2, x1:x2, :3][first] = 50
+    target = get_inpainted_path(image_path)
+    cv2.imwrite(target, inpainted)
+    review.use_attempt(review.load(image_path), "1", 2)
+    result = cv2.imread(target, cv2.IMREAD_UNCHANGED)
+    assert result.shape[2] == 4 and (result[:, :, 3] == 77).all()
+    only_first = first & ~second
+    assert (result[y1:y2, x1:x2, :3][only_first] == (30, 60, 220)).all()  # from the colorized base
+    assert (result[y1:y2, x1:x2, :3][second] == 200).all()

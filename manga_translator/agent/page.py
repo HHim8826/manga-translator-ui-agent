@@ -1117,9 +1117,9 @@ class PageDoc:
             mask = mask[:, :, 0]
         shape = mask.shape[:2]
         out = mask.copy()
+        page_w = int(self.page_data.get("original_width") or shape[1])
+        page_h = int(self.page_data.get("original_height") or shape[0])
         if added:
-            page_w = int(self.page_data.get("original_width") or shape[1])
-            page_h = int(self.page_data.get("original_height") or shape[0])
             canvas = np.zeros((page_h, page_w), np.uint8)
             for region in added:
                 x, y, patch = region.erase
@@ -1131,18 +1131,27 @@ class PageDoc:
             out[canvas > 0] = 255
 
         if skipped:
+            # the lines are page pixels; a mask of another size (saved at the detector's size) gets them
+            # scaled, like the added strokes above, and the distances with them (review 2026-11-28 B10)
+            scale = shape[1] / page_w if page_w else 1.0
+
             def fill(regions: List[Region]) -> np.ndarray:
-                canvas = np.zeros(shape, np.uint8)
+                canvas = np.zeros((page_h, page_w), np.uint8)
                 polys = [np.round(p).astype(np.int32).reshape(-1, 1, 2) for r in regions for p in r.polygons]
                 if polys:
                     cv2.fillPoly(canvas, polys, 1)
+                if canvas.shape != shape:
+                    canvas = cv2.resize(canvas, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
                 return canvas
 
+            def px(value: int) -> int:
+                return max(1, int(round(value * scale)))
+
             keep_zone = cv2.dilate(fill([r for r in self.active_regions() if kept(r)]),
-                                   cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * keep_margin + 1,) * 2))
+                                   cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px(keep_margin) + 1,) * 2))
             skip_seed = fill(skipped)
-            skip_touch = cv2.dilate(skip_seed, np.ones((7, 7), np.uint8))
-            skip_near = cv2.dilate(skip_seed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * reach + 1,) * 2))
+            skip_touch = cv2.dilate(skip_seed, np.ones((2 * px(3) + 1,) * 2, np.uint8))
+            skip_near = cv2.dilate(skip_seed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px(reach) + 1,) * 2))
             _count, labels = cv2.connectedComponents((out > 0).astype(np.uint8), connectivity=8)
             touching_skip = set(np.unique(labels[(skip_touch > 0) & (labels > 0)]).tolist())
             touching_keep = set(np.unique(labels[(keep_zone > 0) & (labels > 0)]).tolist())
