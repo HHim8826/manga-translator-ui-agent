@@ -658,6 +658,10 @@ def set_text(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     if s.doc.revise:  # text the earlier run skipped: find its strokes so the render erases them
         unskip_erase(s.doc, region, s.page_array)
     if style is not None:
+        if region.font and not style[1]:  # back to no style: the JSON's font is the old style's
+            region.font_reset = True
+        elif style[1]:
+            region.font_reset = False
         region.style, region.font = style
         if region.style:
             s.styles_used.setdefault(region.style, set()).add(s.page_name)

@@ -288,6 +288,9 @@ class Region:
     """Added regions: (x, y, 0/1 patch) of pixels to add to the mask."""
     font: str = ""
     """The font of the region's style; empty keeps the JSON's font (the user's)."""
+    font_reset: bool = False
+    """The agent took the region's style back to none after it had a font of one: the JSON's font is
+    that font, so it is taken out and the render uses the user's (review 2026-11-28 B15)."""
     style: str = ""
     """The agent's font style for this region (``font_styles.py``); empty for normal dialogue."""
     # --- a page checked again (``revise.py``) ---------------------------------
@@ -303,7 +306,7 @@ class Region:
     """The region's JSON as the check loaded it; written back unchanged while the agent leaves the
     region's text alone, so the editor's own fields stay."""
     loaded_state: Optional[tuple] = None
-    """(source text, translation, lines) at load."""
+    """(source text, translation, lines, font, style) at load (``state``)."""
     was_skipped: bool = False
     """Skipped by the earlier run: its text is not in the saved mask."""
     drop_rich: bool = False
@@ -353,7 +356,12 @@ class Region:
     def unchanged(self) -> bool:
         """A loaded region the agent left as it was."""
         return self.loaded_state is not None and not self.skipped and \
-            self.loaded_state == (self.source_text, self.translation, self.data.get("lines"))
+            self.loaded_state == self.state()
+
+    def state(self) -> tuple:
+        """What ``unchanged`` compares: a new style is a change too (the old font's rich text and the box
+        the render measured for it go) (review 2026-11-28 B15)."""
+        return self.source_text, self.translation, self.data.get("lines"), self.font, self.style
 
     def status(self) -> str:
         if self.merged_into is not None:
@@ -498,6 +506,16 @@ class PageDoc:
         """The notes that set the translation of ``region`` beside it."""
         return [r for r in self.regions.values() if r.note_of == region.id and r.active]
 
+    def _notes_free(self, region: Region) -> Region:
+        """A region whose note the user changed in the editor stays as it is: translating or skipping
+        it dropped the user's note (review 2026-11-28 B15)."""
+        mine = [note.id for note in self.notes_of(region) if note.locked]
+        if mine:
+            raise RegionError(f"#{region.id} has the user's note #{mine[0]} beside it (they changed it in the "
+                              f"editor), so #{region.id} stays as drawn with it. Leave both; if something looks "
+                              f"wrong, flag_for_review #{region.id} with the reason.")
+        return region
+
     def _drop_notes(self, region: Region) -> None:
         for note in self.notes_of(region):
             del self.regions[note.id]
@@ -525,7 +543,7 @@ class PageDoc:
 
     def set_text(self, rid, source_text: str, translation: str, category: str = "dialogue",
                  confidence: Optional[float] = None, ruby: str = "", reason: str = "") -> Region:
-        region = self._not_a_note(self._unlocked(self.get(rid)))
+        region = self._notes_free(self._not_a_note(self._unlocked(self.get(rid))))
         translation = with_breaks(translation)
         if not translation.strip():
             raise RegionError(f"#{region.id}: translation is empty; use skip_region for text that stays as it is")
@@ -546,7 +564,7 @@ class PageDoc:
         return region
 
     def skip(self, rid, category: str, reason: str) -> Region:
-        region = self._unlocked(self.get(rid))
+        region = self._notes_free(self._unlocked(self.get(rid)))
         if region.note_of is not None:
             raise RegionError(f"#{region.id} is the translation set beside #{region.note_of}: to keep "
                               f"#{region.note_of} as drawn without it, skip_region #{region.note_of}")
@@ -605,6 +623,7 @@ class PageDoc:
             raise RegionError("reason is required")
         ordered = [self.regions[i] for i in self.order if i in unique]
         split = paragraph_break(ordered)
+        was_skipped = any(r.was_skipped for r in ordered)
         if split is not None:
             raise RegionError(
                 f"#{split[0].id} and #{split[1].id} are separate blocks of text (a blank space lies between them, "
@@ -628,6 +647,9 @@ class PageDoc:
         keep.ocr_local = "\n".join(t for t in local if t)
         keep.source_text = keep.translation = None
         keep.skipped = False
+        # text the earlier run skipped is not in the saved mask: unskip_erase finds its strokes
+        # (review 2026-11-28 B15)
+        keep.was_skipped = was_skipped
         keep.reasons.append(reason)
         for region in ordered[1:]:
             region.merged_into = keep.id
@@ -679,7 +701,7 @@ class PageDoc:
         data["texts"], data["text"] = [], ""
         new_id = max(self.regions) + 1
         new = Region(id=new_id, data=data, origin=region.origin, origin_kind=region.origin_kind,
-                     erase=region.erase, reasons=[reason])
+                     erase=region.erase, reasons=[reason], was_skipped=region.was_skipped)
         data["center"] = new.center
         region.data["center"] = region.center
         region.source_text = region.translation = None
@@ -956,6 +978,8 @@ class PageDoc:
                     data.pop("translation_rich", None)
                 if region.font and region.font != data.get("font_family"):
                     data["font_family"] = region.font
+                elif not region.font and region.font_reset:
+                    data.pop("font_family", None)
                 shown = data.get("translation")
                 if done and not region.user_edited and not data.get("translation_rich") and isinstance(shown, str) \
                         and shown and shown == data.get("translation_raw"):
@@ -975,6 +999,8 @@ class PageDoc:
             data["center"] = region.center
             if region.font:
                 data["font_family"] = region.font
+            elif region.font_reset:  # back to no style: the user's font, not the old style's
+                data.pop("font_family", None)
             side = "" if region.user_edited or region.note_of is not None else layout_alignment(region)
             if side and data.get("alignment") in (None, "", "auto", "center"):
                 data["alignment"] = side  # set as the source lines were

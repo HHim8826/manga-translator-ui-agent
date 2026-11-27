@@ -211,7 +211,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
             if new is not None:
                 region.font = new or default_font
                 region.drop_rich = _borrow_only(data.get("translation_rich"), fallbacks)
-        region.loaded_state = (region.source_text, region.translation, data.get("lines"))
+        region.loaded_state = region.state()
     if matched:
         doc._next_link = max([int(r.link_group) for r in doc.regions.values()
                               if isinstance(r.link_group, int)] + [0]) + 1
@@ -241,6 +241,8 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
         target = entry_rid.get(entry.get("note_of")) if entry.get("note_of") is not None else None
         if target is not None and doc.regions[target].skipped:
             doc.regions[rid].note_of = target
+            if doc.regions[rid].locked:  # the user's note: the text it is set beside stays with it
+                doc.regions[target].locked = True
     _order_like(doc, side.get("order") or [e.get("id") for e in entries], entry_rid)
 
     # the inpaint review is not run again: its flags stay until the user deals with them, old ones too
@@ -459,7 +461,8 @@ def locked_centers(side: Optional[dict], key: str = "locked") -> Centers:
     ``CENTER_SLACK``)."""
     out = []
     for entry in (side or {}).get("regions") or []:
-        if isinstance(entry, dict) and entry.get(key) and not entry.get("skipped")                 and entry.get("merged_into") is None:
+        in_json = isinstance(entry, dict) and not entry.get("skipped") and entry.get("merged_into") is None
+        if in_json and entry.get(key):
             center = (entry.get("match") or {}).get("center")
             if center:
                 out.append((center, True))
