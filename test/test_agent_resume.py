@@ -536,3 +536,15 @@ def test_a_run_does_not_start_while_a_page_of_a_killed_run_cannot_be_put_back(tm
     monkeypatch.setattr(resume.shutil, "copy2", real_copy)  # the file is free again
     resume.RunGuard.begin(paths).finish()
     assert _json(folder, "002").read_bytes() == before
+
+
+def test_a_stopped_run_removes_the_text_export_of_the_pages_it_finished(tmp_path):
+    """Review 2026-11-28 B11: the TXT of a finished page was removed at the end of the chapter only, so a
+    stop kept it, and "Import Translation and Render" would later import the empty original text."""
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png"), str(folder / "003.png")]
+    translator = FakeTranslator(tmp_path)
+    with pytest.raises(asyncio.CancelledError):
+        _run(tmp_path, paths, _finish_page() + [asyncio.CancelledError()], translator=translator)
+    assert sorted(translator.deleted) == paths  # 001 finished, 002 and 003 not: their JSON goes back

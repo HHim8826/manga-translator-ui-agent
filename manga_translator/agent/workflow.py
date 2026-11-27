@@ -75,6 +75,18 @@ def _key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
+def _overwriting(save_info: Optional[dict]) -> Optional[dict]:
+    return None if save_info is None else {**save_info, "overwrite": True}
+
+
+def _has_output(translator, path: str, save_info: dict) -> bool:
+    try:
+        target = translator._calculate_output_path(path, save_info)
+    except Exception:
+        return False
+    return bool(target) and os.path.exists(target)
+
+
 def _rect(value: Any) -> bool:
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         return False
@@ -807,8 +819,26 @@ async def run_agent_workflow(
         preprocess = False
     if not images_with_configs:
         return []
-    config = images_with_configs[0][1]
     paths = [_image_path(image) for image, _ in images_with_configs]
+    render_info = save_info
+    if save_info is not None and not save_info.get("overwrite", True):
+        if revise or redo:
+            # their output images are copied to agent/backups first (_keep_outputs) and the run is
+            # there to render them again: with overwrite off the render skipped every page
+            render_info = _overwriting(save_info)
+        else:
+            # as a translation with overwrite off: a page that has its output image is left out, here
+            # before the API works on it (the render would skip it afterwards) (review 2026-11-28 B11)
+            kept = {_key(path) for path in paths if _has_output(translator, path, save_info)}
+            if kept:
+                log(f"[Agent] Overwrite is off: {len(kept)} page(s) already have an output image and are left "
+                    "as they are: " + ", ".join(os.path.basename(p) for p in paths if _key(p) in kept))
+                images_with_configs = [item for item in images_with_configs
+                                       if _key(_image_path(item[0])) not in kept]
+                if not images_with_configs:
+                    return []
+                paths = [_image_path(image) for image, _ in images_with_configs]
+    config = images_with_configs[0][1]
     saved = {name: getattr(translator, name, False) for name in MODE_FLAGS}
     target_lang = getattr(getattr(config, "translator", None), "target_lang", "") or "CHT"
     font_task: Optional[asyncio.Future] = None
@@ -849,7 +879,9 @@ async def run_agent_workflow(
             batch_progress.stage = "preprocess"
             _report(progress, "preprocess", 0, len(paths))
             broadcast("workflow_stage", stage="preprocess", pages=len(paths))
-            preprocessed = await translator.translate_batch(images_with_configs, save_info=save_info)
+            # every page's JSON and TXT are written again (copies first): with overwrite off an older
+            # TXT made the page skipped, and taken as failed
+            preprocessed = await translator.translate_batch(images_with_configs, save_info=_overwriting(save_info))
             batch_progress.stage = None
             preprocess_failed = guard.preprocess_failures(preprocessed)
             from ..utils.path_manager import find_json_path as _find_json
@@ -948,6 +980,12 @@ async def run_agent_workflow(
                         review_task = asyncio.ensure_future(_review_queue(reviewer, queue))
 
                     def page_done(outcome: dict) -> None:
+                        if preprocess and outcome.get("status") in ("done", "incomplete"):
+                            # Same as "Translate JSON Only": the original TXT this run's preprocess
+                            # exported would otherwise be imported over the agent's JSON later. Now,
+                            # not at the end of the chapter: a stop keeps the finished pages (and
+                            # their TXT). A check has no preprocess: a TXT there is the user's.
+                            translator._delete_original_txt_after_json_translation(outcome["image"])
                         if guard is not None:
                             guard.page_finished(outcome["image"])
                             if revise and outcome.get("status") in RENDERED:
@@ -1043,11 +1081,6 @@ async def run_agent_workflow(
                 events.close()
             for outcome in chapter:
                 log(f"[Agent] {outcome['page']}: {outcome.get('status')}, flags {outcome.get('flags', 0)}")
-                if preprocess and outcome.get("status") in ("done", "incomplete"):
-                    # Same as "Translate JSON Only": the original TXT this run's preprocess exported
-                    # would otherwise be imported over the agent's JSON later. A check has no
-                    # preprocess: a TXT there is the user's, and the render does not import it.
-                    translator._delete_original_txt_after_json_translation(outcome["image"])
             outcomes.extend(chapter)
             if translated[0] != len(outcomes):  # pages that failed count as handled too
                 translated[0] = len(outcomes)
@@ -1105,7 +1138,7 @@ async def run_agent_workflow(
                 if batch:
                     _set_mode(translator, load_text=True, save_text=True, skip_txt_import=True,
                               ignore_existing_inpainted=not reuse, keep_empty_translations=True)
-                    results.extend(await translator.translate_batch(batch, save_info=save_info))
+                    results.extend(await translator.translate_batch(batch, save_info=render_info))
                     batch_progress.offset += len(batch)
             render_events.finish(results)
         except asyncio.CancelledError:

@@ -792,3 +792,56 @@ def test_a_page_the_pipeline_typeset_keeps_the_center_of_its_lines(tmp_path):
     assert recap["center"] == [1270.5, 993.5]
     editor_box_center(recap)  # had the user saved the page in the editor: the box's middle
     assert recap["center"] == pytest.approx([1270.5, 666.5])
+
+
+class _Overwrite(OutputTranslator):
+    """Records save_info["overwrite"] of each translate_batch call (the preprocess and the renders)."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.overwrite = []
+
+    async def translate_batch(self, images_with_configs, save_info=None):
+        self.overwrite.append(((save_info or {}).get("overwrite"), [os.path.basename(p) for p, _ in images_with_configs]))
+        return await super().translate_batch(images_with_configs, save_info)
+
+
+def test_with_overwrite_off_a_check_still_renders_the_pages_it_backed_up(tmp_path):
+    """Review 2026-11-28 B11: the render skipped every page whose output exists, after the check had
+    used the API on them."""
+    folder, paths = _first_run(tmp_path, n_pages=2)
+    out = tmp_path / "out"
+    out.mkdir()
+    for path in paths:
+        cv2.imwrite(str(out / os.path.basename(path)), np.full((24, 32, 3), 60, np.uint8))
+    translator = _Overwrite(tmp_path)
+    asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {"overwrite": False},
+                                   client=ScriptedClient([_calls(("mark_page_done", {"confidence": 0.9}))] * 2),
+                                   log=lambda m: None, revise=True, inpaint_backend=PaintBackend(),
+                                   agent_settings={"inpaint_review": True, "recall_pass": False}))
+    assert translator.rendered == ["001.png", "002.png"] and {o for o, _ in translator.overwrite} == {True}
+    backups = os.listdir(folder / "manga_translator_work" / "agent" / "backups")
+    assert sorted(n.split(".")[0] for n in backups if ".output." in n) == ["001", "002"]
+
+
+def test_with_overwrite_off_a_run_leaves_out_the_pages_that_have_an_output_before_the_api(tmp_path):
+    """Review 2026-11-28 B11: with overwrite off the preprocess skipped a page with an older original
+    TXT (taken as failed), and a page with an output image was translated and then not rendered."""
+    from manga_translator.utils.path_manager import get_original_txt_path
+    from test_agent_core import _finish_page
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / f"00{i}.png") for i in (1, 2, 3)]
+    (tmp_path / "out").mkdir()
+    cv2.imwrite(str(tmp_path / "out" / "002.png"), np.full((24, 32, 3), 60, np.uint8))
+    txt = get_original_txt_path(paths[0], create_dir=True)
+    open(txt, "w", encoding="utf-8").write("older\n")
+    translator, logs = _Overwrite(tmp_path), []
+    client = ScriptedClient(_finish_page() + _finish_page())
+    results = asyncio.run(run_agent_workflow(translator, [(p, Cfg) for p in paths], {"overwrite": False},
+                                             client=client, log=logs.append,
+                                             agent_settings={"inpaint_review": False, "recall_pass": False}))
+    assert translator.overwrite == [(True, ["001.png", "003.png"]), (False, ["001.png", "003.png"])]
+    assert results == ["ctx:001.png", "ctx:003.png"]
+    assert any("Overwrite is off: 1 page(s)" in m and "002.png" in m for m in logs)
