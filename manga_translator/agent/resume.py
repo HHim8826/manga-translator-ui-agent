@@ -141,6 +141,27 @@ def _unlock(handle) -> None:
         handle.close()
 
 
+def _lock_free(store: AgentStore) -> bool:
+    """No run holds the chapter's ``LOCK`` (it is taken and let go at once). False when one does, and
+    when this file system cannot lock (the journal's owner is all that tells then)."""
+    try:
+        handle = _lock(store)
+    except (ChapterBusy, OSError):
+        return False
+    if handle is None:
+        return False
+    _unlock(handle)
+    return True
+
+
+def _run_on(store: AgentStore, journal: Optional[dict]) -> bool:
+    """A run is working on the chapter of ``journal``: its owner is alive (``owner_alive``) and holds the
+    chapter's ``LOCK``. With the lock free, a journal of another computer (the folder was moved or
+    synced) or of a process whose id the system gave to another one locked the chapter for good: it
+    was shown as running and no run started (review 2026-11-28 B18)."""
+    return bool(journal) and owner_alive(journal.get("owner")) and not _lock_free(store)
+
+
 def _new_owner() -> dict:
     owner = {"pid": os.getpid(), "host": socket.gethostname(), "token": uuid.uuid4().hex,
              "process_started": _process_start(os.getpid())}
@@ -345,8 +366,7 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
             latest = store.latest_run_log() if os.path.isdir(store.agent_dir) else None
             log_times[key] = os.path.getmtime(latest) if latest else None
             journal = _read_journal(store)
-            journals[key] = ((journal.get("pages") or {}) if journal else {},
-                             bool(journal) and owner_alive(journal.get("owner")))
+            journals[key] = ((journal.get("pages") or {}) if journal else {}, _run_on(store, journal))
             pending_steps[key] = redo_steps.read(store)
         stem = page_stem(path)
         pending, busy = journals[key]
@@ -537,9 +557,10 @@ def _close(store: AgentStore, entries: Dict[str, dict], finished: Sequence[str],
     return restored, [entries[stem]["image"] for stem in failed]
 
 
-def recover(paths: Sequence[str]) -> List[str]:
+def recover(paths: Sequence[str], held: Sequence[str] = ()) -> List[str]:
     """Restore the unfinished pages of a run that was killed (its journal is still there, and its
-    run has ended: ``owner_alive``); returns them. A chapter another run is working on is left."""
+    run has ended: ``_run_on``); returns them. A chapter another run is working on is left; one of
+    ``held`` (work dirs whose ``LOCK`` the caller holds) has none."""
     restored: List[str] = []
     seen = set()
     for path in paths:
@@ -550,7 +571,7 @@ def recover(paths: Sequence[str]) -> List[str]:
         journal = _read_journal(store)
         if journal is None:
             continue
-        if owner_alive(journal.get("owner")):
+        if store.work_dir not in held and _run_on(store, journal):
             logger.warning(f"agent: another run is working on {store.work_dir}; its journal is left alone")
             continue
         entries = {stem: e for stem, e in (journal.get("pages") or {}).items() if isinstance(e, dict)}
@@ -600,10 +621,13 @@ class RunGuard:
                 # taken before the journal is read: two runs that start at once cannot both see none
                 guard.locks[store.work_dir] = _lock(store)
                 journal = _read_journal(store)
-                if journal is not None and owner_alive(journal.get("owner")):  # one that cannot lock
+                # with the lock held no other run is on the chapter: the journal's owner is asked only on
+                # a file system that cannot lock (review 2026-11-28 B18)
+                if journal is not None and guard.locks[store.work_dir] is None and owner_alive(journal.get("owner")):
                     raise ChapterBusy(f"another AI Agent run is working on {os.path.dirname(store.work_dir)}; "
                                       f"wait for it to end, or stop it")
-            recover(paths)  # a run that was killed: its pages are put back first
+            # a run that was killed: its pages are put back first
+            recover(paths, held=[d for d, handle in guard.locks.items() if handle is not None])
             for work_dir in guard.locks:
                 # pages recover could not put back (a file in use) keep their entries in the journal:
                 # this run's journal would replace it and lose their copies (review 2026-11-28 B4)

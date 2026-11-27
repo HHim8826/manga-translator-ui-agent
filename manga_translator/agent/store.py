@@ -15,8 +15,10 @@ rebuilt from them at any time.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import shutil
 import tempfile
 import unicodedata
 from typing import Any, Dict, List, Optional
@@ -46,10 +48,24 @@ def write_json_atomic(path: str, data: Any) -> None:
 
 
 def _read_json(path: str, default: Any) -> Any:
+    """``path`` read as JSON; ``default`` when it is not there, or cannot be read (cut short by a power
+    cut or a sync: one such file stopped the run or the window; it is kept as ``<path>.broken``)
+    (review 2026-11-28 B18)."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except FileNotFoundError:
+        return default
+    except (OSError, ValueError) as exc:
+        broken = path + ".broken"
+        try:
+            if not os.path.exists(broken):
+                shutil.copy2(path, broken)
+        except OSError:
+            broken = ""
+        logging.getLogger("manga_translator.agent").warning(
+            f"agent: cannot read {path} ({exc}); it is taken as empty"
+            + (f", the file is kept as {os.path.basename(broken)}" if broken else ""))
         return default
 
 
