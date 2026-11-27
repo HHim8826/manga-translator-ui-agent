@@ -216,6 +216,11 @@ class TextBlock(object):
         self.shadow_color = shadow_color
         self.shadow_offset = shadow_offset
 
+        # 编辑器自订的白框（手动拖动或调整过）：导入翻译并渲染（load_text + save_text）回写 JSON 时原样保留，
+        # 否则渲染一次就丢掉了（review 2026-11-28 B7）
+        self._editor_frame = {key: kwargs[key] for key in ('has_custom_white_frame', 'white_frame_rect_local')
+                              if key in kwargs}
+
         # 可选：从 JSON 读取的渲染中心（优先于 lines 自动计算中心）
         center_override = kwargs.get('center', None)
         self._center_override = None
@@ -461,6 +466,7 @@ class TextBlock(object):
             if not is_redundant_plain_document(self.translation_rich, self.translation):
                 result['translation_rich'] = self.translation_rich
         result.update(render_box_extra)
+        result.update(getattr(self, '_editor_frame', None) or {})
         return result
 
     def get_transformed_region(self, img: np.ndarray, line_idx: int, textheight: int, maxwidth: int = None) -> np.ndarray:

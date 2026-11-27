@@ -188,6 +188,14 @@ def layout_alignment(region: "Region") -> str:
     return ""
 
 
+def drop_boxes(data: dict) -> None:
+    """A structure edit (merge, split, cut, fit) gives a region other lines: the box the render
+    measured and the white frame the user set in the editor belong to the old ones (after a split
+    both parts kept the frame and were both pulled to it) (review 2026-11-28 B7)."""
+    for key in ("render_box_rect_local", "has_custom_white_frame", "white_frame_rect_local"):
+        data.pop(key, None)
+
+
 def custom_frame(data: Optional[dict]) -> Optional[List[float]]:
     """The white frame the user set for a JSON region in the editor (``has_custom_white_frame``): the
     editor sets it when the frame is dragged or resized, and when the font, its size, the stroke,
@@ -564,7 +572,7 @@ class PageDoc:
         keep.data["lines"] = lines
         keep.data["texts"] = [t for t in texts if t]
         keep.data["font_size"] = max((r.font_size for r in ordered), default=keep.font_size)
-        keep.data.pop("render_box_rect_local", None)
+        drop_boxes(keep.data)
         keep.data["center"] = keep.center
         keep.ocr_local = "\n".join(t for t in local if t)
         keep.source_text = keep.translation = None
@@ -616,7 +624,7 @@ class PageDoc:
             part["lines"] = quads
             if region.font_size:  # a small aside gets a smaller size than the text beside it
                 part["font_size"] = max(6, int(round(region.font_size * min(1.0, thickness(quads) / whole))))
-            part.pop("render_box_rect_local", None)
+            drop_boxes(part)
         data["texts"], data["text"] = [], ""
         new_id = max(self.regions) + 1
         new = Region(id=new_id, data=data, origin=region.origin, origin_kind=region.origin_kind,
@@ -784,7 +792,7 @@ class PageDoc:
         new = self._snapped(snap, direction, "cut", reason, region.data)
         self.order.insert(self.order.index(region.id) + 1, new.id)
         region.data["lines"] = lines
-        region.data.pop("render_box_rect_local", None)
+        drop_boxes(region.data)
         region.data["center"] = region.center
         region.source_text = region.translation = None
         region.skipped = False
@@ -874,7 +882,7 @@ class PageDoc:
         region.data["lines"] = snap.lines
         region.data["font_size"] = snap.font_size
         region.data["angle"] = snap.angle
-        region.data.pop("render_box_rect_local", None)
+        drop_boxes(region.data)
         region.data["center"] = region.center
         region.erase = (snap.erase_origin[0], snap.erase_origin[1], snap.erase)
         region.reasons.append(reason)
