@@ -231,7 +231,7 @@ def _note(change, store, *args) -> None:
 def _note_review(store: AgentStore, review: List[dict]) -> None:
     """The pages whose inpaint review failed are written down for a redo, the reviewed ones taken off."""
     for item in review:
-        if item.get("status") == "reviewed":
+        if item.get("status") == "reviewed" or item.get("nothing_to_do"):  # no mask: nothing to redo
             _note(redo_steps.done, store, redo_steps.INPAINT_REVIEW, [item["page"]])
         elif item.get("status") == "error":
             _note(redo_steps.failed, store, redo_steps.INPAINT_REVIEW, [item["page"]], str(item.get("error") or ""),
@@ -925,10 +925,13 @@ async def run_agent_workflow(
                 client.session_id = f"manga-translator-{run_id}-{uuid.uuid4().hex[:8]}"
             try:
                 if redo:
-                    chapter, redone = await _redo_chapter(
-                        pages, store, events, client, settings, target_lang, work_prompt, font_service, bool(breaks),
-                        should_stop, inpaint_backend or PipelineInpaintBackend(translator, config), guard, log,
-                        {"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
+                    try:
+                        chapter, redone = await _redo_chapter(
+                            pages, store, events, client, settings, target_lang, work_prompt, font_service,
+                            bool(breaks), should_stop, inpaint_backend or PipelineInpaintBackend(translator, config),
+                            guard, log, {"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
+                    except AgentStopped:  # the stop button, as in a run (review 2026-11-28 B9)
+                        raise asyncio.CancelledError("Agent workflow stopped by user")
                     reviewed |= redone
                 else:
                     reviewer = None

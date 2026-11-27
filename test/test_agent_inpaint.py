@@ -398,3 +398,39 @@ def test_the_review_offers_lama_large_besides_the_configured_inpainter_not_flux(
     assert offered("lama_mpe") == ["lama_mpe", "lama_large"]
     assert offered("flux2-klein") == ["flux2-klein", "lama_large"]
     assert offered("none") == ["lama_large"]
+
+
+def test_a_region_out_of_operations_can_still_pick_and_undo(tmp_path):
+    """Review 2026-11-28 B9: past ops_per_region the error says pick_candidate the best attempt, but
+    pick_candidate (and undo) counted as operations too and hit the same limit."""
+    grow = ("adjust_mask", {"id": 1, "op": "dilate", "px": 3, "scope": "residual", "reason": "殘字"})
+    script = [_calls(grow), _calls(grow), _calls(("undo", {"id": 1})), _calls(("pick_candidate", {"id": 1, "n": 1, "reason": "最好"})),
+              _calls(("finish_review", {})), _calls(("finish_review", {}))]  # residual text left: asked twice
+    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, script, holes=[(70, 40, 110, 80)],
+                                                                          ops_per_region=1, fill_flat_areas=False)
+    asyncio.run(reviewer.review_page(path))
+    events.close()
+    results = [(e["tool"], e["ok"]) for e in read_events(events.path) if e["type"] == "tool_result"]
+    assert results == [("adjust_mask", True), ("adjust_mask", False),  # the limit
+                       ("undo", True), ("pick_candidate", True), ("finish_review", False), ("finish_review", True)]
+
+
+def test_a_page_without_a_mask_has_nothing_to_review_and_says_its_image(tmp_path):
+    """Review 2026-11-28 B9: a skipped page had no "image", and the redo read item["image"]: KeyError."""
+    reviewer, client, backend, store, events, path, json_path = _reviewer(tmp_path, [])
+    data = json.load(open(json_path, encoding="utf-8"))
+    next(iter(data.values())).pop("mask_raw")
+    open(json_path, "w", encoding="utf-8").write(json.dumps(data))
+    outcome = asyncio.run(reviewer.review_page(path))
+    events.close()
+    assert outcome["status"] == "skipped" and outcome["image"] == path and outcome["nothing_to_do"]
+
+
+def test_attempts_are_written_to_a_folder_outside_the_system_code_page(tmp_path, monkeypatch):
+    """Review 2026-11-28 B9: cv2.imwrite writes nothing there and only returns False."""
+    page = _built()[0]
+    monkeypatch.setattr(inpaint_module.cv2, "imwrite", lambda *a, **k: False)  # what it does there
+    folder = tmp_path / "候補ฟ"
+    entries = page.save_candidates(str(folder))
+    first = entries[next(iter(entries))]["attempts"][0]
+    assert (folder / first["file"]).exists() and (folder / first["mask"]).exists()

@@ -407,3 +407,14 @@ def test_the_page_says_how_to_redo_a_step(app):  # noqa: F811
     assert rows[-1].text(4) == ("Agents Render Held pages=001（Agent Page Redo Failed）Agent Result Separator"
                                 "002（Agent Page Redo None）")
     assert "Agent Page Redo Failed" in page._page_text(page._order[0])
+
+
+def test_a_page_with_nothing_to_inpaint_is_taken_off_the_redo_list(tmp_path):
+    """Review 2026-11-28 B9: a page without a mask came back "skipped" and stayed to redo for ever."""
+    from manga_translator.agent.workflow import _note_review
+    store = AgentStore(str(tmp_path / "manga_translator_work"))
+    redo.failed(store, redo.INPAINT_REVIEW, ["001", "002"], "429")
+    _note_review(store, [{"page": "001", "status": "skipped", "reason": "no mask", "nothing_to_do": True},
+                         {"page": "002", "status": "skipped", "reason": "no inpainter", "nothing_to_do": False}])
+    assert redo.steps_of(redo.read(store), "001") == ()
+    assert redo.steps_of(redo.read(store), "002") == (redo.INPAINT_REVIEW,)

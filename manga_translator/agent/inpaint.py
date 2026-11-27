@@ -41,6 +41,16 @@ ART_REACH = 4
 """90th percentile of the color distance around a mask above which a flat fill shows."""
 
 
+def _write_png(path: str, image: np.ndarray) -> None:
+    """``image`` as a PNG at ``path``, also outside the system code page (``cv2.imwrite`` returns
+    False there and writes nothing); OSError when it cannot be written."""
+    ok, data = cv2.imencode(".png", image)
+    if not ok:
+        raise OSError(f"could not encode {path}")
+    with open(path, "wb") as fh:
+        fh.write(data.tobytes())
+
+
 class InpaintBackend(Protocol):
     def methods(self) -> List[str]:
         """Inpainting models that can run without a download, configured one first."""
@@ -694,8 +704,11 @@ class InpaintPage:
             attempts = []
             for attempt in unit.attempts:
                 name = f"r{unit.id}_a{attempt.n}"
-                cv2.imwrite(os.path.join(folder, name + ".png"), cv2.cvtColor(attempt.result, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(os.path.join(folder, name + "_mask.png"), attempt.mask.astype(np.uint8) * 255)
+                # cv2.imwrite cannot write a path outside the system code page and says so only by
+                # returning False: the editor then found no attempt to switch to (review 2026-11-28 B9)
+                for file_name, image in ((name + ".png", cv2.cvtColor(attempt.result, cv2.COLOR_RGB2BGR)),
+                                         (name + "_mask.png", attempt.mask.astype(np.uint8) * 255)):
+                    _write_png(os.path.join(folder, file_name), image)
                 attempts.append({"method": attempt.method, "ops": attempt.ops, "verdict": attempt.issues or ["pass"],
                                  "residual": [list(b) for b in attempt.residual],
                                  "broken_lines": [list(b) for b in attempt.broken], "line_entries": attempt.entries,

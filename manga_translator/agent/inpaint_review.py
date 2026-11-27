@@ -378,7 +378,9 @@ async def inpaint_region(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
 
 
 def pick_candidate(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
-    unit = s.unit(a)
+    # not one of the region's operations: the limit tells the model to pick one, and counted, the pick
+    # hit the same limit (review 2026-11-28 B9)
+    unit = s.page.unit(a.get("id"))
     attempt = s.page.pick(unit, int(a.get("n", 0)))
     image = pair_image(s.page, unit, s.page.composite(), side=400)
     return ToolResult(text=f"#{unit.id}: chose {attempt.describe()}.", images=[_url(image)],
@@ -386,7 +388,7 @@ def pick_candidate(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
 
 
 def undo(s: ReviewSession, a: Dict[str, Any]) -> ToolResult:
-    unit = s.unit(a)
+    unit = s.page.unit(a.get("id"))  # not counted either: it takes an operation back
     label = s.page.undo(unit)
     return ToolResult(text=f"#{unit.id}: undid {label}; mask {int(unit.work.sum())} px.", summary=f"#{unit.id} {label}")
 
@@ -555,7 +557,9 @@ class InpaintReviewer:
         mask = decode_mask(encoded) if isinstance(encoded, str) else None
         methods = list(self.backend.methods())
         if mask is None or not methods:
-            return {"page": stem, "status": "skipped", "reason": "no mask" if mask is None else "no inpainter"}
+            # a page with no mask has nothing to review; one without an inpainter waits for a redo
+            return {"page": stem, "image": image_path, "status": "skipped",
+                    "reason": "no mask" if mask is None else "no inpainter", "nothing_to_do": mask is None}
         kept = with_kept(doc, self.store.load_sidecar(stem))
         # a note has nothing of its own to erase under it
         regions = [(r.id, r.polygons, tuple(r.bbox)) for r in doc.active_regions()
@@ -565,7 +569,8 @@ class InpaintReviewer:
         page = InpaintPage(array, mask, regions, self.backend, stem, keep=doc.keep_mask(array.shape),
                            kept_boxes=[tuple(r.bbox) for r in kept])
         if not page.units:
-            return {"page": stem, "status": "skipped", "reason": "empty mask"}
+            return {"page": stem, "image": image_path, "status": "skipped", "reason": "empty mask",
+                    "nothing_to_do": True}
         if FILL not in methods:
             methods.append(FILL)
         await page.initial(methods[0], self.settings.fill_flat_areas)
