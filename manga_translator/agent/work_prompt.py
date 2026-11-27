@@ -128,7 +128,13 @@ def load_work_prompt(path: str, target_lang: str = "") -> Optional[WorkPrompt]:
     from ..translators.prompt_loader import load_prompt_file
 
     try:
-        data = load_prompt_file(resolved)
+        with open(resolved, "rb") as fh:
+            blank = not fh.read().decode("utf-8-sig", "replace").strip()
+        data = {} if blank else load_prompt_file(resolved)  # an empty .json logged a parse error
+        if data is None:  # an empty file (blank, or {}) is a work prompt with nothing in it yet
+            from .work_glossary import read_prompt_file
+
+            data = read_prompt_file(resolved)
     except Exception as exc:  # a broken file must not stop the run
         logger.warning(f"agent: cannot read the work prompt file {resolved}: {exc}")
         return None
@@ -136,4 +142,6 @@ def load_work_prompt(path: str, target_lang: str = "") -> Optional[WorkPrompt]:
         return None
     prompt = parse(data, os.path.basename(resolved), target_lang)
     prompt.path = resolved
-    return prompt if prompt.text else None
+    # also with no text: the new terms, the fonts of the work and its memory are kept in and next to
+    # it; None turned them off for a new, empty file (review 2026-11-28 B17)
+    return prompt

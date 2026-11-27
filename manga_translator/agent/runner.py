@@ -288,7 +288,7 @@ class AgentRunner:
     def system_prompt(self) -> str:
         target = language_name(self.target_lang)
         extra = ""
-        if self.work_prompt is not None:
+        if self.work_prompt is not None and self.work_prompt.text:
             extra += (f"\n\nNotes for this work from the user's prompt file {self.work_prompt.name}. Follow them, and "
                       f"use its glossary over your own choices and over the glossary tools:\n{self.work_prompt.text}")
         if self.line_breaks:

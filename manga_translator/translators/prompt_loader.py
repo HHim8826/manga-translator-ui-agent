@@ -47,7 +47,8 @@ def load_prompt_file(path: str) -> Optional[Dict[str, Any]]:
     ext = os.path.splitext(path)[1].lower()
 
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        # utf-8-sig: a JSON file saved with a BOM (Notepad) did not load (review 2026-11-28 B17)
+        with open(path, 'r', encoding='utf-8-sig') as f:
             if ext in ('.yaml', '.yml'):
                 yaml = _get_yaml()
                 if yaml is None:

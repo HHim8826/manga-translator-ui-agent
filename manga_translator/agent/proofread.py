@@ -371,7 +371,7 @@ class Proofreader:
 
     def first_message(self, pages: Dict[str, ProofPage]) -> str:
         parts = []
-        if self.work_prompt is not None:
+        if self.work_prompt is not None and self.work_prompt.text:
             parts.append(f"Notes for this work from the user's prompt file {self.work_prompt.name}; its glossary "
                          f"is authoritative:\n{self.work_prompt.text}")
         parts.append("The translator's memory for this chapter:\n" + self.memory.snapshot_text())

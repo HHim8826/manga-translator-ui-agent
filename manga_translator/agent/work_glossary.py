@@ -18,12 +18,15 @@
 from __future__ import annotations
 
 import codecs
+import contextlib
 import copy
+import errno
 import json
 import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -35,7 +38,13 @@ logger = logging.getLogger("manga_translator.agent")
 WORK_CATEGORIES = ("Person", "Location", "Org", "Item", "Skill", "Creature")
 """The glossary sections of a prompt file, as the prompt editor shows them."""
 
-_GLOSSARY = re.compile(r"^glossary\s*:\s*(#.*)?$")
+_GLOSSARY = re.compile(r"^glossary\s*:\s*(\{\s*\}|null|Null|NULL|~)?\s*(#.*)?$")
+"""The ``glossary`` key at the start of a line, with no value or an empty one: ``glossary: {}`` was not
+found and a second ``glossary:`` was added at the end (the reader took the last one, so the check
+passed) (review 2026-11-28 B17)."""
+LOCK_WAIT_SECONDS = 30.0
+"""How long a run waits for another (a chapter of the same work at the same time) to finish writing the
+prompt file."""
 _KEY = re.compile(r"""^\s*(["']?)([^"':#]+)\1\s*:(.*)$""")
 
 
@@ -132,11 +141,17 @@ def _blank(line: str) -> bool:
     return not line.strip()
 
 
+def _comment(line: str) -> bool:
+    return line.lstrip().startswith("#")
+
+
 def _block_end(lines: List[str], header: int, indent: int) -> int:
-    """First line after ``header`` that no longer belongs to its block."""
+    """First line after ``header`` that no longer belongs to its block. A comment belongs to none: one
+    at the start of a line inside the glossary (``# 地點``) ended it there, and a second ``Location:``
+    was written (review 2026-11-28 B17)."""
     for i in range(header + 1, len(lines)):
         line = lines[i]
-        if _blank(line):
+        if _blank(line) or _comment(line):
             continue
         if _indent(line) < indent or (_indent(line) == indent and not line.lstrip().startswith("- ")):
             return i
@@ -176,12 +191,16 @@ def insert_yaml(text: str, terms: List[NewTerm]) -> str:
     if start is None:
         lines += ([""] if lines and not _blank(lines[-1]) else []) + ["glossary:"]
         start = len(lines) - 1
+    else:
+        found = _GLOSSARY.match(lines[start])
+        if found.group(1):  # glossary: {} -> a block the categories go under
+            lines[start] = "glossary:" + (" " + found.group(2) if found.group(2) else "")
     for category in WORK_CATEGORIES:
         group = [t for t in terms if t.category == category]
         if not group:
             continue
         end = _block_end(lines, start, 0)
-        body = [i for i in range(start + 1, end) if not _blank(lines[i]) and not lines[i].lstrip().startswith("#")]
+        body = [i for i in range(start + 1, end) if not _blank(lines[i]) and not _comment(lines[i])]
         child = _indent(lines[body[0]]) if body else 2
         if child == 0:
             raise ValueError("the glossary block is not a mapping of categories")
@@ -203,6 +222,8 @@ def insert_yaml(text: str, terms: List[NewTerm]) -> str:
             lines[header] = " " * child + f"{category}:"
         block_end = _block_end(lines, header, child)
         content = [i for i in range(header + 1, block_end) if not _blank(lines[i])]
+        while content and _comment(lines[content[-1]]) and _indent(lines[content[-1]]) <= child:
+            content.pop()  # a comment over the next category (or the next key) stays with it
         items = [i for i in content if lines[i].lstrip().startswith("- ")]
         indent = _indent(lines[items[0]]) if items else child + 2
         last = content[-1] if content else header
@@ -258,11 +279,91 @@ def write_terms(path: str, terms: List[NewTerm]) -> None:
         new_text = (insert_yaml(stripped, terms) + body[len(stripped):]).replace("\n", newline)
         if yaml.safe_load(new_text) != expected:
             raise ValueError("the edited file would not read back as the old content plus the new terms")
+        if _duplicate_keys(new_text) > _duplicate_keys(text):  # the reader keeps the last of a key
+            raise ValueError("the edited file would have a key twice")
     backup(path)
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as fh:
-        fh.write((codecs.BOM_UTF8 if bom else b"") + new_text.encode("utf-8"))
-    os.replace(tmp, path)
+    # a file of its own: two runs used the same <path>.tmp, and a failed write left it (review 2026-11-28 B17)
+    handle, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)),
+                                   prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "wb") as fh:
+            fh.write((codecs.BOM_UTF8 if bom else b"") + new_text.encode("utf-8"))
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def _duplicate_keys(text: str) -> int:
+    """How many keys of the YAML ``text`` repeat one before them in the same mapping."""
+    import yaml
+
+    count, stack, seen = 0, [yaml.compose(text, Loader=yaml.SafeLoader)], set()
+    while stack:
+        node = stack.pop()
+        if node is None or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys = [k.value for k, _v in node.value if isinstance(k, yaml.ScalarNode)]
+            count += len(keys) - len(set(keys))
+            stack += [v for _k, v in node.value]
+        elif isinstance(node, yaml.SequenceNode):
+            stack += node.value
+    return count
+
+
+_BUSY = {errno.EACCES, errno.EAGAIN, errno.EDEADLK, getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+         getattr(errno, "EDEADLOCK", errno.EDEADLK)}
+
+
+@contextlib.contextmanager
+def locked(path: str, wait: float = LOCK_WAIT_SECONDS):
+    """The prompt file at ``path`` for this run alone (``agent/<name>.lock`` next to it, held): two runs of
+    one work (two chapters at once) read and wrote it at the same time, and the terms of one were lost
+    (review 2026-11-28 B17). TimeoutError when the other does not finish in ``wait`` seconds."""
+    folder = os.path.join(os.path.dirname(os.path.abspath(path)), "agent")
+    os.makedirs(folder, exist_ok=True)
+    handle = open(os.path.join(folder, os.path.basename(path) + ".lock"), "a+b")
+    held = False
+    try:
+        deadline = time.monotonic() + wait
+        while not held:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+            except OSError as exc:
+                if exc.errno not in _BUSY:
+                    logger.warning(f"agent: cannot lock {path}; writing it without the lock", exc_info=True)
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"another run is writing {os.path.basename(path)}") from exc
+                time.sleep(0.2)
+        yield
+    finally:
+        if held:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                logger.debug("agent: unlocking the prompt file failed (closing it lets go too)", exc_info=True)
+        handle.close()
 
 
 def backup(path: str) -> str:
@@ -289,9 +390,10 @@ def backup(path: str) -> str:
 def update_work_glossary(path: str, memory: AgentMemory, translations: Iterable[str],
                          chapter: str, target_lang: str = "CHT") -> Dict[str, Any]:
     """Save the chapter's new terms; returns what was added and what was left out (by reason)."""
-    data = read_prompt_file(path)
-    terms, skipped = candidates(memory, data, translations, chapter, target_lang)
-    if terms:
-        write_terms(path, terms)
+    with locked(path):  # read as the other run left it, and written before it reads again
+        data = read_prompt_file(path)
+        terms, skipped = candidates(memory, data, translations, chapter, target_lang)
+        if terms:
+            write_terms(path, terms)
     return {"file": os.path.basename(path), "added": [t.brief() for t in terms],
             "skipped": {reason: names for reason, names in skipped.items() if names}}
