@@ -52,7 +52,11 @@ except Exception:  # pragma: no cover - keeps the module importable in isolation
     VALID_LANGUAGES = {}
 
 RECAP_PAGES = 2
-"""A page started afresh sees the translations of this many pages before it."""
+"""A page started afresh sees the translations of at least this many pages before it."""
+RECAP_CHARS = 8000
+"""...and of every earlier page of the chapter, newest first, as long as the recap stays about this long
+(a 16-page chapter's 15 pages are about 4,400 characters). With the last two pages only, chapters 44-47
+of a real work lost the thread: who was talking, what a line answered (2026-11-28)."""
 RECAP_NAMES = 30
 """Up to this many earlier pages are named one by one in the recap; more by the first and the last
 (a long chapter resent every name on every page)."""
@@ -123,10 +127,12 @@ DOUBLE_READ = {
 
 FLOW = {
     True: ("You work through one chapter page by page in a single conversation, so earlier pages are your context "
-           "for later ones.", "Update the story summary every few pages with story_summary_update."),
+           "for later ones; search_past_translations also searches the work's earlier chapters.", "Update the story summary every few pages with story_summary_update."),
     False: ("You work through one chapter page by page, and each page starts a new conversation: what earlier pages "
             "settled reaches you through the glossary, character list and story summary below, the translations of "
-            "the last pages at the top of the page message, and search_past_translations.",
+            "the earlier pages at the top of the page message (read them: they are the story so far, who speaks and "
+            "what this page answers), and search_past_translations, which also searches the work's earlier "
+            "chapters.",
             "Update the story summary with story_summary_update every few pages and whenever something happens that "
             "later pages need to know: they see the summary, not this page. Nor do they see who is who: when someone "
             "speaks or is spoken to on this page and the character list lacks them, add them with character_upsert, "
@@ -152,7 +158,7 @@ For every page:
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. When a detected box took in some of the art (its font size then reads too large), cut off part of its text, or read two lines as one, fit_region it to the text. A label written on a slant (along a road or a roof) gets a slanted box from add_region and fit_region, and its translation is drawn along it; an upright box around a slanted label reads a huge font, so fit_region it.
    Text written over detailed art, where erasing it would break the drawing and its translation in its place would not hide the damage (a map's labels on screentone between dashed lines, words across hatching, hair, a face or an object): note_region it instead of set_text. Its strokes stay as drawn and its translation goes beside it in brackets, smaller, on the spot the program finds: call it without box. fit_region a slanted label first, so the note follows the slant; a box that missed the text is fixed with fit_region or add_region, not worked around with a note. Look at the image the result shows: lines, screentone and panel borders under a note are fine. Call it again with box (an empty spot right beside the text to center the note on; its size stays) only when the note covers a face or other text: a note moved away from its text no longer reads as its translation, and the program refuses a spot too far. Only that text: most text on a busy page, a map too, is still translated in its place: a label in its own box, circle or frame, a big name with its own white outline on a flat tone (a hill's name on its screentone), text in a bubble or a caption, on plain paper (an aside that a bubble's outline touches too), a flat tone or a gradient (white-outlined text on screentone erases cleanly). note_region refuses text on flat ground. Sound effects stay skipped. When add_region catches a neighbouring label too, undo and add it again with exact: true. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
-4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear.
+4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear. A line that points back to something earlier (また, いつもの, あの時, 前みたいに: again, the usual, that time) may mean a running joke or an event of an earlier chapter: search_past_translations the word first and follow how it was translated there, instead of translating it word for word.
    {invented_script}
 5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Save the whole page in one response: every set_text and skip_region call (plus set_reading_order and glossary or character updates) together.
 6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region and split_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
@@ -230,7 +236,8 @@ class AgentRunner:
                  work_prompt: Optional[WorkPrompt] = None, fonts=None, line_breaks: str = "",
                  font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None,
                  preprocess_failed: Optional[Dict[str, str]] = None, revise: bool = False,
-                 revise_fonts=None, default_font: str = "", render_backend=None):
+                 revise_fonts=None, default_font: str = "", render_backend=None, work_memory: str = "",
+                 prompt_name: str = ""):
         self.settings = settings
         self.revise = revise
         """The pages were finished by an earlier run: check them again (``revise.py``)."""
@@ -282,6 +289,10 @@ class AgentRunner:
                        "recall_requests": 0}
         self._recall_tasks: Dict[int, asyncio.Future] = {}
         self._load_past()
+        if work_memory or prompt_name:  # the work's earlier chapters, for search_past_translations
+            from .work_memory import EarlierTranslations
+
+            self.session.earlier_chapters = EarlierTranslations(work_memory, store.work_dir, prompt_name)
         self._build_preamble()
 
     # --- conversation -------------------------------------------------------
@@ -493,21 +504,37 @@ class AgentRunner:
         earlier = self._earlier_pages(current)
         if not earlier:
             return ""
-        last = set(earlier[-RECAP_PAGES:])
         by_page: Dict[str, List[dict]] = {}
         for p in self.session.past:
-            if p["page"] in last:
-                by_page.setdefault(p["page"], []).append(p)
-        named = (", ".join(earlier) if len(earlier) <= RECAP_NAMES
-                 else f"{len(earlier)} pages, {earlier[0]} to {earlier[-1]}")
-        lines = ["Pages before this one, already translated: " + named + ". Their translations "
-                 "are saved; use search_past_translations to see how something was translated before."]
-        for stem in earlier[-RECAP_PAGES:]:
-            entries = by_page.get(stem)
+            by_page.setdefault(p["page"], []).append(p)
+
+        def named(stems: List[str]) -> str:
+            return ", ".join(stems) if len(stems) <= RECAP_NAMES else f"{len(stems)} pages, {stems[0]} to {stems[-1]}"
+
+        # every earlier page, the newest first while the recap stays within RECAP_CHARS (the last
+        # RECAP_PAGES always); the older ones are named, for search_past_translations
+        blocks: List[List[str]] = []
+        used = 0
+        shown = 0
+        for index in range(len(earlier) - 1, -1, -1):
+            entries = by_page.get(earlier[index])
+            block = [f"Page {earlier[index]} as translated:"] + [
+                f"- {'#' + str(p['id']) + ' ' if p['id'] is not None else ''}{p['source'] or ''} → {p['translation']}"
+                for p in entries or []]
+            size = sum(len(line) + 1 for line in block)
+            if len(earlier) - index > RECAP_PAGES and used + size > RECAP_CHARS:
+                break
+            shown = len(earlier) - index
             if entries:
-                lines.append(f"Page {stem} as translated:")
-                lines += [f"- {'#' + str(p['id']) + ' ' if p['id'] is not None else ''}{p['source'] or ''} → "
-                          f"{p['translation']}" for p in entries]
+                blocks.append(block)
+                used += size
+        lines = ["Pages before this one, already translated: " + named(earlier) + ". Their translations "
+                 "are saved; use search_past_translations to see how something was translated before."]
+        left = earlier[:len(earlier) - shown]
+        if left:
+            lines.append(f"Not repeated here (search_past_translations finds them): {named(left)}.")
+        for block in reversed(blocks):
+            lines += block
         return "\n".join(lines) + "\n\n"
 
     def compact(self, reason: str) -> None:

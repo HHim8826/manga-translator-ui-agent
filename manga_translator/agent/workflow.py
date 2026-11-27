@@ -1040,7 +1040,8 @@ async def run_agent_workflow(
                                                    **({"work_memory": seeded} if seeded else {})},
                                          preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
                                          default_font=getattr(getattr(config, "render", None), "font_family", "") or "",
-                                         render_backend=render_backend)
+                                         render_backend=render_backend, work_memory=work_memory,
+                                         prompt_name=prompt_name)
                     review: List[dict] = []
                     proof_task: Optional[asyncio.Future] = None
                     try:

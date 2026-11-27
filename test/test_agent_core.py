@@ -384,10 +384,10 @@ def test_runner_flags_failed_page_and_continues(tmp_path):
 
 
 
-def test_each_page_starts_afresh_with_the_last_pages_translations(tmp_path):
+def test_each_page_starts_afresh_with_the_earlier_pages_translations(tmp_path):
     """Every request resends the conversation: a page carries no earlier page's messages or images, only
-    the preamble (the same, so it stays cached) and what the last RECAP_PAGES pages were translated as."""
-    from manga_translator.agent.runner import RECAP_PAGES
+    the preamble (the same, so it stays cached) and what the earlier pages were translated as (all of
+    them within RECAP_CHARS: with the last two only, a real work lost the thread, 2026-11-28)."""
 
     pages = [make_page(tmp_path, f"{i:03d}") for i in range(1, 5)]
     runner, client, store, events = _runner(tmp_path, pages, _finish_page() * 4)
@@ -400,8 +400,9 @@ def test_each_page_starts_afresh_with_the_last_pages_translations(tmp_path):
     assert len(last) == 3 and len(first) == 3, "preamble + the page's own message, nothing from earlier pages"
     text = last[2]["content"][0]["text"]
     assert text.startswith("Pages before this one, already translated: 001, 002, 003.")
-    assert "Page 001 as translated" not in text and RECAP_PAGES == 2
-    assert "Page 002 as translated:\n- #1 text1 → 譯1" in text and "Page 003 as translated:" in text
+    assert "Not repeated here" not in text
+    assert text.index("Page 001 as translated:\n- #1 text1 → 譯1") < text.index("Page 002 as translated:") \
+        < text.index("Page 003 as translated:")
     assert sum(1 for part in last[2]["content"] if part.get("type") == "image_url") == 1  # page 4 only
     assert not any(e["type"] == "compact" for e in read_events(events.path))
 

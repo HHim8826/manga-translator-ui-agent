@@ -65,6 +65,8 @@ class AgentSession:
         self.page_array: Optional[np.ndarray] = None
         self.last_view: Optional[Dict[str, Any]] = None
         self.past: List[Dict[str, Any]] = []
+        self.earlier_chapters = None
+        """``work_memory.EarlierTranslations`` of the work's earlier chapters, or None."""
         self.last_prompt_tokens = 0
         self.page_steps = 0
         self.work_terms: List[Any] = []
@@ -740,9 +742,19 @@ def search_past_translations(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     q = normalize(a.get("query", ""))
     if not q:
         raise RegionError("query is required")
-    hits = [p for p in s.past if q in normalize(p["source"]) or q in normalize(p["translation"])][:20]
-    return ToolResult(text=json.dumps(hits, ensure_ascii=False) if hits else "No earlier translation matches.",
+
+    def matches(p: Dict[str, Any]) -> bool:
+        return q in normalize(p.get("source") or "") or q in normalize(p.get("translation") or "")
+
+    hits = [p for p in s.past if matches(p)][:PAST_HITS]
+    if s.earlier_chapters is not None and len(hits) < PAST_HITS:  # then the earlier chapters, the nearest first
+        hits += [p for p in s.earlier_chapters.entries() if matches(p)][:PAST_HITS - len(hits)]
+    where = "this chapter" + (" and the work's earlier chapters" if s.earlier_chapters is not None else "")
+    return ToolResult(text=json.dumps(hits, ensure_ascii=False) if hits else f"No earlier translation matches ({where}).",
                       summary=f"{_short(a.get('query', ''), 20)}: {len(hits)}")
+
+
+PAST_HITS = 20
 
 
 # --- flow ---------------------------------------------------------------------
@@ -945,7 +957,8 @@ TOOLS: List[Tool] = [
     Tool("story_summary_update", "Replace the running story summary (keep it under ~300 words).",
          _obj({"summary": {"type": "string"}, "reason": REASON}, ["summary", "reason"]), story_summary_update,
          writes=True),
-    Tool("search_past_translations", "Search earlier pages' source text and translations in this run.",
+    Tool("search_past_translations", "Search the source text and translations of this chapter's earlier pages, then "
+         "of the work's earlier chapters (their hits name the chapter).",
          _obj({"query": {"type": "string"}}, ["query"]), search_past_translations),
     Tool("flag_for_review", "Put something on the human review list and keep going. Types: " + ", ".join(FLAG_TYPES),
          _obj({"id": ID, "type": {"type": "string", "enum": list(FLAG_TYPES)}, "reason": REASON},

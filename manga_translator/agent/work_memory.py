@@ -29,7 +29,7 @@ import os
 import re
 import time
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .store import AgentMemory, _read_json, normalize, write_json_atomic
 
@@ -273,6 +273,82 @@ def _prompt_of_last_run(chapter_work_dir: str) -> Optional[str]:
             prompt = first.get("work_prompt") or {}
             return prompt.get("name") if isinstance(prompt, dict) else None
     return None
+
+
+def earlier_chapters(work_dir: str, chapter_work_dir: str, prompt_name: str = "") -> List[Tuple[str, str]]:
+    """(name, folder) of the work's chapters before the one of ``chapter_work_dir``, the nearest first:
+    the chapters in the work's memory (``chapters/``), and the folders next to this one whose last run
+    used the same prompt file (as ``bootstrap`` takes them)."""
+    chapter_folder = os.path.dirname(os.path.abspath(chapter_work_dir))
+    this = (os.path.basename(chapter_folder), _where(chapter_folder))
+    found: Dict[str, str] = {}
+    for name, folder, _layer in _layers(work_dir) if work_dir else []:
+        if folder and os.path.isdir(folder):
+            found.setdefault(_where(folder), name)
+    parent, work_name = os.path.dirname(chapter_folder), os.path.basename(chapter_work_dir)
+    try:
+        siblings = [n for n in os.listdir(parent) if os.path.isdir(os.path.join(parent, n))]
+    except OSError:
+        siblings = []
+    for name in siblings:
+        folder = os.path.join(parent, name)
+        if prompt_name and _where(folder) not in found and \
+                _prompt_of_last_run(os.path.join(folder, work_name)) == prompt_name:
+            found[_where(folder)] = name
+    chapters = [(name, folder) for folder, name in found.items()
+                if folder != this[1] and _key(name, folder) < _key(*this)]
+    return sorted(chapters, key=lambda item: _key(*item), reverse=True)
+
+
+def _plain(text: Any) -> str:
+    return str(text or "").replace("[BR]", "").replace("<br>", "").strip()
+
+
+def chapter_translations(chapter_work_dir: str, name: str) -> List[Dict[str, Any]]:
+    """The translations in a chapter's page JSON files, as the user left them, page by page."""
+    folder = os.path.join(chapter_work_dir, "json")
+    try:
+        files = sorted((f for f in os.listdir(folder) if f.endswith("_translations.json")), key=chapter_order)
+    except OSError:
+        return []
+    out: List[Dict[str, Any]] = []
+    for file_name in files:
+        try:  # read only: another chapter's broken file is left as it is
+            with open(os.path.join(folder, file_name), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        page = file_name[: -len("_translations.json")]
+        for entry in data.values() if isinstance(data, dict) else []:
+            for region in (entry.get("regions") or []) if isinstance(entry, dict) else []:
+                if not isinstance(region, dict):
+                    continue
+                translation = _plain(region.get("translation"))
+                if translation:
+                    source = region.get("text") or "".join(str(t) for t in region.get("texts") or [])
+                    out.append({"chapter": name, "page": page, "source": _plain(source), "translation": translation})
+    return out
+
+
+class EarlierTranslations:
+    """The translations of the work's earlier chapters (``earlier_chapters``) for search_past_translations,
+    read at the first search: a line of chapter 47 that pointed back to chapter 33's running joke
+    (またショッピング) was translated word for word, as nothing told the agent about it (2026-11-28)."""
+
+    def __init__(self, work_dir: str, chapter_work_dir: str, prompt_name: str = ""):
+        self.work_dir, self.chapter_work_dir, self.prompt_name = work_dir, chapter_work_dir, prompt_name
+        self._entries: Optional[List[Dict[str, Any]]] = None
+
+    def entries(self) -> List[Dict[str, Any]]:
+        if self._entries is None:
+            self._entries = []
+            work_name = os.path.basename(self.chapter_work_dir)
+            try:
+                for name, folder in earlier_chapters(self.work_dir, self.chapter_work_dir, self.prompt_name):
+                    self._entries += chapter_translations(os.path.join(folder, work_name), name)
+            except Exception:
+                logger.warning("agent: the earlier chapters' translations could not be read", exc_info=True)
+        return self._entries
 
 
 def bootstrap(work_dir: str, chapter_work_dir: str, prompt_name: str) -> List[str]:
