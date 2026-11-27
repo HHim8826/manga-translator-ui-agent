@@ -151,6 +151,24 @@ def save_example_config() -> bool:
     return os.environ.get(SAVE_EXAMPLE_CONFIG_ENV, "").strip() == "1"
 
 
+def sync_template(example: Any) -> Dict[str, Any]:
+    """The keys a user's ``config.json`` keeps at start (``ConfigService._sync_user_config``): the
+    template's, and every setting of the settings model (``AppSettings``) with its default; the
+    template's value first. A template written before a setting was added dropped the user's value of
+    that setting at every start: a clean checkout's ``config-example.json`` has no ``agent`` section
+    and no ``cli.agent_workflow``, and the release package's lacked three ``agent`` keys (review
+    2026-11-28 B1)."""
+
+    def merged(defaults: Dict[str, Any], given: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(defaults)
+        for key, value in given.items():
+            inner = out.get(key)
+            out[key] = merged(inner, value) if isinstance(value, dict) and isinstance(inner, dict) else value
+        return out
+
+    return merged(AppSettings().model_dump(mode="json"), example if isinstance(example, dict) else {})
+
+
 class ConfigService(QObject):
     """配置管理服务"""
 
@@ -1052,9 +1070,9 @@ class ConfigService(QObject):
             return
 
         try:
-            # 读取默认配置（作为模板）
+            # 读取默认配置（作为模板），加上设置模型的全部字段
             with open(self.default_config_path, "r", encoding="utf-8") as f:
-                default_data = migrate_legacy_custom_api_params_config(json.load(f))
+                default_data = sync_template(migrate_legacy_custom_api_params_config(json.load(f)))
 
             # 读取用户配置
             with open(self.user_config_path, "r", encoding="utf-8") as f:
