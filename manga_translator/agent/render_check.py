@@ -95,7 +95,8 @@ def lines_across(polygons, direction: str) -> tuple:
             low, high = min(low, a), max(high, b)
         else:
             count, (low, high) = count + 1, (a, b)
-    return count, bands[-1][1] - bands[0][0]
+    # sorted by where they start: the last one need not end last (review 2026-11-28 B16)
+    return count, max(b for _, b in bands) - bands[0][0]
 
 
 def _angle(region: "Region") -> float:

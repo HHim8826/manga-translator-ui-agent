@@ -421,6 +421,10 @@ class FontCatalog:
                 if face.value:
                     resolved = resolve(face.value)
                     if resolved:
+                        if resolved != face.value:  # found by the name Qt knows it by too (review 2026-11-28 B16)
+                            group = self._by_name.setdefault(_split(resolved)[0].casefold(), [])
+                            if face not in group:
+                                group.append(face)
                         face.value = resolved
                     else:
                         self.addressable.discard(id(face))
@@ -742,6 +746,34 @@ def ink_of(rendered: np.ndarray, canvas_color: Sequence[int], region_box: Sequen
     return Ink((int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())), float(1 - inside.mean()))
 
 
+def _local_renderer(config):
+    """``config`` drawn with the program's own renderer: the font and size checks render each region
+    alone, several times, and an AI renderer (openai_renderer, gemini_renderer) made a paid image
+    request each time (review 2026-11-28 B16). The others are left as they are."""
+    render = getattr(config, "render", None)
+    renderer = getattr(render, "renderer", None)
+    if str(getattr(renderer, "value", renderer) or "") not in ("openai_renderer", "gemini_renderer"):
+        return config
+    try:
+        from ..config import Renderer
+
+        local = copy.deepcopy(config)
+        local.render.renderer = Renderer.default
+        return local
+    except Exception:
+        logger.warning("fonts: the checks could not use the local renderer", exc_info=True)
+        return config
+
+
+def _light_text(block) -> bool:
+    try:
+        fg, _bg = block.get_font_colors()
+        r, g, b = (float(v) for v in fg[:3])
+    except Exception:
+        return False
+    return 0.299 * r + 0.587 * g + 0.114 * b > 160
+
+
 class PipelineFontBackend:
     """Renders one region alone with the translator's renderer and config, on a plain canvas,
     with the same bubble mask the real render uses."""
@@ -750,7 +782,7 @@ class PipelineFontBackend:
 
     def __init__(self, translator, config):
         self.translator = translator
-        self.config = config
+        self.config = _local_renderer(config)
         self._pages: Dict[str, tuple] = {}
         self._images: Dict[str, tuple] = {}
         self._drafts: Dict[str, tuple] = {}
@@ -813,7 +845,10 @@ class PipelineFontBackend:
             return None
         img, _bubble = self._image(image_path)
         bubble_mask, skip_scaling, skip_replacements = self._drafts[image_path]
-        canvas = np.full_like(img, 255)
+        # light text is drawn on black and the picture turned over: on white it was not there
+        # (review 2026-11-28 B16)
+        light = _light_text(block)
+        canvas = np.full_like(img, 0 if light else 255)
         try:
             out = await dispatch_rendering(canvas, [copy.deepcopy(block)], self.config, img,
                                            skip_font_scaling=skip_scaling, skip_text_replacements=skip_replacements,
@@ -821,7 +856,8 @@ class PipelineFontBackend:
         except Exception:
             logger.warning("fonts: a region could not be rendered for the size check", exc_info=True)
             return None
-        return np.asarray(out[0] if isinstance(out, tuple) else out)
+        out = np.asarray(out[0] if isinstance(out, tuple) else out)
+        return 255 - out if light else out
 
     async def ink(self, image_path: str, index: int, font: str) -> Optional[Ink]:
         from ..rendering import dispatch as dispatch_rendering
