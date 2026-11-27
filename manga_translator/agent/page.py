@@ -407,6 +407,9 @@ class PageDoc:
         self.checks: List[dict] = []
         """Program check issues left when the page was finished (see checks.py)."""
         self.note = ""
+        self.page_note = ""
+        """What happens on the page, in a sentence or two (mark_page_done page_note): the later pages
+        start without this one, and the chapter's synopsis is written from it (``synopses.py``)."""
         self._history: List[tuple] = []
         self._next_link = 1
         self.revise = False
@@ -1215,6 +1218,7 @@ class PageDoc:
             "agent_confidence": self.agent_confidence,
             "check_score": self.check_score,
             "note": self.note,
+            "page_note": self.page_note,
             "order": self.order,
             "regions": [
                 {

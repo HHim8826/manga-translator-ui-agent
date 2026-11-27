@@ -275,10 +275,28 @@ def _prompt_of_last_run(chapter_work_dir: str) -> Optional[str]:
     return None
 
 
+def _has_runs(chapter_work_dir: str) -> bool:
+    """Whether the agent ever ran on the chapter (a run log in ``agent/runs``)."""
+    try:
+        return any(n.endswith(".jsonl") for n in os.listdir(os.path.join(chapter_work_dir, "agent", "runs")))
+    except OSError:
+        return False
+
+
+def _has_translations(chapter_work_dir: str) -> bool:
+    try:
+        return any(n.endswith("_translations.json") for n in os.listdir(os.path.join(chapter_work_dir, "json")))
+    except OSError:
+        return False
+
+
 def earlier_chapters(work_dir: str, chapter_work_dir: str, prompt_name: str = "") -> List[Tuple[str, str]]:
     """(name, folder) of the work's chapters before the one of ``chapter_work_dir``, the nearest first:
-    the chapters in the work's memory (``chapters/``), and the folders next to this one whose last run
-    used the same prompt file (as ``bootstrap`` takes them)."""
+    the chapters in the work's memory (``chapters/``); the folders next to this one or next to those
+    whose last run used the same prompt file (as ``bootstrap`` takes them); and, in a folder that holds
+    one of these chapters, the chapters translated without the agent (translations but no run log): a
+    real work's first chapters were translated before the agent, and its later chapters point back to
+    them as much as to any other (2026-11-28)."""
     chapter_folder = os.path.dirname(os.path.abspath(chapter_work_dir))
     this = (os.path.basename(chapter_folder), _where(chapter_folder))
     found: Dict[str, str] = {}
@@ -286,15 +304,31 @@ def earlier_chapters(work_dir: str, chapter_work_dir: str, prompt_name: str = ""
         if folder and os.path.isdir(folder):
             found.setdefault(_where(folder), name)
     parent, work_name = os.path.dirname(chapter_folder), os.path.basename(chapter_work_dir)
-    try:
-        siblings = [n for n in os.listdir(parent) if os.path.isdir(os.path.join(parent, n))]
-    except OSError:
-        siblings = []
-    for name in siblings:
-        folder = os.path.join(parent, name)
-        if prompt_name and _where(folder) not in found and \
-                _prompt_of_last_run(os.path.join(folder, work_name)) == prompt_name:
-            found[_where(folder)] = name
+    without_agent: Dict[str, str] = {}
+
+    def scan(parent_dir: str) -> None:
+        try:
+            names = [n for n in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, n))]
+        except OSError:
+            return
+        for name in names:
+            where = _where(os.path.join(parent_dir, name))
+            if where in found or where == this[1]:
+                continue
+            other = os.path.join(where, work_name)
+            if not _has_runs(other):
+                without_agent.setdefault(where, name)
+            elif prompt_name and _prompt_of_last_run(other) == prompt_name:
+                found[where] = name
+
+    scan(parent)
+    for home in sorted({os.path.dirname(folder) for folder in found} - {_where(parent)}):
+        scan(home)
+    homes = {os.path.dirname(folder) for folder in found}
+    for where, name in without_agent.items():
+        if where not in found and os.path.dirname(where) in homes \
+                and _has_translations(os.path.join(where, work_name)):
+            found[where] = name
     chapters = [(name, folder) for folder, name in found.items()
                 if folder != this[1] and _key(name, folder) < _key(*this)]
     return sorted(chapters, key=lambda item: _key(*item), reverse=True)

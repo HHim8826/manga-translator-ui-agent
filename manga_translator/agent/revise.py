@@ -248,6 +248,7 @@ def load_page(image_path: str, store: AgentStore, lock: bool = True, fonts=None,
     # the inpaint review is not run again: its flags stay until the user deals with them, old ones too
     doc.flags = [f for f in side.get("review_flags") or [] if isinstance(f, dict) and flag_agent(f, side) == "inpaint"]
     doc.sidecar_extra = {k: side[k] for k in KEPT_SIDECAR if k in side}
+    doc.page_note = str(side.get("page_note") or "")  # kept unless the check writes a new one
     return doc
 
 

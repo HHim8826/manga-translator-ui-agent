@@ -21,7 +21,7 @@ from .events import EventLog
 from .notes import bracketed
 from .page import BREAK, NOTED, Centers, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
-from .store import AgentMemory, AgentStore, write_json_atomic
+from .store import AgentMemory, AgentStore, normalize, write_json_atomic
 from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
@@ -32,7 +32,8 @@ Check each region for:
 - meaning: mistranslations, omissions, the wrong speaker or addressee, the wrong level of politeness, jokes and wordplay that were lost;
 - names and terms: the glossary and character list below, and the same name or term translated the same way on every page;
 - language: natural {target} manga dialogue that fits the character; typos; wrong characters for {target} (for example simplified or Japanese forms such as 値 for 值 in Traditional Chinese); punctuation that matches the rest of the chapter;
-- length: a translation much longer than its box holds.
+- length: a translation much longer than its box holds;
+- what a line points back to: a line that refers to something earlier (また, いつもの, あの時, この前, 例の, 相変わらず, 〜した件: again, the usual, that time, last time, that thing, the business with) or carries a running joke must say what it refers to, not only its words; the earlier pages of this chapter are in the listing{context}.
 
 {invented_script} The translator gives such regions the meaning only on purpose: do not add the readings back.
 
@@ -72,6 +73,15 @@ TOOLS = [
         "name": "finish_proofread", "description": "End the proofreading, with an optional note for the human.",
         "parameters": _obj({"note": {"type": "string"}}, [])}},
 ]
+SEARCH_TOOL = {"type": "function", "function": {
+    "name": "search_past_translations",
+    "description": "Search the source text and translations of the work's earlier chapters, the nearest first "
+                   "(this chapter is in the listing).",
+    "parameters": _obj({"query": {"type": "string"}}, ["query"])}}
+"""Only with the work's earlier chapters (``work_memory.EarlierTranslations``)."""
+SEARCH_HITS = 20
+CONTEXT_SYNOPSES = "; the chapter synopses below say what happened before this chapter"
+CONTEXT_SEARCH = ", and search_past_translations shows how the earlier chapters translated a word"
 
 
 class ProofError(ValueError):
@@ -231,8 +241,10 @@ def _one_line(text: str) -> str:
 
 class ProofSession:
     def __init__(self, pages: Dict[str, ProofPage], work_terms, memory: AgentMemory, target_lang: str,
-                 line_breaks: bool = False):
+                 line_breaks: bool = False, earlier=None):
         self.pages = pages
+        self.earlier = earlier
+        """``work_memory.EarlierTranslations`` for search_past_translations, or None."""
         self.work_terms = work_terms
         self.memory = memory
         self.target_lang = target_lang
@@ -332,6 +344,18 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
         if rid is not None:
             page.on_list.append((rid, "uncertain_translation", reason))
         return "Added to the review list.", f"{page.stem}" + (f" #{rid}" if rid else ""), []
+    if name == "search_past_translations" and s.earlier is not None:
+        query = str(args.get("query") or "")
+        q = normalize(query)
+        if not q:
+            raise ProofError("query is required")
+        hits = [e for e in s.earlier.entries()
+                if q in normalize(e.get("source") or "") or q in normalize(e.get("translation") or "")][:SEARCH_HITS]
+        if not hits:
+            return "No match in the work's earlier chapters.", f"{_short(query, 20)}: 0", []
+        lines = [f"{e.get('chapter')} {e.get('page')}: 「{_one_line(e.get('source') or '')}」 → "
+                 f"「{_one_line(e.get('translation') or '')}」" for e in hits]
+        return "\n".join(lines), f"{_short(query, 20)}: {len(hits)}", []
     if name == "finish_proofread":
         s.note = str(args.get("note") or "")
         s.finished = True
@@ -347,8 +371,13 @@ def _short(text: str, limit: int = 24) -> str:
 class Proofreader:
     def __init__(self, settings: AgentSettings, client, store: AgentStore, events: EventLog, target_lang: str,
                  memory: AgentMemory, work_prompt=None, should_stop: Callable[[], bool] = lambda: False,
-                 line_breaks: bool = False, locked: Optional[Dict[str, Iterable[int]]] = None):
+                 line_breaks: bool = False, locked: Optional[Dict[str, Iterable[int]]] = None,
+                 synopses: str = "", earlier=None):
         self.settings = settings
+        self.synopses = synopses
+        """What happened in the work's earlier chapters (``synopses.prompt_text``), in the first message."""
+        self.earlier = earlier
+        """``work_memory.EarlierTranslations`` of the work's earlier chapters, or None."""
         self.client = client
         self.store = store
         self.events = events
@@ -366,8 +395,14 @@ class Proofreader:
     def system_prompt(self) -> str:
         from .runner import INVENTED_SCRIPT, language_name
         target = language_name(self.target_lang)
+        context = (CONTEXT_SYNOPSES if getattr(self, "synopses", "") else "") \
+            + (CONTEXT_SEARCH if getattr(self, "earlier", None) is not None else "")
         return PROOF_PROMPT.format(target=target, reason_lang=target, invented_script=INVENTED_SCRIPT,
-                                   per_round=PAGES_PER_ROUND, extra=PROOF_BREAKS if self.line_breaks else "")
+                                   per_round=PAGES_PER_ROUND, extra=PROOF_BREAKS if self.line_breaks else "",
+                                   context=context)
+
+    def tools(self) -> List[dict]:
+        return TOOLS + ([SEARCH_TOOL] if self.earlier is not None else [])
 
     def first_message(self, pages: Dict[str, ProofPage]) -> str:
         parts = []
@@ -375,6 +410,8 @@ class Proofreader:
             parts.append(f"Notes for this work from the user's prompt file {self.work_prompt.name}; its glossary "
                          f"is authoritative:\n{self.work_prompt.text}")
         parts.append("The translator's memory for this chapter:\n" + self.memory.snapshot_text())
+        if self.synopses:
+            parts.append(self.synopses)
         listed = []
         count = 0
         for stem, page in pages.items():
@@ -406,7 +443,7 @@ class Proofreader:
         if not regions:
             return {"status": "skipped", "revised": 0, "flagged": 0}
         session = ProofSession(pages, getattr(self.work_prompt, "terms", []) if self.work_prompt else [],
-                               self.memory, self.target_lang, self.line_breaks)
+                               self.memory, self.target_lang, self.line_breaks, earlier=self.earlier)
         self.events.emit("proofread_start", agent="proofread", pages=len(pages), regions=regions)
         messages: List[dict] = [{"role": "system", "content": self.system_prompt()},
                                 {"role": "user", "content": self.first_message(pages)}]
@@ -437,7 +474,7 @@ class Proofreader:
             session.steps = steps
             if self.should_stop():
                 raise AgentStopped()
-            reply = await self.client.complete(messages, TOOLS, "required", effort=self.settings.reasoning_effort,
+            reply = await self.client.complete(messages, self.tools(), "required", effort=self.settings.reasoning_effort,
                                                cache_key="proofread")
             for key in ("prompt_tokens", "completion_tokens", "cached_tokens"):
                 self.totals[key] += getattr(reply, key)

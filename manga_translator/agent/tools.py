@@ -65,6 +65,8 @@ class AgentSession:
         self.page_array: Optional[np.ndarray] = None
         self.last_view: Optional[Dict[str, Any]] = None
         self.past: List[Dict[str, Any]] = []
+        self.page_notes: Dict[str, str] = {}
+        """Page stem -> what happens on it (mark_page_done page_note), for the recap of the later pages."""
         self.earlier_chapters = None
         """``work_memory.EarlierTranslations`` of the work's earlier chapters, or None."""
         self.last_prompt_tokens = 0
@@ -116,6 +118,8 @@ class AgentSession:
             if region.translation:
                 self.past.append({"page": self.doc.stem, "id": region.id, "source": region.source_text or region.ocr_local,
                                   "translation": region.translation, "category": region.category})
+        if self.doc.page_note:
+            self.page_notes[self.doc.stem] = self.doc.page_note
 
     def marks(self):
         out = []
@@ -755,6 +759,7 @@ def search_past_translations(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
 
 
 PAST_HITS = 20
+PAGE_NOTE_CHARS = 400
 
 
 # --- flow ---------------------------------------------------------------------
@@ -796,6 +801,9 @@ def mark_page_done(s: AgentSession, a: Dict[str, Any]) -> ToolResult:
     doc.confidence = round(min(score, agent_confidence), 3)
     doc.checks = [i.to_dict() for i in issues]
     doc.note = a.get("note", "")
+    page_note = " ".join(str(a.get("page_note") or "").split())[:PAGE_NOTE_CHARS]
+    if page_note:  # a check that gives none keeps the earlier run's
+        doc.page_note = page_note
 
     def add_flag(region, flag_type, reason):
         entry = doc.flag(region, flag_type, reason)
@@ -967,6 +975,11 @@ TOOLS: List[Tool] = [
          "call also returns the program checks (kana left, glossary, second reads, length) to fix; the second "
          "call finishes.",
          _obj({"confidence": {"type": "number", "description": "0-1 for the whole page"},
+               "page_note": {"type": "string", "description": (
+                   "What happens on this page in one or two sentences, in the target language: who does "
+                   "what to whom and where, and what a later line may point back to (a joke, a nickname, "
+                   "a promise). The later pages start without this one and read it; so does the "
+                   "chapter's synopsis.")},
                "note": {"type": "string", "description": "Anything the human should know about this page"}},
               ["confidence"]), mark_page_done, writes=True),
     Tool("budget_status", "Context size and steps used on this page.", _obj({}, []), budget_status),

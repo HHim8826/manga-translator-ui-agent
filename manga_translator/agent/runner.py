@@ -57,6 +57,8 @@ RECAP_CHARS = 8000
 """...and of every earlier page of the chapter, newest first, as long as the recap stays about this long
 (a 16-page chapter's 15 pages are about 4,400 characters). With the last two pages only, chapters 44-47
 of a real work lost the thread: who was talking, what a line answered (2026-11-28)."""
+RECAP_NOTES_CHARS = 3000
+"""The page notes of the earlier pages the recap does not repeat, the newest first."""
 RECAP_NAMES = 30
 """Up to this many earlier pages are named one by one in the recap; more by the first and the last
 (a long chapter resent every name on every page)."""
@@ -158,11 +160,11 @@ For every page:
    Text without a box: add_region with a rough box in page pixels (the page size is in the page message), or with grid cells of a zoom (zoom also takes a box, to look at any area). The program snaps it to the strokes and shows what will be erased; undo if it is wrong. Then handle the new region like any other. When a detected box took in some of the art (its font size then reads too large), cut off part of its text, or read two lines as one, fit_region it to the text. A label written on a slant (along a road or a roof) gets a slanted box from add_region and fit_region, and its translation is drawn along it; an upright box around a slanted label reads a huge font, so fit_region it.
    Text written over detailed art, where erasing it would break the drawing and its translation in its place would not hide the damage (a map's labels on screentone between dashed lines, words across hatching, hair, a face or an object): note_region it instead of set_text. Its strokes stay as drawn and its translation goes beside it in brackets, smaller, on the spot the program finds: call it without box. fit_region a slanted label first, so the note follows the slant; a box that missed the text is fixed with fit_region or add_region, not worked around with a note. Look at the image the result shows: lines, screentone and panel borders under a note are fine. Call it again with box (an empty spot right beside the text to center the note on; its size stays) only when the note covers a face or other text: a note moved away from its text no longer reads as its translation, and the program refuses a spot too far. Only that text: most text on a busy page, a map too, is still translated in its place: a label in its own box, circle or frame, a big name with its own white outline on a flat tone (a hill's name on its screentone), text in a bubble or a caption, on plain paper (an aside that a bubble's outline touches too), a flat tone or a gradient (white-outlined text on screentone erases cleanly). note_region refuses text on flat ground. Sound effects stay skipped. When add_region catches a neighbouring label too, undo and add it again with exact: true. Bubbles that hold only punctuation (…, ?, !) can stay as drawn without a box.
 3. Read the text yourself from the image. {double_read}
-4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear. A line that points back to something earlier (また, いつもの, あの時, 前みたいに: again, the usual, that time) may mean a running joke or an event of an earlier chapter: search_past_translations the word first and follow how it was translated there, instead of translating it word for word.
+4. Translate into {target}: natural, idiomatic manga dialogue that keeps each character's voice. Keep names and terms consistent with the glossary and character list; record new ones with glossary_upsert / character_upsert when they first appear. A line that points back to something earlier (また, いつもの, あの時, 前みたいに, この前, 例の, 相変わらず, 〜した件: again, the usual, that time, last time, that thing, as ever, the business with) may mean a running joke or an event of an earlier chapter: find what it points to in the chapter synopses and the earlier pages, search_past_translations the word, and translate what it means there, instead of word for word. The same holds for a word that names an outing or a habit (ショッピング: going shopping as a pastime, not a purchase).
    {invented_script}
 5. Save every region with set_text: exact source transcription (furigana goes in ruby), the translation, category and confidence. Save the whole page in one response: every set_text and skip_region call (plus set_reading_order and glossary or character updates) together.
 6. When something is uncertain (unreadable text, a pun without a good equivalent, text that add_region and split_region cannot capture), call flag_for_review with a short reason and keep going. Never stop to ask: no human is available until the run ends.
-7. Finish with mark_page_done and your confidence for the page; it can go in the same response as the saves. It fails while any region has neither a translation nor a skip.
+7. Finish with mark_page_done, your confidence for the page and a page_note: what happens on it in a sentence or two, for the pages after it and the synopsis of the chapter. It can go in the same response as the saves. It fails while any region has neither a translation nor a skip.
 
 Each response takes several seconds and resends the whole conversation, so call independent tools together in one response: all the zooms you need at once, then all the structure changes at once, then all the saves at once. Changes to different boxes are independent: send split_region, merge_regions, fit_region and add_region for every box that needs one in one response; each result shows its own image and gives the new ids. Wait for a result only when your next call needs something from it: the id a split_region or add_region gives, a second change to the same box, a zoom you have to see first. Saves never wait for each other. undo takes back only the last change: to take back an earlier change of such a response, undo back to it and send the later ones again.
 Write every reason, note and review flag in {reason_lang}; a human reads them.
@@ -237,8 +239,10 @@ class AgentRunner:
                  font_styles: Optional[Dict[str, dict]] = None, run_info: Optional[Dict[str, Any]] = None,
                  preprocess_failed: Optional[Dict[str, str]] = None, revise: bool = False,
                  revise_fonts=None, default_font: str = "", render_backend=None, work_memory: str = "",
-                 prompt_name: str = ""):
+                 prompt_name: str = "", synopses: str = ""):
         self.settings = settings
+        self.synopses = synopses
+        """What happened in the work's earlier chapters (``synopses.prompt_text``), in the system prompt."""
         self.revise = revise
         """The pages were finished by an earlier run: check them again (``revise.py``)."""
         self.revise_fonts = revise_fonts if revise_fonts is not None else fonts
@@ -302,6 +306,8 @@ class AgentRunner:
         if self.work_prompt is not None and self.work_prompt.text:
             extra += (f"\n\nNotes for this work from the user's prompt file {self.work_prompt.name}. Follow them, and "
                       f"use its glossary over your own choices and over the glossary tools:\n{self.work_prompt.text}")
+        if self.synopses:
+            extra += "\n\n" + self.synopses
         if self.line_breaks:
             extra += LINE_BREAK_PROMPT.format(rules=self.line_breaks.strip())
         if self.fonts is not None:
@@ -366,6 +372,8 @@ class AgentRunner:
             if not stem or stem in current:
                 continue
             side = self.store.load_sidecar(stem) or {}
+            if isinstance(side.get("page_note"), str) and side["page_note"].strip():
+                self.session.page_notes[stem] = side["page_note"].strip()
             entries = [r for r in side.get("regions", []) if isinstance(r, dict)]
             saved = self._saved_regions(stem, folder)
             if saved is None:
@@ -518,7 +526,8 @@ class AgentRunner:
         shown = 0
         for index in range(len(earlier) - 1, -1, -1):
             entries = by_page.get(earlier[index])
-            block = [f"Page {earlier[index]} as translated:"] + [
+            note = self.session.page_notes.get(earlier[index])
+            block = [f"Page {earlier[index]} as translated" + (f" (what happens: {note})" if note else "") + ":"] + [
                 f"- {'#' + str(p['id']) + ' ' if p['id'] is not None else ''}{p['source'] or ''} → {p['translation']}"
                 for p in entries or []]
             size = sum(len(line) + 1 for line in block)
@@ -533,6 +542,19 @@ class AgentRunner:
         left = earlier[:len(earlier) - shown]
         if left:
             lines.append(f"Not repeated here (search_past_translations finds them): {named(left)}.")
+            # what happens on them, the newest first within RECAP_NOTES_CHARS
+            notes, size = [], 0
+            for stem in reversed(left):
+                note = self.session.page_notes.get(stem)
+                if not note:
+                    continue
+                if size + len(note) > RECAP_NOTES_CHARS:
+                    break
+                notes.append(f"- {stem}: {note}")
+                size += len(note) + len(stem) + 4
+            if notes:
+                lines.append("What happens on them:")
+                lines += reversed(notes)
         for block in reversed(blocks):
             lines += block
         return "\n".join(lines) + "\n\n"

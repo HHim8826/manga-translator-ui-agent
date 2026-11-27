@@ -251,10 +251,13 @@ class ScriptedClient:
     (their own tool) take the next entry of ``recall`` (default: nothing found)."""
     model_label = "fake"
 
-    def __init__(self, script, recall=None, proof=None):
+    def __init__(self, script, recall=None, proof=None, synopses=None):
         self.script = list(script)
         self.recall = list(recall or [])
         self.proof = list(proof or [])
+        self.synopses = list(synopses or [])
+        """Synopsis replies (text, or an exception to raise); default: ``synopsis <n>``."""
+        self.synopsis_requests = []
         self.requests = []
         self.recall_requests = []
         self.review_requests = []
@@ -278,6 +281,12 @@ class ScriptedClient:
             self.recall_requests.append(messages)
             items = self.recall.pop(0) if self.recall else []
             return _calls(("report_unboxed_text", {"items": items}))
+        if tools and tools[0]["function"]["name"] == "save_synopsis":  # an earlier chapter's synopsis
+            self.synopsis_requests.append(messages)
+            step = self.synopses.pop(0) if self.synopses else None
+            if isinstance(step, BaseException):
+                raise step
+            return _calls(("save_synopsis", {"synopsis": step or f"synopsis {len(self.synopsis_requests)}"}))
         self.requests.append(messages)
         step = self.script.pop(0)
         if isinstance(step, BaseException):  # also asyncio.CancelledError: the stop button

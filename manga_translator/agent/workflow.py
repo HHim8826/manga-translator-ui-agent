@@ -356,6 +356,36 @@ def _seed_memory(folder: str, prompt_name: str, store: AgentStore, log) -> Optio
     return {**seeded, "from": earlier}
 
 
+def _earlier(work_memory: str, store: AgentStore, prompt_name: str):
+    """The work's earlier chapters for search_past_translations, or None without the work."""
+    if not (work_memory or prompt_name):
+        return None
+    from .work_memory import EarlierTranslations
+
+    return EarlierTranslations(work_memory, store.work_dir, prompt_name)
+
+
+async def _synopses(client, settings: AgentSettings, target_lang: str, folder: str, work_dir: str,
+                    prompt_name: str, log, should_stop: Callable[[], bool]) -> Tuple[str, Dict[str, Any]]:
+    """The synopses of the work's earlier chapters for the prompts (``synopses.py``), the missing ones
+    written first: (text, what was written for run_start). Only with the work's memory (share_memory):
+    they are kept in its folder. A failure leaves the chapter without them."""
+    if not folder:
+        return "", {}
+    from . import synopses
+
+    try:
+        return await synopses.update(client, settings, target_lang, folder, work_dir, prompt_name, log,
+                                     should_stop)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("agent: the chapter synopses could not be written", exc_info=True)
+        log(f"[Agent] Chapter synopses: not written ({type(exc).__name__}: {str(exc)[:160]}); the chapter "
+            "goes on without them")
+        return "", {}
+
+
 def _save_memory(folder: str, memory, work_dir: str, events: EventLog, log) -> None:
     """Merge the chapter's memory into the work's; a failure is logged and the chapter goes on."""
     chapter = os.path.basename(os.path.dirname(os.path.abspath(work_dir)))
@@ -715,7 +745,8 @@ class _BatchProgress:
 async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, client, settings: AgentSettings,
                         target_lang: str, work_prompt, font_service, line_breaks: bool,
                         should_stop: Callable[[], bool], backend, guard: Optional[RunGuard], log,
-                        run_info: Dict[str, Any]) -> Tuple[List[dict], set]:
+                        run_info: Dict[str, Any], work_memory: str = "",
+                        prompt_name: str = "") -> Tuple[List[dict], set]:
     """The steps an earlier run could not do on a chapter's pages (``redo.py``): the inpaint review of
     each page, then the proofreading, then the font check of the proofread pages. No translation:
     the pages keep their text, and the proofreader leaves the boxes the user changed in the editor.
@@ -731,6 +762,12 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
     pending = redo_steps.read(store)
     stems = {p: page_stem(p) for p in pages}
     states = {_key(s.path): s for s in previous_states(pages)}
+    synopsis_text, written = "", {}
+    if settings.proofread and any(stems[p] in pending.get(redo_steps.PROOFREAD, {}) for p in pages):
+        synopsis_text, written = await _synopses(client, settings, target_lang, work_memory, store.work_dir,
+                                                 prompt_name, log, should_stop)
+    if written:
+        run_info = {**run_info, "synopses": written}
     events.emit("run_start", pages=[os.path.basename(p) for p in pages], stems=[stems[p] for p in pages],
                 model=getattr(client, "model_label", ""),
                 target_lang=target_lang, redo=redo_steps.summary(
@@ -781,7 +818,8 @@ async def _redo_chapter(pages: List[str], store: AgentStore, events: EventLog, c
                         continue
                     locked[stems[path]] = {rid for rid, r in doc.regions.items() if r.locked and not r.was_skipped}
             proofreader = Proofreader(settings, client, store, events, target_lang, store.memory(), work_prompt,
-                                      should_stop, line_breaks=line_breaks, locked=locked)
+                                      should_stop, line_breaks=line_breaks, locked=locked,
+                                      synopses=synopsis_text, earlier=_earlier(work_memory, store, prompt_name))
             result = await _proofread(proofreader, to_proofread, events, log)
             requests += proofreader.totals["requests"]
             ok = result.get("status") != "error"
@@ -990,7 +1028,8 @@ async def run_agent_workflow(
                         chapter, redone = await _redo_chapter(
                             pages, store, events, client, settings, target_lang, work_prompt, font_service,
                             bool(breaks), should_stop, inpaint_backend or PipelineInpaintBackend(translator, config),
-                            guard, log, {"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id})
+                            guard, log, {"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id},
+                            work_memory=work_memory, prompt_name=prompt_name)
                     except AgentStopped:  # the stop button, as in a run (review 2026-11-28 B9)
                         raise asyncio.CancelledError("Agent workflow stopped by user")
                     reviewed |= redone
@@ -1030,6 +1069,9 @@ async def run_agent_workflow(
                         if review_task is not None and outcome.get("status") in ("done", "incomplete"):
                             queue.put_nowait(outcome["image"])
 
+                    # a stop meanwhile leaves the rest unwritten; the runner then stops as at any page
+                    synopsis_text, written = await _synopses(client, settings, target_lang, work_memory, work_dir,
+                                                             prompt_name, log, should_stop)
                     use_styles = work_prompt is not None and settings.choose_fonts and font_service is not None
                     styles_path = work_fonts_path(work_prompt.path) if use_styles else ""
                     runner = AgentRunner(settings, client, store, events, pages, target_lang, should_stop,
@@ -1037,11 +1079,12 @@ async def run_agent_workflow(
                                          fonts=font_service if settings.choose_fonts else None, line_breaks=breaks,
                                          font_styles=_work_styles(styles_path, font_service, log) if styles_path else None,
                                          run_info={"chapter": os.path.basename(os.path.dirname(work_dir)), "batch": batch_id,
-                                                   **({"work_memory": seeded} if seeded else {})},
+                                                   **({"work_memory": seeded} if seeded else {}),
+                                                   **({"synopses": written} if written else {})},
                                          preprocess_failed=preprocess_failed, revise=revise, revise_fonts=font_service,
                                          default_font=getattr(getattr(config, "render", None), "font_family", "") or "",
                                          render_backend=render_backend, work_memory=work_memory,
-                                         prompt_name=prompt_name)
+                                         prompt_name=prompt_name, synopses=synopsis_text)
                     review: List[dict] = []
                     proof_task: Optional[asyncio.Future] = None
                     try:
@@ -1053,7 +1096,9 @@ async def run_agent_workflow(
                                 log(f"[Agent] Proofread: {len(finished)} page(s)")
                                 _report(progress, "proofread", translated[0], len(paths))
                                 proofreader = Proofreader(settings, client, store, events, target_lang, runner.memory,
-                                                          work_prompt, should_stop, line_breaks=bool(breaks))
+                                                          work_prompt, should_stop, line_breaks=bool(breaks),
+                                                          synopses=synopsis_text,
+                                                          earlier=runner.session.earlier_chapters)
                                 proof_task = asyncio.ensure_future(_proofread(proofreader, finished, events, log))
                             if review_task is not None:
                                 queue.put_nowait(None)
