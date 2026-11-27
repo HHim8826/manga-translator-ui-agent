@@ -16,8 +16,13 @@ from core.config_models import AppSettings
 
 
 class FakeConfigService:
+    agent = False
+    source_dir = False
+
     def __init__(self, root):
         self.settings = AppSettings()  # the defaults: cli.agent_workflow is False
+        self.settings.cli.agent_workflow = self.agent
+        self.settings.cli.save_to_source_dir = self.source_dir
 
     def load_config_file(self, path):
         return False
@@ -32,7 +37,7 @@ def cli(monkeypatch, tmp_path):
     from manga_translator.agent import workflow
     from manga_translator.mode import local, subprocess_manager
 
-    calls = {"translate_batch": 0, "agent": [], "redo": [], "subprocess": 0}
+    calls = {"translate_batch": 0, "agent": [], "redo": [], "subprocess": 0, "save_info": []}
 
     class FakeTranslator:
         def __init__(self, params):
@@ -45,6 +50,7 @@ def cli(monkeypatch, tmp_path):
     async def fake_agent(translator, images, save_info, **kwargs):
         calls["agent"].append(kwargs.get("revise"))
         calls["redo"].append(kwargs.get("redo"))
+        calls["save_info"].append(save_info)
         return []
 
     async def fake_subprocess(**kwargs):
@@ -117,3 +123,31 @@ def test_subprocess_mode_refuses_agent_redo_before_touching_files(cli, capsys):
     assert stop.value.code == 2 and calls["subprocess"] == 0 and calls["agent"] == []
     assert "--agent-redo" in capsys.readouterr().out
     assert sorted(p.name for p in chapter.iterdir()) == ["001.png"]
+
+
+def test_subprocess_mode_refuses_a_config_with_the_agent_workflow(cli, capsys, monkeypatch):
+    """Review 2026-11-28 B12: with cli.agent_workflow on, --subprocess ran a normal translation."""
+    run, chapter, calls = cli
+    monkeypatch.setattr(FakeConfigService, "agent", True)
+    with pytest.raises(SystemExit) as stop:
+        run("--subprocess")
+    assert stop.value.code == 2 and calls["subprocess"] == 0 and calls["agent"] == []
+    assert "cli.agent_workflow" in capsys.readouterr().out
+    assert sorted(p.name for p in chapter.iterdir()) == ["001.png"]
+
+
+def test_the_agent_run_gets_the_save_to_source_dir_setting(cli, tmp_path, monkeypatch):
+    """Review 2026-11-28 B12: save_info had no save_to_source_dir, so a CLI run wrote elsewhere and a
+    check did not find (and back up) the outputs in manga_translator_work/result."""
+    run, _chapter, _calls = cli
+    monkeypatch.setattr(FakeConfigService, "source_dir", True)
+    calls = run("--agent-revise", "-o", str(tmp_path / "out"))
+    assert calls["save_info"][0]["save_to_source_dir"] is True
+
+
+def test_the_local_module_takes_agent_redo_on_its_own(monkeypatch):
+    """Review 2026-11-28 B12: ``python -m manga_translator.mode.local --agent-redo`` was an unknown argument."""
+    from manga_translator.mode import local
+
+    monkeypatch.setattr(sys, "argv", ["local", "-i", "ch01", "--agent-redo"])
+    assert local.parse_args().agent_redo is True

@@ -67,6 +67,8 @@ def parse_args():
                         help='覆盖已存在的文件')
     parser.add_argument('--agent-revise', action='store_true',
                         help='AI Agent 重新检查已完成的话数（不支持 --subprocess）')
+    parser.add_argument('--agent-redo', action='store_true',
+                        help='AI Agent 补做上次没做成的步骤（不支持 --subprocess）')
 
     # 内存管理参数
     parser.add_argument('--subprocess', action='store_true',
@@ -330,7 +332,9 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
         'output_folder': final_output_dir,
         'format': output_format,
         'overwrite': overwrite,
-        'input_folders': input_folders  # 保持为 set，翻译器内部会处理
+        'input_folders': input_folders,  # 保持为 set，翻译器内部会处理
+        # 和界面一样：输出到原图目录的 manga_translator_work/result（Agent 复查/补做也在那里备份成品）
+        'save_to_source_dir': bool(cli_config.get('save_to_source_dir', False)),
     }
     
     # 调试：检查输出目录是否存在
@@ -474,6 +478,10 @@ async def run_local_mode(args):
         # 子进程只跑一般翻译；在收集或写入任何文件前就拒绝，避免把已完成的话数重新翻译
         flag = '--agent-redo' if getattr(args, 'agent_redo', False) else '--agent-revise'
         print(f"❌ {flag} 不支持 --subprocess：AI Agent 重新检查和补做只能在直接模式执行，请去掉 --subprocess")
+        sys.exit(2)
+    if use_subprocess and getattr(config_service.get_config().cli, 'agent_workflow', False):
+        # 子进程只跑一般翻译：开着 AI Agent 流程时会悄悄跑成一般翻译
+        print("❌ 配置里开启了 AI Agent 流程（cli.agent_workflow），它不支持 --subprocess：请去掉 --subprocess")
         sys.exit(2)
 
     if use_subprocess:
