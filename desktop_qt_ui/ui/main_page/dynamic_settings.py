@@ -1038,15 +1038,43 @@ def _on_numeric_input_changed(self, text, full_key, value_type, widget=None):
         problem, value = check_change(config, full_key, value)
     except Exception:  # never block an edit because the check itself failed
         problem, config = None, None
+    hinted = _hinted_fields(self)
     if problem is not None:
         hint = describe(self._t, problem, _problem_label(self, full_key, problem))
         current = _current_value(config, full_key)
         _show_setting_hint(widget, hint + "\n" + self._t("Setting Hint Kept", value="" if current is None else current))
+        if widget is not None:
+            hinted[full_key] = (widget, value_type)
         return
     _clear_setting_hint(widget)
+    hinted.pop(full_key, None)
     if widget is not None and value is not None and text != str(value):
         widget.setText(str(value))  # an empty field shows the default it stands for
     self.setting_changed.emit(full_key, value)
+    # a field left red by this one is checked again: the context limit lowered first, then the
+    # threshold under it, and the limit field showed 128000 while 400000 stayed saved (review
+    # 2026-11-28 X3)
+    for key, (other, other_type) in list(hinted.items()):
+        if key == full_key or key not in hinted:
+            continue
+        try:
+            other_text = other.text()
+        except RuntimeError:  # the settings page was built again
+            hinted.pop(key, None)
+            continue
+        _on_numeric_input_changed(self, other_text, key, other_type, other)
+
+
+def _hinted_fields(self) -> dict:
+    """Setting key -> (field, value type) of the fields that are red now (a value that was not saved)."""
+    found = getattr(self, "_hinted_setting_fields", None)
+    if found is None:
+        found = {}
+        try:
+            self._hinted_setting_fields = found
+        except AttributeError:
+            pass
+    return found
 
 
 def _problem_label(self, full_key, problem):

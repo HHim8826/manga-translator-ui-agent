@@ -121,6 +121,32 @@ def test_the_settings_field_turns_red_and_keeps_the_saved_value(app):  # noqa: F
     assert sent == [] and field.toolTip().startswith("低信心門檻必須在 0 到 1 之間。")
 
 
+def test_a_red_field_is_saved_once_the_field_it_depends_on_allows_it(app):  # noqa: F811
+    """Review 2026-11-28 X3: the limit lowered first (refused: under the threshold), then the threshold
+    lowered under it; the limit field still showed 128000 in red while 400000 stayed saved."""
+    from ui.main_page.dynamic_settings import QLineEdit, _on_numeric_input_changed
+
+    config = AppSettings()
+    view, sent = _view(config)
+    view.setting_changed = SimpleNamespace(
+        emit=lambda key, value: sent.append((key, value)) or setattr(config.agent, key.split(".")[-1], value))
+    limit, threshold = QLineEdit("400000"), QLineEdit("300000")
+    limit.setText("128000")
+    _on_numeric_input_changed(view, limit.text(), "agent.max_context_tokens", int, limit)
+    assert sent == [] and limit.isError()
+    threshold.setText("100000")
+    _on_numeric_input_changed(view, threshold.text(), "agent.compact_threshold_tokens", int, threshold)
+    assert sent == [("agent.compact_threshold_tokens", 100_000), ("agent.max_context_tokens", 128_000)]
+    assert not limit.isError() and limit.toolTip() == "" and config.agent.max_context_tokens == 128_000
+    # one that is still wrong stays red and unsaved
+    limit.setText("90000")
+    _on_numeric_input_changed(view, limit.text(), "agent.max_context_tokens", int, limit)
+    threshold.setText("95000")
+    _on_numeric_input_changed(view, threshold.text(), "agent.compact_threshold_tokens", int, threshold)
+    assert limit.isError() and config.agent.max_context_tokens == 128_000
+    assert sent[-1] == ("agent.compact_threshold_tokens", 95_000)
+
+
 def test_the_settings_page_still_saves_optional_fields_empty(app):  # noqa: F811
     from ui.main_page.dynamic_settings import QLineEdit, _on_numeric_input_changed
 
