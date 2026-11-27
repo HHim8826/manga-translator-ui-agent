@@ -27,7 +27,7 @@ editor's AI Agent tab. The translator's own numbers (#4) are the preview's boxes
 # the first word of a translator undo label (page.py _checkpoint) → the tool it undid
 _UNDO_TOOLS = {"set_text": "set_text", "skip": "skip_region", "merge": "merge_regions", "split": "split_region",
                "set_reading_order": "set_reading_order", "link": "link_regions", "line_breaks": "set_line_breaks",
-               "flag": "flag_for_review", "add_region": "add_region", "note": "note_region"}
+               "flag": "flag_for_review", "add_region": "add_region", "note": "note_region", "fit": "fit_region"}
 
 _ID = r"(#\d+)"
 
@@ -62,12 +62,14 @@ def method_name(t: Translate, method: str) -> str:
 
 def mask_op(t: Translate, label: str) -> str:
     """A mask edit of the inpaint review (inpaint.py labels)."""
-    m = re.fullmatch(r"(dilate|erode) (\d+)px( \(residual\))?", label)
-    if m:
-        return t(f"Agent Mask {m[1]}", px=m[2]) + (t("Agent Mask Residual Only") if m[3] else "")
-    m = re.fullmatch(r"paint (add|remove)(?: (\S+))?", label)
-    if m:
-        return t(f"Agent Mask paint {m[1]}", cells=m[2] or "")
+    m = re.fullmatch(r"(dilate|erode) (\d+)px(?: \((residual|M\d+(?:,M\d+)*)\))?", label)
+    if m:  # scope residual, or the M numbers of scope components (review 2026-11-28 U2)
+        where = "" if not m[3] else t("Agent Mask Residual Only") if m[3] == "residual" else \
+            t("Agent Mask Components Only", parts=m[3])
+        return t(f"Agent Mask {m[1]}", px=m[2]) + where
+    m = re.fullmatch(r"paint (add|remove)(?: (.+))?", label)
+    if m:  # the cells as the model wrote them, also "B3 : D5"
+        return t(f"Agent Mask paint {m[1]}", cells=re.sub(r"\s+", "", m[2] or "")).strip()
     m = re.fullmatch(r"select (.+)", label)
     if m:
         return t("Agent Mask select", parts=m[1])
@@ -93,13 +95,14 @@ def _ids(t: Translate, text: str) -> str:
 
 
 def result_text(t: Translate, tool: str, summary: str, ok: bool = True,
-                tool_keys: Optional[dict] = None) -> Tuple[str, str]:
-    """(text for the result column, tooltip with the original summary)."""
+                tool_keys: Optional[dict] = None, agent: str = "translator") -> Tuple[str, str]:
+    """(text for the result column, tooltip with the original summary). ``agent`` numbers the regions
+    (the inpaint review's areas are not the translator's boxes)."""
     summary = str(summary or "")
-    return _format(t, tool, summary, ok, tool_keys or {}), summary
+    return _format(t, tool, summary, ok, tool_keys or {}, agent), summary
 
 
-def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
+def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict, agent: str = "translator") -> str:
     if not ok:
         if s == "not run: the page was already done":  # after mark_page_done in the same response
             return t("Agent Result Not Run")
@@ -154,8 +157,8 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
         return t("Agent Result Chars", count=m[1]) if m else s
     if tool == "flag_for_review":
         m = re.fullmatch(r"(?:" + _ID + r" )?([a-z_]+)", s)
-        if m:
-            return flag_text(t, m[1][1:] if m[1] else None, m[2])
+        if m:  # the inpaint review's "#4 inpaint" is its area 4 (review 2026-11-28 B19)
+            return flag_text(t, m[1][1:] if m[1] else None, m[2], agent)
     if tool == "mark_page_done":
         m = re.fullmatch(r"confidence ([\d.]+)", s)
         return t("Agent Result Confidence", percent=round(float(m[1]) * 100)) if m else s
@@ -184,14 +187,26 @@ def _format(t: Translate, tool: str, s: str, ok: bool, tool_keys: dict) -> str:
     if tool == "pick_candidate":
         m = re.fullmatch(_ID + r" a(\d+)", s)
         return t("Agent Result Picked", id=m[1], n=m[2]) if m else s
+    if tool == "note_area":
+        m = re.fullmatch(r"#(\d+) note", s)
+        return t("Agent Result Noted", id=region_label(t, m[1], agent)) if m else s
+    if tool == "fit_region":
+        m = re.fullmatch(_ID + r"(?: (\d+x\d+))? font (\d+)", s)
+        return " ".join(p for p in (m[1], m[2], t("Agent Result Font Size", size=m[3])) if p) if m else s
+    if tool == "split_region":
+        m = re.fullmatch(r"(.+) \(cut\)", s)
+        return f"{m[1]} {t('Agent Result Cut')}" if m else s
     if tool == "finish_review" and s == "done":
         return t("Agent Result Done")
     if tool == "revise_text" and s == "unchanged":
         return t("Agent Result Unchanged")
     if tool in ("revise_text", "flag_for_review"):
-        m = re.fullmatch(r"(\S+) #(\d+)(?:: (.*))?", s, re.S)
+        # the page's name may have spaces ("page 01 #3") (review 2026-11-28 U2)
+        m = re.fullmatch(r"(.+?) #(\d+)(?:: (.*))?", s, re.S)
         if m:  # the proofreader's "page #id": numbered like the editor's boxes, not the preview's
             box = f"{m[1]} {region_label(t, m[2], 'proofread')}"
+            if m[3] == "already listed":
+                return f"{box}: {t('Agent Result Already Listed')}"
             return f"{box}: {m[3]}" if m[3] is not None else box
     if tool == "finish_proofread":
         m = re.fullmatch(r"(\d+) revised", s)

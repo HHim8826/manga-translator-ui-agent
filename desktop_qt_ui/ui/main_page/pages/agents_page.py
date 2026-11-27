@@ -125,6 +125,15 @@ def _own_region(event: dict, value) -> Optional[int]:
     return _region_id(value) if (event.get("agent") or "translator") == "translator" else None
 
 
+_FLAG_TEXT = Qt.ItemDataRole.UserRole + 3
+"""Set on a flag_for_review row whose result column the flag event wrote (numbered the agent's way, with
+the flag's kind): its tool_result leaves it (review 2026-11-28 B19)."""
+
+
+def _agent(event: dict) -> str:
+    return str(event.get("agent") or "translator")
+
+
 def _requests(event: dict) -> int:
     usage = event.get("usage")
     try:
@@ -513,8 +522,11 @@ class AgentsPage(QWidget):
         page = self._key(event)
         run = str(event.get("run") or "")
         if kind in ("page_start", "page_done", "inpaint_done", "render_done") or event.get("boxes") is not None:
+            # a render that failed or was skipped made no output: the preview kept a missing or an old
+            # picture for it (review 2026-11-28 B19)
+            saved = kind != "render_done" or str(event.get("result") or "saved") == "saved"
             self.preview.update_page(page, image=event.get("image"), boxes=event.get("boxes"),
-                                     inpainted=event.get("inpainted"), output=event.get("output"))
+                                     inpainted=event.get("inpainted"), output=event.get("output") if saved else None)
         if kind == "page_start":
             self.preview.follow(page)
             self._set_page(page, state="working")
@@ -527,14 +539,16 @@ class AgentsPage(QWidget):
             row = self._add_row(event, self._t(TOOL_KEYS.get(tool, tool)) if tool in TOOL_KEYS else tool,
                                 "", event.get("reason", ""), region=_own_region(event, args.get("id", ids[0])))
             row.setToolTip(2, json.dumps(event.get("args", {}), ensure_ascii=False)[:2000])
-            self._pending_rows.setdefault(f"{page}|{tool}", []).append(row)
+            # by agent too: the inpaint review and the proofreader flag the same page at the same time
+            self._pending_rows.setdefault(f"{page}|{_agent(event)}|{tool}", []).append(row)
         elif kind == "tool_result":
-            queue = self._pending_rows.get(f"{page}|{event.get('tool', '')}")
+            queue = self._pending_rows.get(f"{page}|{_agent(event)}|{event.get('tool', '')}")
             row = queue.pop(0) if queue else None
             if row is not None:
                 text, tip = result_text(self._t, event.get("tool", ""), event.get("summary", ""),
-                                        event.get("ok", True), TOOL_KEYS)
-                row.setText(3, text)
+                                        event.get("ok", True), TOOL_KEYS, agent=_agent(event))
+                if not (event.get("ok", True) and row.data(0, _FLAG_TEXT)):
+                    row.setText(3, text)
                 row.setToolTip(3, tip)
                 if not event.get("ok", True):
                     row.setData(0, Qt.ItemDataRole.UserRole + 1, True)
@@ -542,12 +556,13 @@ class AgentsPage(QWidget):
                 self._apply_filter_to(row)
         elif kind == "flag":
             region = event.get("region")
-            detail = flag_text(self._t, region, event.get("flag", ""), event.get("agent") or "translator")
-            pending = self._pending_rows.get(f"{page}|flag_for_review")
+            detail = flag_text(self._t, region, event.get("flag", ""), _agent(event))
+            pending = self._pending_rows.get(f"{page}|{_agent(event)}|flag_for_review")
             if pending:  # the flag_for_review call already has a row: highlight it instead of adding a duplicate
                 row = pending[0]
                 row.setText(3, detail)
                 row.setData(0, Qt.ItemDataRole.UserRole + 1, True)
+                row.setData(0, _FLAG_TEXT, True)
                 self._apply_filter_to(row)
             else:
                 row = self._add_row(event, self._t("Agents Flag"), detail, event.get("reason", ""), problem=True,
@@ -558,6 +573,8 @@ class AgentsPage(QWidget):
                     self._set_page(page, state="working")
                 info = self._pages[page]
                 info["flags"] = info.get("flags", 0) + 1
+                if _agent(event) == "proofread":  # saved with the page when the proofreading ends
+                    info["proof_unsaved"] = info.get("proof_unsaved", 0) + 1
                 self._update_item(page)
         elif kind == "usage":
             self._limit = int(event.get("limit") or self._limit)
@@ -637,6 +654,7 @@ class AgentsPage(QWidget):
         elif kind == "proofread_done":
             self._requests += _requests(event)
             self._proofreading = False
+            self._proof_saved()
             flagged = int(event.get("flagged") or 0)
             unfinished = event.get("finished") is False and bool(event.get("redo"))  # stopped at its step limit
             note = str(event.get("note") or "")
@@ -762,6 +780,7 @@ class AgentsPage(QWidget):
             self._paint(row, ERROR)
             if event.get("agent") == "proofread":
                 self._proofreading = False
+                self._proof_saved()
                 self._show_finished_if_idle()
             if event.get("agent") == "inpaint" and self._pages.get(page, {}).get("state") == "inpainting":
                 # the review failed; the translation stands and render inpaints the page again
@@ -774,7 +793,9 @@ class AgentsPage(QWidget):
         elif kind == "run_end":
             totals = event.get("totals") or {}
             self._translating = False
-            self._requests += int(totals.get("requests") or 0) + int(totals.get("recall_requests") or 0)
+            if not event.get("redo"):  # a redo's are the ones its inpaint_done and proofread_done told
+                # (counted twice before: 5 requests showed as 10) (review 2026-11-28 B19)
+                self._requests += int(totals.get("requests") or 0) + int(totals.get("recall_requests") or 0)
             # ``total``: every page of the run, also the ones a stopped run never reached
             self._finished_runs[run] = {"done": int(event.get("done") or 0),
                                         "pages": int(event.get("total", event.get("pages", 0)) or 0)}
@@ -987,6 +1008,11 @@ class AgentsPage(QWidget):
         for index in range(self.timeline.topLevelItemCount()):
             self._apply_filter_to(self.timeline.topLevelItem(index))
 
+    def _proof_saved(self) -> None:
+        """The proofreading ended: its flags are in the pages' sidecars, so in the counts they send."""
+        for info in self._pages.values():
+            info.pop("proof_unsaved", None)
+
     def _set_page(self, page: str, state: str, flags=None, confidence=None) -> None:
         if not page:
             return
@@ -1000,7 +1026,9 @@ class AgentsPage(QWidget):
         info = self._pages[page]
         info["state"] = state
         if flags is not None:
-            info["flags"] = int(flags)
+            # the count of the page's sidecar: a proofreading that runs beside the inpaint review saves its
+            # flags when it ends, and the count went down meanwhile (review 2026-11-28 B19)
+            info["flags"] = int(flags) + int(info.get("proof_unsaved") or 0)
         if confidence is not None:
             info["confidence"] = float(confidence)
         if added:
