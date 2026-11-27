@@ -183,6 +183,9 @@ class EditorControllerExportService:
         # the open page was saved while its repair was still running (its key): the finished
         # repair is written when it arrives
         self._inpaint_save_pending: Optional[str] = None
+        # a page whose output image is older than its files (its key): the next load of it does not
+        # count the output as up to date
+        self._stale_output: Optional[str] = None
         from services.export_service import ExportService
 
         self._export_service = ExportService()
@@ -224,6 +227,15 @@ class EditorControllerExportService:
         stamps = dict(getattr(snapshot, "files_signature", ()) or ())
         self._json_stamp = stamps["json"] if "json" in stamps else _UNKNOWN
         self._exported_revision = self._revision()
+        if self._document_key is not None and self._document_key == self._stale_output:
+            self._exported_revision = None  # exported again when the page is left
+            self._stale_output = None
+
+    def mark_output_stale(self, source_path) -> None:
+        """The page's files changed under its output image (the editor's AI Agent tab took another
+        inpaint attempt): when it is loaded again, it is exported when it is left. The reload counted
+        the old output as up to date, so the page kept the old repair (review 2026-11-28 B5)."""
+        self._stale_output = self._key(source_path) or None
 
     def end_document(self) -> None:
         self._document_key = None

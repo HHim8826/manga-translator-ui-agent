@@ -351,19 +351,21 @@ def test_the_editor_centers_restores_and_switches_attempts(app, tmp_path):  # no
     unsaved, loaded = [True], []
     documents = types.SimpleNamespace(_take_prefetched_document=lambda p: loaded.append(("dropped", p)),
                                       do_load_image=lambda p: loaded.append(("load", p)))
-    controller = types.SimpleNamespace(export_service=types.SimpleNamespace(has_unsaved_changes=lambda: unsaved[0]),
-                                       document_service=documents)
+    controller = types.SimpleNamespace(export_service=types.SimpleNamespace(
+        has_unsaved_changes=lambda: unsaved[0], mark_output_stale=lambda p: loaded.append(("stale", p))),
+        document_service=documents)
     panel = types.SimpleNamespace(review=review.load(image_path))
     view, toasts = _view(agent_review_panel=panel, controller=controller)
     EditorView._use_agent_attempt(view, "1", 2)
     assert toasts == [("show_info", "Agent Review Save First")] and loaded == []
     unsaved[0] = False
     EditorView._use_agent_attempt(view, "1", 2)
-    assert loaded == [("dropped", image_path), ("load", image_path)]
+    # the output image still has the old repair: exported when the page is left (review 2026-11-28 B5)
+    assert loaded == [("dropped", image_path), ("stale", image_path), ("load", image_path)]
     assert toasts[-1] == ("show_success", "Agent Review Attempt Used n=2")
     assert store.load_sidecar("001")["inpaint"]["units"]["1"]["chosen"] == 2
     EditorView._use_agent_attempt(view, "1", 7)
-    assert toasts[-1][0] == "show_error" and len(loaded) == 2
+    assert toasts[-1][0] == "show_error" and len(loaded) == 3
 
 
 # --- review 14: proofreading and font flags after a reorder --------------------------------------

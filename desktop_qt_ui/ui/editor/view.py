@@ -760,6 +760,8 @@ class EditorView(QWidget):
             return
         documents = self.controller.document_service
         documents._take_prefetched_document(panel.review.image_path)  # a copy from before the change
+        # the output image still has the old repair: the page is exported when it is left
+        self.controller.export_service.mark_output_stale(panel.review.image_path)
         documents.do_load_image(panel.review.image_path)
         self._toast("show_success", self._t("Agent Review Attempt Used", n=attempt))
 

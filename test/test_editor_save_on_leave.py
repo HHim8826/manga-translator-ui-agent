@@ -395,3 +395,21 @@ def test_a_page_saved_while_its_repair_runs_gets_the_finished_repair_written(mon
         assert len(_PersistenceService.saved_images) == 2
     finally:
         service.shutdown()
+
+
+def test_a_page_reloaded_after_its_files_changed_is_exported_when_it_is_left(monkeypatch, tmp_path):
+    """Review 2026-11-28 B5: the editor's AI Agent tab takes another inpaint attempt and reloads the
+    page; the reload counted the old output image as up to date, so leaving the page did not export
+    it and the output kept the old repair."""
+    service, controller, revision, _json = _service(monkeypatch, tmp_path)
+    try:
+        source = str(controller.model.source_path)
+        snapshot = DocumentSnapshot(source_path=source, image=None, files_signature=document_files(source))
+        service.mark_output_stale(source)
+        service.end_document()
+        service.begin_document(snapshot)  # the reload
+        assert service.needs_export()
+        service.begin_document(snapshot)  # a later load of the page, once exported, is as before
+        assert not service.needs_export()
+    finally:
+        service.shutdown()
