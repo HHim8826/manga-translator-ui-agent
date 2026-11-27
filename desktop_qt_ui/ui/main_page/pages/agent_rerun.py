@@ -101,6 +101,10 @@ SCREEN_MARGIN = 48
 """Room kept free above and below the dialog on the screen."""
 MIN_BODY = 120
 """The scrolled part (the choices and the details) is never lower than this."""
+WIDTH = 600
+"""The dialog's width, unless a choice button needs more."""
+SCROLL_ROOM = 16
+"""Room beside the choices for their scroll bar."""
 
 
 def _room(dialog) -> int:
@@ -113,6 +117,61 @@ def _room(dialog) -> int:
     return max(200, screen.availableGeometry().height() - SCREEN_MARGIN)
 
 
+def _screen_width(dialog) -> int:
+    """The width the dialog may take: its screen's free width less a margin."""
+    from PyQt6.QtGui import QGuiApplication
+
+    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    if screen is None:
+        return 16777215
+    return max(WIDTH // 2, screen.availableGeometry().width() - SCREEN_MARGIN)
+
+
+def _width(dialog, screen_width: Optional[int] = None) -> int:
+    """``WIDTH``, or as wide as the longest choice button (they are one line: in es_ES one was 107 px
+    wider than the dialog, and every note and the details were laid out that wide and cut off on the
+    right), up to the screen's width; a button still too long there shows its label cut short, all of
+    it in its tooltip (review 2026-11-28 U1)."""
+    screen_width = _screen_width(dialog) if screen_width is None else screen_width
+    margins = dialog.textLayout.contentsMargins()
+    extra = margins.left() + margins.right() + SCROLL_ROOM
+    buttons = [b for b in getattr(dialog, "choice_buttons", []) if b is not getattr(dialog, "cancelButton", None)]
+    for button in buttons:  # measured with the whole label
+        full = button.property("fullText")
+        if full:
+            button.setText(full)
+    needed = max((b.sizeHint().width() for b in buttons), default=0) + extra
+    width = min(max(WIDTH, needed), screen_width)
+    inner = width - extra
+    for button in buttons:
+        if button.sizeHint().width() <= inner:
+            continue
+        full = button.text()
+        metrics = button.fontMetrics()
+        chrome = button.sizeHint().width() - metrics.horizontalAdvance(full)
+        button.setProperty("fullText", full)
+        button.setToolTip(full)
+        button.setText(metrics.elidedText(full, Qt.TextElideMode.ElideRight, max(40, inner - chrome)))
+    return width
+
+
+def _keep_on_screen(dialog) -> None:
+    """A shown dialog that grew (the details opened) moved back inside its screen: it went down
+    under the taskbar (review 2026-11-28 U1)."""
+    from PyQt6.QtGui import QGuiApplication
+
+    if not dialog.isVisible():
+        return
+    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    if screen is None:
+        return
+    area, frame = screen.availableGeometry(), dialog.frameGeometry()
+    x = max(area.left(), min(frame.left(), area.right() + 1 - frame.width()))
+    y = max(area.top(), min(frame.top(), area.bottom() + 1 - frame.height()))
+    if (x, y) != (frame.left(), frame.top()):
+        dialog.move(dialog.x() + x - frame.left(), dialog.y() + y - frame.top())
+
+
 def _natural(dialog, width: int) -> int:
     layout = dialog.layout()
     if layout is None:
@@ -122,10 +181,12 @@ def _natural(dialog, width: int) -> int:
     return max(height, layout.totalMinimumSize().height())
 
 
-def _fit(dialog, width: int = 600, room: Optional[int] = None) -> None:
-    """The dialog ``width`` wide and as tall as what it shows (it grows when the details open), but
-    no taller than the screen (``room``): then the choices and the details scroll, and Cancel stays
-    in sight at the bottom (review 2026-11-26 P2-4)."""
+def _fit(dialog, width: Optional[int] = None, room: Optional[int] = None) -> None:
+    """The dialog ``width`` wide (``_width``) and as tall as what it shows (it grows when the details
+    open), but no taller than the screen (``room``): then the choices and the details scroll, and
+    Cancel stays in sight at the bottom (review 2026-11-26 P2-4)."""
+    if width is None:
+        width = _width(dialog)
     dialog.setMinimumSize(0, 0)
     dialog.setMaximumSize(16777215, 16777215)
     room = _room(dialog) if room is None else room
@@ -142,6 +203,7 @@ def _fit(dialog, width: int = 600, room: Optional[int] = None) -> None:
         if over > 0:
             scroll.setFixedHeight(max(MIN_BODY, wanted - over))
     dialog.setFixedSize(width, _natural(dialog, width))
+    _keep_on_screen(dialog)
 
 
 def _dialog(parent, t: Callable[..., str], title: str, summary: str, details: str = "",

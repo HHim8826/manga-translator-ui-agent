@@ -548,3 +548,35 @@ def test_a_stopped_run_removes_the_text_export_of_the_pages_it_finished(tmp_path
     with pytest.raises(asyncio.CancelledError):
         _run(tmp_path, paths, _finish_page() + [asyncio.CancelledError()], translator=translator)
     assert sorted(translator.deleted) == paths  # 001 finished, 002 and 003 not: their JSON goes back
+
+
+@pytest.mark.parametrize("screen, times", [(2000, 1), (700, 3)])
+def test_a_long_choice_widens_the_question_or_is_cut_short(monkeypatch, app, screen, times):  # noqa: F811
+    """Review 2026-11-28 U1: a 600 px question with one-line choice buttons; in es_ES one was 107 px
+    wider, and every note and the details were laid out that wide and cut off on the right. The details
+    opening also pushed the dialog under the taskbar."""
+    from ui.main_page.pages import agent_rerun
+
+    monkeypatch.setattr(agent_rerun, "_screen_width", lambda dialog: screen)
+    long_label = " ".join(["Volver a revisar las páginas terminadas (se desbloquean tus cuadros editados)"] * times)
+    dialog = agent_rerun._dialog(None, _t, "Agent Rerun Title", "summary", "details " * 200,
+                                 [(long_label, "lo que hace " * 30, True), ("corto", "", False)])
+    button = dialog.choice_buttons[0]
+    margins = dialog.textLayout.contentsMargins()
+    inner = dialog.width() - margins.left() - margins.right()
+    if screen == 2000:
+        assert agent_rerun.WIDTH < dialog.width() < screen and button.text() == long_label
+    else:
+        assert dialog.width() == 700 and button.text() != long_label and button.toolTip() == long_label
+        assert button.text().endswith("…")
+    assert button.sizeHint().width() <= inner  # nothing wider than the dialog
+    dialog.show()
+    app.processEvents()
+    area = dialog.screen().availableGeometry()
+    dialog.move(dialog.x(), area.bottom() - dialog.height())  # near the bottom of the screen
+    dialog.details_button.click()  # taller now
+    app.processEvents()
+    assert dialog.frameGeometry().bottom() <= area.bottom() and dialog.frameGeometry().top() >= area.top()
+    if screen == 700:  # measured with the whole label again, and cut again
+        assert button.toolTip() == long_label and button.text().endswith("…")
+    dialog.close()
