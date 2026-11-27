@@ -21,7 +21,7 @@ from .events import EventLog
 from .notes import bracketed
 from .page import BREAK, NOTED, Centers, Region, needs_break, text_length, with_breaks
 from .settings import AgentSettings
-from .store import AgentMemory, AgentStore, normalize, write_json_atomic
+from .store import AgentMemory, AgentStore, write_json_atomic
 from .store import page_stem
 
 logger = logging.getLogger("manga_translator.agent")
@@ -291,7 +291,11 @@ def _execute(s: ProofSession, name: str, args: Dict[str, Any]):
             note = checks.agent_text(checks.Issue("line_overflow", region.id, over, 0.0))
             raise ProofError(f"{page.stem} {note.replace(' (set_line_breaks)', '')} Send it again.")
         old = page.translation(region)
-        if normalize(new) == normalize(old):
+        # the same text (as shown, or as written before the render's vertical punctuation); a fix of
+        # punctuation, case or spacing is a change (normalize folded ? into ？ and Hello into hello)
+        # (review 2026-11-28 B13)
+        same = {with_breaks(t).strip() for t in (old, region.data.get("translation_raw")) if t}
+        if new.strip() in same:
             return f"{page.stem} #{region.id}: unchanged (same text).", "unchanged", []
         page.write(region.id, new)
         s.revisions.append({"page": page.stem, "id": region.id, "source": page.source(region), "old": old,
@@ -467,6 +471,7 @@ class Proofreader:
                                  args=_compact_args(args), reason=str(args.get("reason") or ""))
                 pictures: List[str] = []
                 ok = not error
+                flags_before = len(session.flags)
                 if ok:
                     try:
                         text, summary, pictures = _execute(session, call.name, args)
@@ -474,7 +479,8 @@ class Proofreader:
                         ok, text, summary = False, f"Error: {exc}", str(exc)[:80]
                 else:
                     text, summary = f"Error: {error}", error[:80]
-                if ok and call.name == "flag_for_review" and session.flags:
+                if ok and call.name == "flag_for_review" and len(session.flags) > flags_before:
+                    # "already listed" adds none: the last flag was an earlier one (review 2026-11-28 B13)
                     flag = session.flags[-1]
                     self.events.emit("flag", page=flag["page"], agent="proofread", region=flag["region"],
                                      flag=flag["type"], reason=flag["reason"], bbox=flag.get("bbox"))
@@ -498,14 +504,19 @@ class Proofreader:
                 continue
             side = self.store.load_sidecar(stem) or {}
             side.pop("version", None)
-            centers = {rid: r.center for rid, r in page.regions.items()}
+            from .revise import text_key
+
+            # the agent's region with the same box and text: within 2 px (a turned box), and the text
+            # as the render left it in the JSON (︙ for …) is the sidecar's; otherwise the next check
+            # took every proofread vertical box for the user's edit and locked it (review 2026-11-28 B13)
+            in_json = [e for e in side.get("regions", []) if isinstance(e, dict) and not e.get("skipped")
+                       and e.get("merged_into") is None]
+            by_center = Centers(((e.get("match") or {}).get("center"), e) for e in in_json)
             for revision in revisions:
-                for entry in side.get("regions", []):  # the agent's region with the same box
-                    if (entry.get("match") or {}).get("center") == centers[revision["id"]] and \
-                            entry.get("translation") == revision["old"]:
-                        entry["translation"] = revision["new"]
-                        entry.setdefault("reasons", []).append(f"proofread: {revision['reason']}")
-                        break
+                entry = by_center.get(page.regions[revision["id"]].center)
+                if entry is not None and text_key(entry.get("translation")) == text_key(revision["old"]):
+                    entry["translation"] = revision["new"]
+                    entry.setdefault("reasons", []).append(f"proofread: {revision['reason']}")
             side["review_flags"] = list(side.get("review_flags") or []) + flags
             side["proofread"] = {"revisions": [{k: v for k, v in r.items() if k != "page"} for r in revisions],
                                  "note": session.note, "finished": session.finished, "steps": steps}

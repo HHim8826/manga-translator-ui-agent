@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from manga_translator.agent import json_guard
 from manga_translator.agent.events import EventLog, read_events
 from manga_translator.agent.proofread import Proofreader, page_key
 from manga_translator.agent.runner import AgentRunner
@@ -211,3 +212,51 @@ def test_the_proofreader_sees_the_skipped_regions_and_the_review_list(tmp_path):
     assert result["flagged"] == 1
     flags = store.load_sidecar("002")["review_flags"]
     assert [f["agent"] for f in flags] == ["translator", "translator", "inpaint", "proofread"]
+
+
+def test_punctuation_fixes_count_and_a_flag_already_listed_is_not_sent_again(tmp_path):
+    """Review 2026-11-28 B13: a fix of punctuation or case came back "unchanged" (normalize folds ? into
+    ？ and Hello into hello), and a flag_for_review that was "already listed" sent the last flag again."""
+    pages, store, events, runner = _translated_chapter(tmp_path)
+    raw = json.load(open(pages[1][1], encoding="utf-8"))
+    regions = next(iter(raw.values()))["regions"]
+    regions[0].update(translation="什麼?", translation_raw="什麼?")
+    regions[1].update(translation="Hello World", translation_raw="Hello World")
+    open(pages[1][1], "w", encoding="utf-8").write(json.dumps(raw, ensure_ascii=False))
+    json_guard.note(pages[1][1])  # as the agent wrote it
+    flag = ("flag_for_review", {"page": "002", "id": 3, "reason": "雙關"})
+    client = ScriptedClient([], proof=[
+        _calls(("revise_text", {"page": "002", "id": 1, "translation": "什麼？", "reason": "全形問號"}),
+               ("revise_text", {"page": "002", "id": 2, "translation": "hello world", "reason": "小寫"}),
+               ("revise_text", {"page": "002", "id": 3, "translation": "譯3", "reason": "同"}),
+               flag, flag),
+        _calls(("finish_proofread", {"note": ""}))])
+    proofreader = Proofreader(AgentSettings(), client, store, events, "CHT", runner.memory, None)
+    result = asyncio.run(proofreader.run([p for p, _ in pages]))
+    events.close()
+    assert result["revised"] == 2 and result["flagged"] == 1
+    saved = next(iter(json.load(open(pages[1][1], encoding="utf-8")).values()))["regions"]
+    assert [r["translation_raw"] for r in saved] == ["什麼？", "hello world", "譯3"]
+    flags = [e for e in read_events(events.path) if e["type"] == "flag" and e.get("agent") == "proofread"]
+    assert len(flags) == 1
+
+
+def test_a_revision_after_the_render_changed_the_punctuation_reaches_the_sidecar(tmp_path):
+    """Review 2026-11-28 B13: the render writes vertical punctuation into the JSON (︙ for …), so the
+    revision's old text was not the sidecar's, the sidecar kept the old text and the next check took
+    the box for the user's edit."""
+    pages, store, events, runner = _translated_chapter(tmp_path)
+    side = store.load_sidecar("002")
+    side["regions"][1]["translation"] = "等等……"
+    store.save_sidecar("002", side)
+    raw = json.load(open(pages[1][1], encoding="utf-8"))
+    next(iter(raw.values()))["regions"][1].update(translation="等等︙", translation_raw="等等……")
+    open(pages[1][1], "w", encoding="utf-8").write(json.dumps(raw, ensure_ascii=False))
+    json_guard.note(pages[1][1])  # as the agent wrote it
+    client = ScriptedClient([], proof=[
+        _calls(("revise_text", {"page": "002", "id": 2, "translation": "等一下……", "reason": "語氣"})),
+        _calls(("finish_proofread", {"note": ""}))])
+    asyncio.run(Proofreader(AgentSettings(), client, store, events, "CHT", runner.memory, None)
+                .run([p for p, _ in pages]))
+    events.close()
+    assert store.load_sidecar("002")["regions"][1]["translation"] == "等一下……"
