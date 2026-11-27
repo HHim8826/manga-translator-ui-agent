@@ -167,3 +167,37 @@ def test_a_review_whose_image_was_not_saved_is_not_reused_by_the_render(tmp_path
     assert [c["ignore_existing_inpainted"] for c in translator.calls[1:]] == [True]  # inpainted again
     errors = [e for e in _events(folder) if e["type"] == "error" and e.get("agent") == "inpaint"]
     assert errors and "not saved" in errors[0]["error"]
+
+
+def test_the_next_run_tells_the_pages_saved_in_the_editor_during_a_run_the_users(tmp_path):
+    """Review 2026-11-28 B3: the run fingerprinted the user's JSON as its own, so the next run took
+    the page for the agent's, offered no warning and dropped its copy; a page saved before the agent
+    got to it had no sidecar of its own, so the editor's AI Agent tab never showed the conflict."""
+    from manga_translator.agent.resume import FINGERPRINTS, USERS_SAVE, previous_states
+
+    folder = tmp_path / "chapter"
+    folder.mkdir()
+    paths = [str(folder / "001.png"), str(folder / "002.png"), str(folder / "003.png")]
+    _run(tmp_path, paths, ScriptedClient(_finish_page() * 3))
+    json_guard.reset()
+    # rerun: 001 is saved while the model works on it, 002 while 001 is worked on (before its turn)
+    client = EditingClient(_finish_page() * 2, _json(folder, "001"), at=1)
+    first = client.complete
+
+    async def complete(messages, tools, tool_choice, effort="", cache_key=""):
+        reply = await first(messages, tools, tool_choice, effort, cache_key)
+        if len(client.requests) == 1:
+            _save_in_editor(_json(folder, "002"), "也是我改的")
+        return reply
+
+    client.complete = complete
+    _run(tmp_path, paths, client)
+    json_guard.reset()
+    store = AgentStore(str(folder / "manga_translator_work"))
+    side = store.load_sidecar("002")
+    assert side["status"] == "edited" and side["review_flags"][-1]["type"] == "conflict"
+    prints = json.loads(open(os.path.join(store.agent_dir, FINGERPRINTS), encoding="utf-8").read())
+    assert prints["001"] == USERS_SAVE and prints["002"] == USERS_SAVE and prints["003"] != USERS_SAVE
+    states = {s.stem: s for s in previous_states(paths)}
+    assert states["001"].edited and states["002"].edited and states["001"].users
+    assert not states["003"].edited and not states["003"].users

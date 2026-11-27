@@ -757,6 +757,23 @@ class AgentRunner:
         doc.flags.append({"region": None, "type": "conflict", "reason": reason, "agent": "translator"})
         self.events.emit("flag", page=doc.stem, region=None, flag="conflict", reason=reason)
 
+    def _keep_users_page(self, doc: PageDoc) -> None:
+        """The sidecar of a page the user saved in the editor before the agent got to it: its earlier
+        record (or the page as the user saved it) with the status ``edited`` and the conflict flag. Not
+        written, the editor's AI Agent tab never showed the conflict and the next run did not tell the
+        page the user's (review 2026-11-28 B3)."""
+        side = self.store.load_sidecar(doc.stem)
+        if isinstance(side, dict):
+            side.pop("version", None)
+            side["status"] = doc.status
+            side["review_flags"] = list(side.get("review_flags") or []) + doc.flags[-1:]
+        else:
+            side = doc.sidecar()
+        try:
+            self.store.save_sidecar(doc.stem, side)
+        except OSError:
+            logger.warning(f"agent: could not save the sidecar of {doc.stem}", exc_info=True)
+
     def _finish_page(self, doc: PageDoc) -> Dict[str, Any]:
         missing = doc.missing()
         if doc.status == "done" and missing:  # a done page has nothing left without a translation
@@ -813,6 +830,7 @@ class AgentRunner:
                     continue
                 if json_guard.taken(doc.json_path):  # saved in the editor before the agent got to it
                     self._hand_over(doc, "later")
+                    self._keep_users_page(doc)
                     outcome = {"page": stem, "image": path, "status": "edited", "confidence": None,
                                "flags": len(doc.flags), "missing": []}
                     self.events.emit("page_done", page=stem, status="edited", flags=len(doc.flags), missing=[],

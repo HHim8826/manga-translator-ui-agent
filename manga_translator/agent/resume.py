@@ -53,6 +53,9 @@ logger = logging.getLogger("manga_translator.agent")
 
 EDIT_MARGIN = 30.0
 FINGERPRINTS = "saved_json.json"
+USERS_SAVE = "saved in the editor during a run"
+"""What ``FINGERPRINTS`` has for a JSON the user saved in the editor during a run: no fingerprint, so the
+next run tells the page edited and keeps a copy of it (``record_saved``)."""
 INPAINTED = "saved_inpainted.json"
 """Page stem -> [mtime_ns, size] of its inpainted image as the workflow left it: a redo does not
 review again an inpainted image the user changed (their repairs are in it)."""
@@ -196,8 +199,9 @@ class PageState:
 
     @property
     def users(self) -> bool:
-        """The JSON holds the user's own work."""
-        return self.edited or (not self.status and self.translated)
+        """The JSON holds the user's own work (also a page the user took in the editor during a run:
+        status ``edited``)."""
+        return self.edited or self.status == "edited" or (not self.status and self.translated)
 
 
 def _store(image_path: str) -> AgentStore:
@@ -377,8 +381,10 @@ def previous_states(paths: Sequence[str]) -> List[PageState]:
 
 def record_saved(paths: Sequence[str]) -> None:
     """Fingerprints of the pages' JSON as the workflow leaves them, and the time and size of their
-    inpainted images (``INPAINTED``)."""
+    inpainted images (``INPAINTED``). A JSON the user saved in the editor during the run is not the
+    workflow's: it gets ``USERS_SAVE``, which no file matches, so the next run tells it edited."""
     from ..utils.path_manager import find_inpainted_path, find_json_path
+    from . import json_guard
 
     by_store: Dict[str, List[str]] = {}
     for path in paths:
@@ -399,7 +405,12 @@ def record_saved(paths: Sequence[str]) -> None:
             else:
                 inpainted.pop(stem, None)
             json_path = find_json_path(path)
-            if json_path and os.path.exists(json_path):
+            if json_path and json_guard.taken(json_path):
+                # the user's file, saved in the editor during the run: fingerprinted as the run's, the
+                # next run took it for the agent's own and dropped its copy (review 2026-11-28 B3)
+                prints[stem] = USERS_SAVE
+                stats.pop(stem, None)
+            elif json_path and os.path.exists(json_path):
                 before = _stat(json_path)
                 prints[stem] = _fingerprint(json_path)
                 if before is not None and before == _stat(json_path):  # not written while it was read
