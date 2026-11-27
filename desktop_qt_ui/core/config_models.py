@@ -285,3 +285,19 @@ class AppSettings(BaseModel):
     @classmethod
     def _migrate_legacy_custom_api_params(cls, data: Any):
         return migrate_legacy_custom_api_params_config(data)
+
+
+AGENT_TRANSLATOR = "openai"
+"""The translator whose API settings the AI Agent workflow uses (``agent/client.build_client``:
+``OPENAI_API_KEY``, ``OPENAI_API_BASE``, ``OPENAI_MODEL``)."""
+
+
+def api_translator(config: Any) -> str:
+    """The translator whose API a run needs: the AI Agent workflow always talks to an OpenAI-compatible
+    API, whatever ``translator.translator`` says; the API Management page and the check before a run
+    asked for that translator's key instead (review 2026-11-28 X1: ``gemini_hq`` asked for a Gemini key
+    the agent never uses, ``none`` let a run start without the OpenAI one)."""
+    if getattr(getattr(config, "cli", None), "agent_workflow", False):
+        return AGENT_TRANSLATOR
+    raw = getattr(getattr(config, "translator", None), "translator", "")
+    return str(getattr(raw, "value", raw) or "").strip()

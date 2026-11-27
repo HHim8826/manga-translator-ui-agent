@@ -60,7 +60,9 @@ def _normalize_selected_value(value) -> str:
 
 
 def _selected_api_group_keys(config) -> dict[str, list[str]]:
-    translator_value = _normalize_selected_value(getattr(config.translator, "translator", ""))
+    from core.config_models import api_translator
+
+    translator_value = api_translator(config)  # the AI Agent workflow shows OpenAI's
     ocr_value = _normalize_selected_value(getattr(config.ocr, "ocr", ""))
     secondary_ocr_value = _normalize_selected_value(getattr(config.ocr, "secondary_ocr", ""))
     colorizer_value = _normalize_selected_value(getattr(config.colorizer, "colorizer", ""))

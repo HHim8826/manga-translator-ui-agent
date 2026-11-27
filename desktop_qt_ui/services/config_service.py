@@ -38,7 +38,7 @@ from manga_translator.utils.dotenv_utils import (
 )
 from manga_translator.utils.openai_compat import resolve_openai_compatible_api_key
 
-from core.config_models import AppSettings
+from core.config_models import AppSettings, api_translator
 
 PRESET_SPECIAL_ENV_VARS = [
     "OCR_OPENAI_API_KEY",
@@ -363,11 +363,7 @@ class ConfigService(QObject):
                 merged_env_vars[key] = str(value or "")
 
         checks = [
-            (
-                "translator",
-                "translator",
-                getattr(config.translator, "translator", None),
-            ),
+            ("translator", "translator", api_translator(config)),  # the AI Agent's API is OpenAI's
             ("ocr", "ocr", getattr(config.ocr, "ocr", None)),
             ("colorizer", "colorizer", getattr(config.colorizer, "colorizer", None)),
             ("render", "renderer", getattr(config.render, "renderer", None)),

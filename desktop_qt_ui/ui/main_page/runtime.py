@@ -238,6 +238,9 @@ def on_workflow_mode_changed(self, index: int):
 
     self.config_service.set_config(config)
     self.config_service.save_config_file()
+    refresh_api_groups = getattr(self, "_refresh_env_api_groups", None)
+    if callable(refresh_api_groups):  # the AI Agent workflow needs OpenAI's API, whatever the translator
+        refresh_api_groups(force=True)
     self.update_start_button_text()
     update_workflow_mode_description(self, index)
 

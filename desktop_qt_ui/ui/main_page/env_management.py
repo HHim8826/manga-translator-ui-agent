@@ -1308,6 +1308,12 @@ def _is_test_item_configured(test_target: str, api_key: str | None, api_base: st
 
 
 def _get_current_translator_key(self) -> str:
+    from core.config_models import AGENT_TRANSLATOR
+
+    service = getattr(getattr(self, "controller", None), "config_service", None)
+    config = service.get_config() if service is not None else None
+    if getattr(getattr(config, "cli", None), "agent_workflow", False):  # its API is OpenAI's (review 2026-11-28 X1)
+        return AGENT_TRANSLATOR
     combo = getattr(self, "env_translation_feature_combo", None) or getattr(self, "translator_combo", None)
     if combo is not None:
         data = combo.currentData() if hasattr(combo, "currentData") else None
