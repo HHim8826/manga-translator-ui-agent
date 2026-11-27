@@ -336,3 +336,21 @@ def test_free_boxes_near_the_page_edge_are_cut_to_the_page_as_note_region_takes_
         place = place_in_box(gray, moved_box, "v", 30, "（路障）")  # the box as the model gives it back
         assert covered_text(place.lines, texts)[1] <= COVERS
         assert gap(place.lines, label) <= NEAR * place.font_size
+
+
+def test_white_text_on_a_dark_ground_with_a_line_under_it_is_not_on_paper():
+    """Review 2026-11-28 B14: with little white text on a dark ground the brightest 5 % of the crop
+    were the text, so the dark ground passed as paper and note_region was refused."""
+    image = np.full((200, 200, 3), 52, np.uint8)
+    for y in range(40, 150, 24):
+        cv2.putText(image, "X", (90, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.line(image, (0, 100), (200, 100), (0, 0, 0), 2)  # drawn under the text: erasing cuts it
+    lines = [np.array([[86, 38], [114, 38], [114, 160], [86, 160]], np.float64)]
+    assert not flat_ground(image, lines)
+
+
+def test_brackets_around_all_of_the_text_are_a_pair():
+    """Review 2026-11-28 B14: only the first and last character were looked at."""
+    assert bracketed("(A) or (B)") == "（(A) or (B)）"
+    assert bracketed("【重要】（備註）") == "（【重要】（備註））"
+    assert bracketed("（備註）") == "（備註）" and bracketed("((A))") == "（(A)）"

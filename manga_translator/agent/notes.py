@@ -73,12 +73,31 @@ ground although a line touches it: 0.98 round the aside beside a thought bubble 
 _OPENERS = "（(【［[〔︵"
 _CLOSERS = "）)】］]〕︶"
 _NO_LINE_START = _CLOSERS + "、。，．・…‥！？!?ー"
+PAPER_LEVEL = 200
+"""Gray level from which the ground round a text is paper: below it a dark ground with a little white
+text passed as paper (its brightest 5 % were the text) (review 2026-11-28 B14)."""
+
+
+def _wrapped(body: str) -> bool:
+    """Whether the bracket ``body`` opens with is the one it ends with: not 「(A) or (B)」."""
+    if len(body) < 2 or body[0] not in _OPENERS or body[-1] not in _CLOSERS:
+        return False
+    depth = 0
+    for i, char in enumerate(body):
+        if char in _OPENERS:
+            depth += 1
+        elif char in _CLOSERS:
+            depth -= 1
+            if depth <= 0 and i < len(body) - 1:
+                return False
+    return depth == 0
 
 
 def bracketed(text: str) -> str:
-    """``text`` in full-width brackets, once: brackets written around all of it are dropped first."""
+    """``text`` in full-width brackets, once: brackets written around all of it are dropped first (a
+    pair only: 「(A) or (B)」 became 「（A) or (B）」) (review 2026-11-28 B14)."""
     body = with_breaks(text).strip()
-    if len(body) >= 2 and body[0] in _OPENERS and body[-1] in _CLOSERS:
+    if _wrapped(body):
         body = body[1:-1].strip()
     if not body:
         raise RegionError("translation is empty")
@@ -252,8 +271,9 @@ def flat_ground(image: np.ndarray, polygons: Sequence[np.ndarray], pad: int = 40
     ring = (cv2.dilate(strokes.astype(np.uint8), _kernel(reach)) > 0) & ~near
     if not ring.any():
         return False
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    paper = cv2.GaussianBlur(gray, (0, 0), 1.5) >= float(np.percentile(gray, 95)) - 30
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)  # the page is RGB
+    blurred = cv2.GaussianBlur(gray, (0, 0), 1.5)
+    paper = (blurred >= float(np.percentile(gray, 95)) - 30) & (blurred >= PAPER_LEVEL)
     return float(paper[ring].mean()) >= PAPER
 
 
