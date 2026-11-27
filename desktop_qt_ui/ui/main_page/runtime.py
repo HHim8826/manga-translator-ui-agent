@@ -143,12 +143,21 @@ def on_translation_state_changed(self, is_translating: bool):
         self.update_start_button_text()
 
 
+STOP_RETRY_MS = 500
+
+
 def enable_stop_button(self):
-    """启用停止按钮（延迟调用）。"""
+    """启用停止按钮（延迟调用）。 Only while a worker runs (the file scan, the translation): between
+    the scan and the translation (the AI Agent rerun question is open) there is nothing to stop, and
+    after 2 s the button said "Stop Translation" behind the dialog; it is tried again until the
+    translation starts (review 2026-11-28 X4)."""
     if (
         self.controller.state_manager.is_translating()
         and not getattr(self.controller, "_stop_requested", False)
     ):
+        if hasattr(self.controller, "current_worker") and self.controller.current_worker is None:
+            QTimer.singleShot(STOP_RETRY_MS, self._enable_stop_button)
+            return
         self.start_button.setEnabled(True)
         self.start_button.setText(self._t("Stop Translation"))
         _set_start_button_state(self, "stop")
@@ -160,7 +169,11 @@ def enable_stop_button(self):
 
 
 def set_stopping_state(self):
-    """设置按钮为“停止中...”状态，避免重复点击。"""
+    """设置按钮为“停止中...”状态，避免重复点击。 The AI Agent page's stop button too: it stayed
+    enabled after a stop from the translation page (review 2026-11-28 X4)."""
+    agents_page = getattr(self, "agents_page", None)
+    if agents_page is not None and hasattr(agents_page, "set_stopping"):
+        agents_page.set_stopping()
     self.start_button.setEnabled(False)
     self.start_button.setText(self._t("Stopping..."))
     _set_start_button_state(self, "stopping")

@@ -277,3 +277,37 @@ def test_flag_rows_number_regions_the_way_each_agent_does(app):  # noqa: F811
         "Agent Result With Kind id=Agent Result Editor Box n=2 kind=Agent Flag layout",
         "Agent Result With Kind id=Agent Review Area id=3 kind=Agent Flag inpaint",
     ]
+
+
+def test_a_stop_from_the_translation_page_also_shows_on_the_agents_page(app, monkeypatch):  # noqa: F811
+    """Review 2026-11-28 X4: the AI Agent page's stop button stayed on after a stop from the translation
+    page, and the translation page's button said "Stop Translation" behind the rerun question, before
+    the translation started."""
+    from ui.main_page import runtime
+
+    page = _page()
+    page.set_task_running(True)
+    page._handle_live({"type": "workflow_stage", "stage": "start", "pages": 2})
+    assert page.stop_button.isEnabled()
+    button = types.SimpleNamespace(state=[], setEnabled=lambda on: button.state.append(on),
+                                   setText=lambda text: button.state.append(text),
+                                   setProperty=lambda *a: None, style=lambda: None,
+                                   clicked=types.SimpleNamespace(disconnect=lambda: None, connect=lambda f: None))
+    monkeypatch.setattr(runtime, "_set_start_button_state", lambda view, state: None)
+    view = types.SimpleNamespace(start_button=button, agents_page=page, _t=lambda key: key)
+    runtime.set_stopping_state(view)
+    assert not page.stop_button.isEnabled() and page.stop_button.text() == "Stopping..."
+    assert button.state[:2] == [False, "Stopping..."]
+
+    later = []
+    monkeypatch.setattr(runtime.QTimer, "singleShot", lambda ms, callback: later.append(ms))
+    logic = types.SimpleNamespace(state_manager=types.SimpleNamespace(is_translating=lambda: True),
+                                  current_worker=None, stop_task=lambda: None)
+    button.state.clear()
+    view = types.SimpleNamespace(start_button=button, controller=logic, _t=lambda key: key,
+                                 _enable_stop_button=lambda: None)
+    runtime.enable_stop_button(view)  # the scan is over, the rerun question is open: nothing to stop yet
+    assert button.state == [] and later == [runtime.STOP_RETRY_MS]
+    logic.current_worker = object()  # the translation started
+    runtime.enable_stop_button(view)
+    assert button.state[:2] == [True, "Stop Translation"]

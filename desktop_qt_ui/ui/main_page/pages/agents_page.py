@@ -395,10 +395,16 @@ class AgentsPage(QWidget):
         if not self._can_stop():  # an old run log, or not an AI Agent task
             self._update_stop()
             return
+        self.set_stopping()
+        self.stop_requested.emit()
+
+    def set_stopping(self) -> None:
+        """The task is stopping (from here or from the translation page): one stop is enough."""
+        if not self._task_running:
+            return
         self._stopping = True
         self.stop_button.setEnabled(False)
         self.stop_button.setText(self._t("Stopping..."))
-        self.stop_requested.emit()
 
     def _current_page(self) -> str:
         """The page the user picked, else the one the preview shows."""
