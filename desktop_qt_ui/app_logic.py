@@ -2838,9 +2838,12 @@ class TranslationWorker(QObject):
             or "authentication" in real_error.lower()
             or "unauthorized" in real_error.lower()
             or "401" in real_error
-            or "no available api candidates" in real_error.lower()
-            or "exhausting api candidates" in real_error.lower()
-            or "api candidates" in real_error.lower()
+            or (  # every candidate cooling down after a 429 is a rate limit, not a key error
+                "api candidates" in real_error.lower()
+                and "rate limit" not in real_error.lower()
+                and "429" not in real_error
+                and "too many requests" not in real_error.lower()
+            )
         ):
             friendly_msg = _translate("friendly_error_api_credentials")
         

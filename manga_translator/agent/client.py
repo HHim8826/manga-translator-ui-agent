@@ -89,6 +89,22 @@ def quota_resets(error: BaseException, now: Optional[float] = None) -> Dict[str,
             "resets_at": when.isoformat(timespec="minutes")}
 
 
+QUICK_RETRY_SECONDS = 15
+"""A rate limit that resets later than this is not tried again on the same endpoint right away."""
+
+
+def _retry_same(error: BaseException) -> bool:
+    """The same endpoint is tried again, except after a usage limit that resets in minutes (four tries
+    a few seconds apart all fail) and a request it rejects as it is (a 400 the client could not work
+    around) (review 2026-11-28 B6)."""
+    from openai import BadRequestError
+
+    if isinstance(error, BadRequestError):
+        return False
+    seconds = quota_reset_seconds(error)
+    return seconds is None or seconds <= QUICK_RETRY_SECONDS
+
+
 class OpenAIChatClient:
     def __init__(self, endpoints, strategy: str, settings: AgentSettings, runtime_config=None):
         self.endpoints = endpoints
@@ -193,7 +209,7 @@ class OpenAIChatClient:
         return await run_with_api_candidates(
             endpoints=self.endpoints, strategy=self.strategy, operation=operation, provider_name="agent",
             operation_name="chat completion", logger=logger, runtime_config=self.runtime_config,
-            retry_attempts=self.settings.retry_attempts)
+            retry_attempts=self.settings.retry_attempts, retry_same=_retry_same, cooldown_for=quota_reset_seconds)
 
     async def aclose(self) -> None:
         """Close the HTTP connections in the event loop that opened them. Left to the garbage

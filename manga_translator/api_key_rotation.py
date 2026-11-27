@@ -23,6 +23,9 @@ MAX_ROTATION_SLOTS = 30
 DEFAULT_ROTATION_STRATEGY = "failover"
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60
 MAX_RATE_LIMIT_COOLDOWN_SECONDS = 600
+SHORT_COOLDOWN_WAIT_SECONDS = 60
+"""When every candidate is cooling down and the first of them is back within this, the request waits
+for it instead of failing at once (a page after a short rate limit)."""
 ROTATION_STRATEGIES = {
     "failover": "按顺序故障切换",
     "round_robin": "轮询",
@@ -32,6 +35,8 @@ _STATUS_RE = re.compile(r"\b(400|402|404|429)\b")
 _INDEXED_ENV_RE = re.compile(r"^(?P<base>.+)_(?P<index>[1-9]\d*)$")
 _STATUS_LOCK = threading.RLock()
 _API_STATUS: dict[str, dict[str, Any]] = {}
+_LAST_ERRORS: dict[str, Exception] = {}
+"""The error that put each endpoint into its state: the cause of a request made while all cool down."""
 _ROUND_ROBIN_CURSORS: dict[str, int] = {}
 _STATUS_KEY_SECRET = secrets.token_bytes(32)
 
@@ -328,11 +333,17 @@ def is_rate_limit_cooldown_error(error: Exception) -> bool:
     )
 
 
-def record_api_failure(endpoint: APIEndpoint, error: Exception) -> None:
+def record_api_failure(endpoint: APIEndpoint, error: Exception, cooldown_seconds: float | None = None) -> None:
+    """``cooldown_seconds``: how long a rate limit lasts when the caller can read it from the error
+    (a body's reset time); else its Retry-After header, else a minute."""
     permanently_unavailable = is_permanent_api_unavailable_error(error)
     rate_limited = (not permanently_unavailable) and is_rate_limit_cooldown_error(error)
-    cooldown_seconds = _extract_retry_after_seconds(error) or DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+    if cooldown_seconds:
+        cooldown_seconds = max(1, min(float(cooldown_seconds), MAX_RATE_LIMIT_COOLDOWN_SECONDS))
+    else:
+        cooldown_seconds = _extract_retry_after_seconds(error) or DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
     with _STATUS_LOCK:
+        _LAST_ERRORS[endpoint.status_key] = error
         payload = _endpoint_identity(endpoint)
         state = "failed"
         if permanently_unavailable:
@@ -363,6 +374,23 @@ def _rotation_group_key(endpoints: tuple[APIEndpoint, ...]) -> str:
     return f"{first.feature}:{first.provider}"
 
 
+def _cooling_down(endpoints: tuple[APIEndpoint, ...]) -> tuple[float | None, Exception | None]:
+    """(seconds until the first endpoint's cooldown ends or None, the error of the latest failure)."""
+    now, soonest, latest, cause = _now(), None, None, None
+    with _STATUS_LOCK:
+        for endpoint in endpoints:
+            status = _API_STATUS.get(endpoint.status_key) or {}
+            error = _LAST_ERRORS.get(endpoint.status_key)
+            updated = float(status.get("updated_at") or 0)
+            if error is not None and (latest is None or updated >= latest):
+                latest, cause = updated, error
+            if status.get("state") == "cooldown":
+                left = float(status.get("cooldown_until") or 0) - now
+                if left > 0 and (soonest is None or left < soonest):
+                    soonest = left
+    return soonest, cause
+
+
 def iter_api_candidates(endpoints: tuple[APIEndpoint, ...], strategy: str) -> list[APIEndpoint]:
     available = [endpoint for endpoint in endpoints if not is_endpoint_unavailable(endpoint)]
     if not available:
@@ -388,12 +416,29 @@ async def run_with_api_candidates(
     runtime_config: Any = None,
     retry_attempts: int | None = None,
     on_candidate_error: Optional[Callable[[APIEndpoint, Exception], Awaitable[None]]] = None,
+    retry_same: Optional[Callable[[Exception], bool]] = None,
+    cooldown_for: Optional[Callable[[Exception], Optional[float]]] = None,
 ) -> T:
+    """``retry_same(error)`` False: the same candidate is not tried again for that error (a usage limit
+    that resets in minutes, a request the API rejects as it is). ``cooldown_for(error)``: how long a
+    rate-limited candidate rests, when the error says (``record_api_failure``)."""
     candidates = iter_api_candidates(endpoints, strategy)
     if not candidates:
+        wait, _cause = _cooling_down(endpoints)
+        if wait is not None and wait <= SHORT_COOLDOWN_WAIT_SECONDS:
+            logger.warning(
+                f"{provider_name}: every API candidate is cooling down after a rate limit; "
+                f"waiting {wait:.0f}s for {operation_name}..."
+            )
+            await asyncio.sleep(wait + 0.05)
+            candidates = iter_api_candidates(endpoints, strategy)
+    if not candidates:
+        _wait, cause = _cooling_down(endpoints)
+        # the error that put them there, for the caller (a 429's reset time) and the user (not a key error)
+        detail = f" Every candidate is cooling down after: {summarize_exception_message(cause)}" if cause else ""
         raise APIRotationExhaustedError(
-            f"{provider_name} has no available API candidates for {operation_name}."
-        )
+            f"{provider_name} has no available API candidates for {operation_name}.{detail}"
+        ) from cause
 
     if retry_attempts is None:
         retry_attempts = get_retry_attempts_from_config(
@@ -419,6 +464,7 @@ async def run_with_api_candidates(
                 can_retry_same_candidate = (
                     not is_permanent_api_unavailable_error(exc)
                     and (max_total_attempts == -1 or candidate_attempt < max_total_attempts)
+                    and (retry_same is None or retry_same(exc))
                 )
 
                 if on_candidate_error is not None:
@@ -434,7 +480,7 @@ async def run_with_api_candidates(
                     await asyncio.sleep(min(1.0 * candidate_attempt, 3.0))
                     continue
 
-                record_api_failure(endpoint, exc)
+                record_api_failure(endpoint, exc, cooldown_for(exc) if cooldown_for is not None else None)
 
                 if candidate_index >= len(candidates):
                     raise APIRotationExhaustedError(
