@@ -1,9 +1,12 @@
 from functools import partial
 from typing import Any
 
-from PyQt6.QtCore import QPointF, QRect, QSize, Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QColor, QPen
 from PyQt6.QtWidgets import (
     QApplication,
+    QGraphicsItem,
+    QGraphicsRectItem,
     QHBoxLayout,
     QSizePolicy,
     QSplitter,
@@ -461,6 +464,8 @@ class EditorView(QWidget):
         else:
             return
         changed = self.left_stack.currentIndex() != index
+        if index != 2:  # the frame of the AI Agent tab's area goes with the tab
+            self._clear_agent_highlight()
         self.left_stack.setCurrentIndex(index)
         self.left_segmented_widget.setCurrentItem(route_key)
         if emit_changed and changed:
@@ -713,6 +718,7 @@ class EditorView(QWidget):
         path = self.model.get_source_image_path()
         regions = self.model.get_regions()
         if path != panel.image_path or getattr(change, "kind", None) == "reset":
+            self._clear_agent_highlight()
             panel.set_page(path, regions)
         else:
             panel.set_regions(regions)
@@ -721,11 +727,39 @@ class EditorView(QWidget):
         if 0 <= index < len(self.model.get_regions()):
             self.controller.set_selection_from_list([index])
 
+    AGENT_HIGHLIGHT = QColor(255, 140, 0)
+
+    def _clear_agent_highlight(self) -> None:
+        mark, self._agent_highlight = getattr(self, "_agent_highlight", None), None
+        if mark is None:
+            return
+        try:
+            if mark.scene() is not None:
+                mark.scene().removeItem(mark)
+        except RuntimeError:  # gone with the page's image
+            pass
+
     def _show_agent_area(self, box: list) -> None:
+        self._clear_agent_highlight()
         item = getattr(self.graphics_view, "_image_item", None)
         if item is None or len(box) < 4:
             return
         x1, y1, x2, y2 = (float(v) for v in box[:4])
+        if isinstance(item, QGraphicsItem):
+            # a frame over the area while it is selected: on a page fitted to the window centerOn does
+            # not move it, and nothing showed where a skipped box or an inpaint area is (review
+            # 2026-11-28 X2)
+            rect = QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)).adjusted(-6, -6, 6, 6)
+            mark = QGraphicsRectItem(rect, item)
+            pen = QPen(self.AGENT_HIGHLIGHT, 3)
+            pen.setCosmetic(True)
+            mark.setPen(pen)
+            fill = QColor(self.AGENT_HIGHLIGHT)
+            fill.setAlpha(60)
+            mark.setBrush(fill)
+            mark.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            mark.setZValue(1000)
+            self._agent_highlight = mark
         self.graphics_view.centerOn(item.mapToScene(QPointF((x1 + x2) / 2, (y1 + y2) / 2)))
 
     def _toast(self, method: str, text: str) -> None:

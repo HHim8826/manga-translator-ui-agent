@@ -297,9 +297,51 @@ def test_a_broken_sidecar_leaves_the_panel_empty(app, tmp_path):  # noqa: F811
 def _view(**parts):
     import types
 
+    from ui.editor.view import EditorView
+
     toasts = []
     view = types.SimpleNamespace(_t=_t, _toast=lambda kind, text: toasts.append((kind, text)), **parts)
+    view._clear_agent_highlight = types.MethodType(EditorView._clear_agent_highlight, view)
+    view.AGENT_HIGHLIGHT = EditorView.AGENT_HIGHLIGHT
     return view, toasts
+
+
+def test_the_selected_area_is_framed_on_the_page(app):  # noqa: F811
+    """Review 2026-11-28 X2: on a page fitted to the window centerOn did not move, and nothing showed
+    where the skipped box or the inpaint area is."""
+    import types
+
+    from PyQt6.QtGui import QPixmap
+    from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsScene
+    from editor.region_change import RegionChange
+    from ui.editor.view import EditorView
+
+    scene = QGraphicsScene()
+    image = scene.addPixmap(QPixmap(200, 300))
+    centered = []
+    panel = types.SimpleNamespace(image_path="a.png", set_page=lambda p, r: None, set_regions=lambda r: None)
+    model = types.SimpleNamespace(get_source_image_path=lambda: "a.png", get_regions=lambda: [])
+    view, _ = _view(graphics_view=types.SimpleNamespace(_image_item=image, centerOn=centered.append),
+                    agent_review_panel=panel, model=model)
+
+    def marks():
+        return [i for i in scene.items() if isinstance(i, QGraphicsRectItem)]
+
+    EditorView._show_agent_area(view, [10, 20, 30, 60])
+    EditorView._show_agent_area(view, [100, 120, 150, 160])  # another one: one frame
+    assert len(marks()) == 1 and marks()[0].rect().contains(100, 120) and marks()[0].rect().contains(150, 160)
+    assert (centered[-1].x(), centered[-1].y()) == (125.0, 140.0)
+    EditorView._on_regions_changed_for_agent_review(view, RegionChange.updated([0]))  # the same page
+    assert len(marks()) == 1
+    panel.image_path = "b.png"  # another page
+    EditorView._on_regions_changed_for_agent_review(view, RegionChange.updated([0]))
+    assert marks() == []
+    EditorView._show_agent_area(view, [10, 20, 30, 60])
+    scene.removeItem(image)  # the page's image went with its frame
+    del image
+    view.graphics_view._image_item = None
+    view._clear_agent_highlight()
+    assert view._agent_highlight is None
 
 
 def test_the_editor_reloads_the_tab_for_a_new_page_and_follows_edits(app):  # noqa: F811
